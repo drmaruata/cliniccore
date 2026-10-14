@@ -604,17 +604,26 @@ const GIT_PROBE_ENV_FILES = [
   ".env.example",
 ];
 
+/**
+ * True only when `git check-ignore` can actually answer in this directory.
+ *
+ * `git --version` alone is not enough: outside a checkout `check-ignore` exits
+ * 128 and `execFileSync` throws, so the test would hard-fail during collection
+ * instead of skipping. `--is-inside-work-tree` is the cheapest honest probe.
+ */
 function gitAvailable(): boolean {
   try {
-    execFileSync("git", ["--version"], { stdio: "ignore" });
-    return true;
+    const stdout = execFileSync("git", ["rev-parse", "--is-inside-work-tree"], {
+      encoding: "utf8",
+    });
+    return stdout.trim() === "true";
   } catch {
     return false;
   }
 }
 
 describe.skipIf(!gitAvailable())("the .env* walk exclusion matches real git behaviour", () => {
-  it("reads every env file git ignores and skips every one git does not", () => {
+  it("skips every env file git ignores and reads every one git does not", () => {
     const stdout = execFileSync("git", ["check-ignore", "--stdin"], {
       cwd: process.cwd(),
       input: GIT_PROBE_ENV_FILES.join("\n") + "\n",

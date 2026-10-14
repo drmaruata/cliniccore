@@ -92,9 +92,13 @@ const CREDENTIAL_SCAN_EXTENSIONS = [...SOURCE_EXTENSIONS, ".sql"];
  * permanently red in every correctly configured checkout. A gate people have
  * to disable is not a gate, and that is worse than the gap it closes.
  *
- * The exclusion is verified against the real `.gitignore` by the unit test
- * "the .env* walk exclusion matches what git actually ignores"; if the two ever
- * diverge, that test fails rather than the gate quietly going blind.
+ * The exclusion is checked against the real `.gitignore` by the unit test
+ * "skips every env file git ignores and reads every one git does not" in
+ * tests/unit/check-no-secrets.test.ts. Scope limit: that test probes a fixed
+ * list of env-file names, so it catches drift for those names only. Un-ignoring
+ * a DIFFERENT name (e.g. adding `!.env.sample` to .gitignore) would leave this
+ * constant stale and the gate blind without failing any test — recorded as a
+ * residual in the round-5 report.
  */
 const TRACKED_ENV_FILES = [".env.example"];
 
@@ -130,16 +134,26 @@ const SECRET_LITERAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
  * Doc/test placeholders that are safe to mention in a scanned file without
  * tripping rule 4.
  *
- * The justification is the literal in `tests/unit/check-no-secrets.test.ts`,
- * NOT `.env.example` (which this comment previously cited). The allowlist has to
- * be exercised against a literal string, so the test file keeps
- * `sb_secret_replace_me` verbatim; emptying this list fails that test and the
- * "is clean against the real repository tree" test, because the literal sits in
- * a file the walk reads.
+ * Two files the walk reads carry the literal `sb_secret_replace_me`, and both
+ * are load-bearing:
  *
- * `.env.example` is scanned too, but it does not motivate this list: its only
- * secret-shaped value is the same inert placeholder, and it is allowed for that
- * reason rather than exempted. `replace_me` is a marker, not a credential.
+ *   1. `tests/unit/check-no-secrets.test.ts` — the allowlist has to be
+ *      exercised against a literal string, or the assertion testing it is
+ *      meaningless. Emptied, this fails:
+ *        - "allows documented placeholders like sb_secret_replace_me"
+ *        - "is clean against the real repository tree"
+ *        - "keeps .env.example green because its values are inert, not
+ *           because it is exempt"
+ *        - "does not apply the code rules to .env or .sql files"
+ *   2. `.env.example` line 14 — `SUPABASE_SERVICE_ROLE_KEY=sb_secret_replace_me`.
+ *      That file is walked, so it is a SECOND live reason the list must exist.
+ *      It was not one before the `.env*` walk change; the comment this replaces
+ *      claimed it was not one at all, which was wrong. Re-measured after the
+ *      walk widened, not inherited.
+ *
+ * `replace_me` is a marker, not a credential. If a real key ever reaches either
+ * site it does not contain `replace_me` and the gate still fails — see the
+ * round-4 report for that end-to-end check on both file types.
  */
 const PLACEHOLDER_ALLOWLIST = [/replace_me/];
 
