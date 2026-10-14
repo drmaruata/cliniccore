@@ -1,0 +1,14 @@
+node_modules
+.next
+out
+dist
+build
+coverage
+playwright-report
+test-results
+package-lock.json
+next-env.d.ts
+
+# Authored planning documents are prose, not source — do not reflow them.
+docs/superpowers
+.superpowers

@@ -1,0 +1,9 @@
+# Normalise line endings in the repository so Windows and POSIX contributors
+# do not produce whole-file diffs.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.woff binary
+*.woff2 binary
