@@ -371,12 +371,44 @@ describe("run(): filesystem walk", () => {
   });
 
   it("allows the service role in lib/supabase/server.ts and under tests/", () => {
+    // NOTE: this pins the rule 1 PATH allowance only. It cannot detect a
+    // walk-layer `if (rel.startsWith("tests/")) continue;`, because skipping the
+    // file also yields []. Walk coverage of tests/ is pinned by the two tests
+    // below, which put a *violating* file under tests/ and require it to be found.
     expect(
       runOnTempTree({
         "lib/supabase/server.ts": "const k = process.env.SUPABASE_SERVICE_ROLE_KEY;",
         "tests/unit/server.test.ts": "const k = process.env.SUPABASE_SERVICE_ROLE_KEY;",
       }),
     ).toEqual([]);
+  });
+
+  it("flags a hard-coded secret under tests/ during the walk — no walk-layer exemption", () => {
+    // Regression guard for the WALK layer. The round-2 guard exercised
+    // findViolations(), which only pins the detection layer; a per-path
+    // `continue` added next to the SELF_PATH skip in run() disables rule 4 for
+    // every test file while that guard stays green, because the fixtures are
+    // runtime-built and the real tree is genuinely clean.
+    const violations = runOnTempTree({
+      "tests/unit/fixtures/pasted.test.ts": srcWithKey,
+      "app/page.tsx": "export default function Page() { return null; }",
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("tests/unit/fixtures/pasted.test.ts");
+    expect(violations[0]).toContain("Supabase secret key");
+  });
+
+  it("the walk reads tests/ files at all — a rule 3 leak there is found", () => {
+    // Second, independent pin on the walk layer: a rule 3 violation under tests/
+    // must be reported, which can only happen if the file was actually read.
+    const violations = runOnTempTree({
+      "tests/unit/component.test.tsx":
+        '"use client";\nimport { adminClient } from "@/lib/supabase/server";',
+      "app/page.tsx": "export default function Page() { return null; }",
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("tests/unit/component.test.tsx");
+    expect(violations[0]).toContain("lib/supabase/");
   });
 
   it("returns no violations for a clean tree", () => {
