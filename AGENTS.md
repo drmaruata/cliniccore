@@ -15,11 +15,22 @@ Global constraints in the plan (money as `bigint` paise, no floating point in mo
 
 ## Current state
 
+Read this section as a claim to **verify**, not a fact. Everything here goes stale the
+moment the next task lands; the previous version of this section named a scratch file
+that had already been deleted and sent the next agent chasing it. Re-derive from the
+gates instead — they are the only source of truth.
+
 - Branch `feature/foundation` (master is the untouched base). Do not implement on master.
-- **Task 1 of 20 complete. Task 2 (design system) is in its review-fix loop** — HEAD is still Task 2's first commit `29e51a2` and the review fixes are **not yet committed**. Re-read any file before editing it; do not assume a previous state is settled.
-- **All six gates are green at the last full run**: `typecheck`, `lint` (eslint + `check:secrets` + `format:check`), `check:secrets`, `test` (248 tests / 4 files), `build`, `format:check`. Re-run them rather than trusting this line — it goes stale, which is exactly what happened to the previous version of this section.
-- The temporary light/dark demo route `app/preview/` has been deleted. It was the only file failing `format:check`, and it must not come back: it exists only to screenshot the token layer and it inflates the test count by 3 (it is scanned as a component file).
-- Nothing exists yet for `supabase/`, `lib/supabase/`, `proxy.ts`, or the route groups. Task 3 onward creates them.
+- **Task 1 of 20 complete. Task 2 (design system) is in its review-fix loop.** Run
+  `git log --oneline` and `git status` before you start: the review fixes may be sitting
+  uncommitted on your machine. The briefs are in
+  `.superpowers/sdd/cliniccore-foundation/`.
+- **A clean tree on this branch should be green on all six gates.** If you are not sure,
+  run them rather than trusting a summary — including this one:
+  `npm run typecheck && npm run lint && npm run check:secrets && npm run test &&
+npm run build && npm run format:check`.
+- Nothing exists yet for `supabase/`, `lib/supabase/`, `proxy.ts`, or the route
+  groups. Task 3 onward creates them.
 - `README.md` does not exist yet — it is Task 19's deliverable.
 
 ## Commands

@@ -73,12 +73,18 @@ export interface ConfirmDialogProps {
   /** Required. What happens, and what cannot be undone. */
   description: React.ReactNode;
   /**
-   * Required. What happens, and what cannot be undone.
+   /**
+   * The action being confirmed — usually the mutation itself. Called on confirm
+   * and nowhere else, and it may be async.
    *
-   * Runs on confirm. **This component does not close the dialog — call
-   * `onOpenChange(false)` yourself once the mutation has succeeded.** See the
-   * file header for the full contract. A rejection is caught and shown in the
-   * dialog; nothing propagates.
+   * **This component does not close itself.** The confirm button calls
+   * `preventDefault()` on every press, so the dialog stays open whatever
+   * `onConfirm` does, and `onOpenChange(false)` is yours to call from inside the
+   * callback once the mutation has succeeded. See the file header for the full
+   * contract and a worked example.
+   *
+   * A rejection is caught and rendered in the dialog as an alert; nothing
+   * propagates to an unhandled rejection and the dialog stays usable.
    */
   onConfirm: () => void | Promise<void>;
   confirmLabel?: React.ReactNode;

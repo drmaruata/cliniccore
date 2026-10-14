@@ -357,3 +357,85 @@
     @apply font-sans;
   }
 }
+
+/*
+ * Compensating rules for generated variants that name a token which is not
+ * legible as text.
+ *
+ * THE DEFECT. `--primary` does two jobs: it is the `default` Button's and
+ * Badge's FILL (paired with `--primary-foreground`, 5.70:1 light, fine), and it
+ * is also what the `link` variant's `text-primary` resolves to, where it
+ * measures 2.93:1 on background and 3.06:1 on card. The brand primary is
+ * mandated and genuinely cannot reach 4.5:1 as text on a near-white surface, so
+ * the palette cannot move. But only `--brand-primary` is mandated — `--primary`
+ * is a token this file chooses, and choosing one value for two incompatible
+ * jobs is the error, not the colour.
+ *
+ * `--primary-ink` already exists for this. What was missing is a way to APPLY
+ * it to the generated component without hand-editing generated code: the `link`
+ * variant's class string is emitted by `shadcn` and names `text-primary`
+ * directly, so every caller of `<Button variant="link">` inherits 2.93:1.
+ *
+ * WHY THIS SELECTOR.
+ *
+ *   - `data-variant` is already emitted by the generated `Button` and `Badge`
+ *     (`data-variant={variant}`), so the hook survives a future `shadcn add`
+ *     re-emitting `text-primary`. Keying on the variant rather than on the
+ *     element type alone also means a new component with its own `link` variant
+ *     does not silently inherit this.
+ *   - UNLAYERED, deliberately. Tailwind emits utilities into `@layer utilities`,
+ *     and an unlayered declaration outranks every layer regardless of
+ *     specificity. Put this inside `@layer base` or `@layer components` and it
+ *     would lose to `.text-primary`.
+ *   - Specificity (0,2,0) also beats `.text-primary`'s (0,1,0), so the rule
+ *     survives regardless of declaration order.
+ *
+ * The generalised guard lives in tests/unit/design-tokens.test.ts: it reads
+ * every variant out of `components/ui/button.tsx` and `components/ui/badge.tsx`,
+ * computes the colour each one actually paints, and requires either AA contrast
+ * or a compensating rule keyed on that exact `data-slot` + `data-variant`. A
+ * future `shadcn add` shipping `variant="subtle": "text-primary"` fails the
+ * suite rather than shipping 2.93:1 text.
+ *
+ * If you add a compensating rule, the test also checks that the token it names
+ * clears AA itself — a compensating rule pointing at another inaccessible token
+ * is not a compensation.
+ */
+[data-slot="button"][data-variant="link"],
+[data-slot="badge"][data-variant="link"] {
+  color: var(--primary-ink);
+}
+
+/*
+ * Compensating rules for the DESTRUCTIVE variant in dark mode.
+ *
+ * A DIFFERENT SHAPE OF PROBLEM, and the reason the gate above had to learn to
+ * look at `background-color` as well as `color`.
+ *
+ * The generated destructive variant is `bg-destructive/10 text-destructive` with
+ * a `dark:bg-destructive/20` override. Text, surface and wash are all the same
+ * hue, so the surface moves WITH the text and the ratio barely depends on how
+ * light the text is. Measured in dark mode: 2.44:1 on the `/10` wash, 2.06:1 on
+ * the `/20` one. Sweeping the ink on its own hue confirms there is no text-side
+ * answer — at L 0.7 it is 2.06:1, and even at L 0.93, essentially white, it only
+ * reaches 3.35:1. A colour cannot clear AA against a tint of itself.
+ *
+ * The surface is therefore what changes: a solid `--destructive` fill under
+ * `--destructive-foreground`. That is the same shape the light-mode `default`
+ * Button already uses — a brand fill under a deep ink — and it is how a
+ * destructive control is expected to read: an unmistakable block, with a label
+ * that is unambiguous about it. It also lands on `ConfirmDialog`'s confirm
+ * button, which is the single most safety-critical piece of text in the app.
+ *
+ * Scoped to `.dark` deliberately. Light mode's tinted destructive already
+ * measures 6.06:1 on background and 5.54:1 on its own `/10` wash, so it is left
+ * looking tinted; only dark mode is rescued.
+ *
+ * Unlayered, for the same reason as the rule above: `@layer utilities` would
+ * outrank nothing here and be outranked by `dark:bg-destructive/20`.
+ */
+.dark [data-slot="button"][data-variant="destructive"],
+.dark [data-slot="badge"][data-variant="destructive"] {
+  background-color: var(--destructive);
+  color: var(--destructive-foreground);
+}
