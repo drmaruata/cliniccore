@@ -22,12 +22,10 @@ next-env.d.ts
 # typescript
 *.tsbuildinfo
 
-# env files — .env.example is committed on purpose
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+# env files — ignore EVERY variant, allow only the committed template.
+# Listing exact names (as create-next-app does) leaves .env.staging.local,
+# .env.production, .env.test and friends committable by accident.
+.env*
 !.env.example
 
 # misc

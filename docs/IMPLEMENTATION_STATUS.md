@@ -102,13 +102,67 @@ the TS 6 API").
 [typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940)
 ships, and re-run this measurement. Do not assume the fix; re-measure.
 
+### Why `exactOptionalPropertyTypes: false` is a deliberate exception
+
+Brief Step 2 requires this be documented as a deliberate exception rather than
+an oversight. It is the single flag left off from the strict family.
+
+With `exactOptionalPropertyTypes: true`, `{ prop?: T }` rejects an explicit
+`prop: undefined`. Almost every third-party prop type in this stack is written
+as `prop?: T` without that constraint in mind, so enabling it produces errors at
+component boundaries we do not control — shadcn/ui primitives, `@supabase/ssr`
+options, React's own children/signature types. The cost is a cast at each of
+those seams.
+
+The flag buys real safety, so this is a **revisit condition**, not a permanent
+ruling: if Task 2's shadcn pass shows a low cast count, or if a later task needs
+optional-property precision, turn it on and measure. What we accept today is that
+`{ prop: undefined }` is indistinguishable from `{ prop: missing }` at the type
+level. That is tolerable only because every optional prop in this codebase is
+rendered through `cn()` and guarded at the read site.
+
+The comment also lives inline in `tsconfig.json`, directly above the setting.
+(Note for future editors: TypeScript 6 accepts real `//` comments in
+`tsconfig.json`, but rejects a JSON _key_ named `"// something"` with
+`TS5023: Unknown compiler option`. Task 1 originally tried the key form and
+`tsc` rejected it.)
+
+### HARD OBLIGATION — `lib/supabase/server.ts` must start with `import "server-only"`
+
+Carried forward into whichever task creates the Supabase server client. This is
+the **primary** enforcement layer for the service-role boundary; the lint gate is
+the secondary one.
+
+- `server-only` fails at **bundle time**, inside React Server Component
+  boundaries. Nothing in the codebase can talk the bundler out of it.
+- The lint gate (`scripts/check-no-secrets.ts` rule 3) catches the mistake
+  earlier and in review, but it is a lexical scanner: it models the specifiers
+  it knows (`@/lib/supabase/…`, `lib/supabase/…`, relative `../lib/supabase/…`)
+  and cannot follow a re-export through an alias it does not recognise.
+
+Consequence for the Supabase task: **do not** treat a green
+`npm run check:secrets` as evidence that the boundary is sound. `server-only` is
+what makes it sound. `server-only` is already a dependency (`package.json`); as of
+this commit it is imported by nothing, and that is expected until the Supabase
+task lands.
+
 ### Files created
 
 `package.json`, `tsconfig.json`, `next.config.ts`, `postcss.config.mjs`,
-`eslint.config.mjs`, `.prettierrc`, `vitest.config.ts`, `playwright.config.ts`,
-`.gitignore`, `.env.example`, `lib/utils/cn.ts`, `scripts/check-no-secrets.ts`,
-`app/layout.tsx`, `app/globals.css`, `app/page.tsx`,
-`tests/unit/check-no-secrets.test.ts`, `tests/integration/placeholder.ts`.
+`eslint.config.mjs`, `.prettierrc`, `.prettierignore`, `vitest.config.ts`,
+`playwright.config.ts`, `.gitignore`, `.gitattributes`, `.env.example`,
+`lib/utils/cn.ts`, `scripts/check-no-secrets.ts`, `app/layout.tsx`,
+`app/globals.css`, `app/page.tsx`, `tests/unit/check-no-secrets.test.ts`,
+`tests/unit/cn.test.tsx`, `tests/integration/placeholder.ts`,
+`tests/e2e/placeholder.ts`.
+
+Five files are not in the brief's list; all are mechanical prerequisites, not
+design decisions: `postcss.config.mjs` (Tailwind v4 has no `tailwind.config.js`
+and must be loaded as a PostCSS plugin), `app/page.tsx` (Next.js 16 needs at
+least one route), `.prettierignore` (otherwise `format:check` reflows the
+authored planning documents under `docs/superpowers/`),
+`tests/integration/placeholder.ts` and `tests/e2e/placeholder.ts` (both script
+targets must exist before their tasks land).
 
 See `.superpowers/sdd/cliniccore-foundation/task-1-report.md` for the full
-report, including the reasoning behind the three files the brief did not list.
+report.

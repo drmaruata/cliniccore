@@ -33,8 +33,9 @@ const config = [
       "playwright-report/**",
       "test-results/**",
       "next-env.d.ts",
-      "vitest.config.ts",
-      "playwright.config.ts",
+      // NOTE: vitest.config.ts and playwright.config.ts are deliberately NOT
+      // ignored. tsconfig.json typechecks them, so lint must cover them too —
+      // otherwise the two gates disagree about what "the codebase" means.
     ],
   },
 ];

@@ -23,6 +23,12 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
+    // DELIBERATE EXCEPTION (brief Step 2). exactOptionalPropertyTypes is the one
+    // strict-family flag left off: it makes `{ prop?: T }` reject an explicit
+    // `prop: undefined`, which collides with the prop types shipped by
+    // React, shadcn/ui and Supabase SSR. Enabling it would mean casting at every
+    // third-party component boundary. Rationale and the revisit condition are in
+    // docs/IMPLEMENTATION_STATUS.md.
     "exactOptionalPropertyTypes": false,
     "paths": {
       "@/*": ["./*"]
