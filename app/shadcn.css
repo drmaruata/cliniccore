@@ -1,0 +1,33 @@
+/*
+ * shadcn custom variants, vendored from `shadcn/dist/tailwind.css`.
+ *
+ * ONLY the variants this project consumes. See the `@import "./shadcn.css"`
+ * comment in ../globals.css for why this is copied rather than imported.
+ *
+ * Provenance: `shadcn@4.21.4`, `dist/tailwind.css`, "Custom variants" section,
+ * verbatim. `data-checked`, `data-unchecked`, `data-selected`, `data-disabled`,
+ * `data-active`, `data-horizontal`, `data-vertical`, the accordion keyframes,
+ * `no-scrollbar`, and the `scroll-fade-*` / `shimmer-*` utility families are
+ * omitted because no file under app/ or components/ references them. Re-add one
+ * here if a component that needs it is added — the file is meant to grow.
+ */
+
+/*
+ * `data-open` matches BOTH the Radix convention (`data-state="open"`) and
+ * shadcn's newer attribute convention (`data-open`), and treats a literal
+ * `data-open="false"` as closed. `[a]:` is the project shorthand used
+ * throughout the generated components; it is defined in ../globals.css.
+ */
+@custom-variant data-open {
+  &:where([data-state="open"]),
+  &:where([data-open]:not([data-open="false"])) {
+    @slot;
+  }
+}
+
+@custom-variant data-closed {
+  &:where([data-state="closed"]),
+  &:where([data-closed]:not([data-closed="false"])) {
+    @slot;
+  }
+}

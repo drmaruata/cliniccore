@@ -9,8 +9,12 @@
  *
  * COLOUR. Each tone is a *filled* token pair, never a tinted background with a
  * raw brand colour on top: `--brand-success` measures 3.06:1 on white, so it
- * is only readable as the fill under `--success-foreground` (5.71:1), and the
- * same holds for `--brand-secondary` (3.67:1 as text) and the accents. Every
+ * is only readable as the fill under `--success-foreground` (5.71:1). The
+ * reasoning does NOT generalise to the other tones, which is worth spelling
+ * out because the naive version of it is wrong: `--brand-secondary` clears AA
+ * as text on its own at 4.93:1 on `--background`, so `info` could have been
+ * written as a tinted background with `--brand-secondary` text and been fine.
+ * `--brand-primary` at 2.93:1 and `--brand-neutral` at 1.84:1 could not. Every
  * pair this component can produce is asserted at AA or better in both modes by
  * tests/unit/design-tokens.test.ts, so a future palette change cannot quietly
  * make a pill unreadable.
@@ -44,11 +48,7 @@ export interface StatusBadgeProps extends Omit<React.ComponentProps<typeof Badge
 
 export function StatusBadge({ label, tone = "neutral", className, ...props }: StatusBadgeProps) {
   return (
-    <Badge
-      data-tone={tone}
-      className={cn(TONE_CLASSES[tone], className)}
-      {...props}
-    >
+    <Badge data-tone={tone} className={cn(TONE_CLASSES[tone], className)} {...props}>
       {label}
     </Badge>
   );

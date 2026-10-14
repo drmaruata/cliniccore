@@ -19,6 +19,36 @@
  * `onConfirm` may be async. While it is in flight the dialog stays open and
  * the confirm button is disabled, so a slow mutation cannot be double-submitted
  * and the user is not left staring at a dialog that closed on a failure.
+ *
+ * CONTRACT — WHO CLOSES THE DIALOG. This component never closes itself. The
+ * confirm button calls `event.preventDefault()` on every press, so neither
+ * `AlertDialogAction`'s own close-on-click nor `onOpenChange(false)` fires, and
+ * `open` stays exactly as the caller passed it. The caller MUST close the
+ * dialog from inside `onConfirm` once the mutation has succeeded:
+ *
+ * ```tsx
+ * const [open, setOpen] = useState(false);
+ * <ConfirmDialog
+ *   open={open}
+ *   onOpenChange={setOpen}
+ *   title="Delete Ada Okafor?"
+ *   description="This cannot be undone."
+ *   onConfirm={async () => {
+ *     await deletePatient(id);
+ *     setOpen(false); // <-- the caller closes it
+ *   }}
+ * />
+ * ```
+ *
+ * The reason is that the alternative is worse. Closing first and closing only
+ * on success are the same two lines of code here, but closing on failure would
+ * throw the error away: the user would see the dialog vanish and no indication
+ * that the patient still exists. Holding the dialog open until the caller says
+ * so means `onConfirm` rejecting is the single failure path, and that is the
+ * one this component reports.
+ *
+ * A caller that forgets `setOpen(false)` gets a dialog that never closes. That
+ * is a visible bug, not a silent one — which is the trade this contract makes.
  */
 import * as React from "react";
 
@@ -42,6 +72,14 @@ export interface ConfirmDialogProps {
   title: React.ReactNode;
   /** Required. What happens, and what cannot be undone. */
   description: React.ReactNode;
+  /**
+   * Required. What happens, and what cannot be undone.
+   *
+   * Runs on confirm. **This component does not close the dialog — call
+   * `onOpenChange(false)` yourself once the mutation has succeeded.** See the
+   * file header for the full contract. A rejection is caught and shown in the
+   * dialog; nothing propagates.
+   */
   onConfirm: () => void | Promise<void>;
   confirmLabel?: React.ReactNode;
   cancelLabel?: React.ReactNode;
@@ -61,6 +99,21 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+
+  /*
+   * Drop a stale failure when the dialog is reopened.
+   *
+   * `handleConfirm` clears `error` on the *next* press, which is too late: a
+   * dialog closed on failure and reopened for an unrelated action would greet
+   * the user with the previous action's error message still on screen. Clearing
+   * on the closed -> open edge is the only moment the old error is provably
+   * about something that is no longer happening.
+   */
+  const wasOpen = React.useRef(open);
+  React.useEffect(() => {
+    if (open && !wasOpen.current) setError(null);
+    wasOpen.current = open;
+  }, [open]);
 
   async function handleConfirm() {
     setPending(true);

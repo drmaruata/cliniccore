@@ -9,6 +9,13 @@ test-results
 package-lock.json
 next-env.d.ts
 
+# shadcn-generated components are kept byte-for-byte as the CLI emitted them.
+# Reformatting them would mean the diff against a fresh `shadcn add` is noise,
+# which defeats the point of tracking generated code in the repo at all. They
+# also ship in the CLI's no-semicolon style, which prettier rewrites wholesale.
+# The repo's own lint and test gates cover these files; only formatting does not.
+components/ui
+
 # Authored planning documents are prose, not source — do not reflow them.
 docs/superpowers
 .superpowers

@@ -4,11 +4,13 @@ import { Geist } from "next/font/google";
 import "./globals.css";
 
 /*
- * `--font-sans` is what `@theme inline` in app/globals.css points both
- * `font-sans` and `font-heading` at, so the Geist variable class on <html> is
- * what makes the type utilities resolve.
+ * `--font-geist-sans` is the name next/font emits. Tailwind's theme points
+ * `--font-sans` and `--font-heading` at it (see app/globals.css), so the two
+ * halves must agree on the name; naming it `--font-sans` here instead would
+ * make the theme reference itself, which resolves to nothing at computed-value
+ * time and silently drops every heading to the system font.
  */
-const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
+const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
   title: "ClinicCore",

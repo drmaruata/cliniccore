@@ -197,7 +197,8 @@ function hueOf(value: Oklch): number {
 export function hexToRgb(hex: string): Rgb {
   const body = hex.replace(/^#/, "");
   const wide = body.length <= 4 ? [...body].map((c) => c + c).join("") : body;
-  const read = (offset: number): number => Number.parseInt(wide.slice(offset, offset + 2), 16) / 255;
+  const read = (offset: number): number =>
+    Number.parseInt(wide.slice(offset, offset + 2), 16) / 255;
   return [read(0), read(2), read(4)];
 }
 
@@ -243,7 +244,8 @@ export function parseColor(value: string): Oklch | Rgb | null {
   if (oklch) {
     const raw = oklch[1] ?? "0";
     return {
-      L: (raw.endsWith("%") ? Number.parseFloat(raw) : Number.parseFloat(raw)) /
+      L:
+        (raw.endsWith("%") ? Number.parseFloat(raw) : Number.parseFloat(raw)) /
         (raw.endsWith("%") ? 100 : 1),
       C: Number.parseFloat(oklch[2] ?? "0"),
       H: Number.parseFloat(oklch[3] ?? "0"),
@@ -272,7 +274,8 @@ function luminance([r, g, b]: Rgb): number {
 
 /** WCAG 2.x contrast ratio between two already-resolved sRGB colours. */
 function contrast(a: Rgb, b: Rgb): number {
-  const [hi, lo] = luminance(a) > luminance(b) ? [luminance(a), luminance(b)] : [luminance(b), luminance(a)];
+  const [hi, lo] =
+    luminance(a) > luminance(b) ? [luminance(a), luminance(b)] : [luminance(b), luminance(a)];
   return (hi + 0.05) / (lo + 0.05);
 }
 
@@ -286,11 +289,16 @@ export function contrastOf(a: string, b: string): number {
  * indirection. Throws on anything it cannot resolve, so a malformed token
  * fails the test loudly instead of silently scoring a meaningless ratio.
  */
-export function resolveRgb(value: string, vars: Map<string, string>, seen: readonly string[] = []): Rgb {
+export function resolveRgb(
+  value: string,
+  vars: Map<string, string>,
+  seen: readonly string[] = [],
+): Rgb {
   const ref = /^var\(\s*(--[\w-]+)\s*\)$/.exec(value.trim());
   if (ref) {
     const name = ref[1] ?? "";
-    if (seen.includes(name)) throw new Error(`circular token reference: ${[...seen, name].join(" -> ")}`);
+    if (seen.includes(name))
+      throw new Error(`circular token reference: ${[...seen, name].join(" -> ")}`);
     const next = vars.get(name);
     if (next === undefined) throw new Error(`unknown token reference: ${name}`);
     return resolveRgb(next, vars, [...seen, name]);
@@ -308,7 +316,10 @@ function requireToken(vars: Map<string, string>, name: string): string {
 
 /** Contrast between two token names within one mode. */
 export function tokenContrast(vars: Map<string, string>, fg: string, bg: string): number {
-  return contrast(resolveRgb(requireToken(vars, fg), vars), resolveRgb(requireToken(vars, bg), vars));
+  return contrast(
+    resolveRgb(requireToken(vars, fg), vars),
+    resolveRgb(requireToken(vars, bg), vars),
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -343,6 +354,18 @@ export function findHexLiterals(css: string): string[] {
   return (remainder.match(HEX_LITERAL) ?? []).map((literal) => literal.toLowerCase());
 }
 
+/**
+ * Directories whose `.ts` / `.tsx` / `.css` files are product UI surface, i.e.
+ * where a hard-coded colour would be a defect.
+ *
+ * `lib/` is here because the gate's scope used to be `app/` and `components/`
+ * only, which meant a component placed under `lib/` — a natural home for a
+ * `lib/components/` or a shared feature primitive — was silently unscanned and
+ * the gate went quiet without failing. A gate that can be narrowed by moving a
+ * file is not a gate.
+ */
+const SCAN_ROOTS = ["app", "components", "lib"] as const;
+
 /** Source files that are product UI surface, i.e. where a hex would be a defect. */
 function uiSourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -352,6 +375,62 @@ function uiSourceFiles(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
+
+/** Every scanned file, as repo-relative POSIX paths. */
+function scannedUiFiles(): string[] {
+  return SCAN_ROOTS.flatMap((root) => uiSourceFiles(join(REPO_ROOT, root)))
+    .map((file) => file.slice(REPO_ROOT.length + 1).replace(/\\/g, "/"))
+    .sort();
+}
+
+function scannedUiSource(codeOnly = false): Array<readonly [string, string]> {
+  return scannedUiFiles()
+    .filter((file) => (codeOnly ? /\.(tsx?)$/.test(file) : true))
+    .map((file) => [file, join(REPO_ROOT, file)] as const);
+}
+
+/**
+ * Tailwind's built-in numeric palette.
+ *
+ * `--color-red-500` and friends are a complete, off-palette colour system that
+ * bypasses every token in `app/globals.css` while producing a green gate: the
+ * hex half of this rule cannot see them because there is no hex on the class
+ * name, and no token is consulted. `bg-red-500` in a component is exactly the
+ * "all colours come from tokens" violation the brief names, so it is gated.
+ *
+ * The list is deliberately the numeric families Tailwind ships. It does not
+ * include `black` / `white` / `transparent` / `current` — see
+ * `KNOWN_UTILITY_COLOUR_TOKENS` below for why those are handled separately.
+ */
+const TAILWIND_PALETTE_CLASS =
+  /-(?:red|blue|green|slate|gray|zinc|amber|orange|emerald|sky|indigo|violet|rose|purple|fuchsia|lime|teal|cyan)-[0-9]{2,3}\b/g;
+
+/**
+ * A colour function called with a literal argument.
+ *
+ * `oklch(0.6 0.2 30)` or `hsl(210 80% 40%)` in a component is the same
+ * violation as a hex, reached without the word `#`. `color-mix(` is NOT in
+ * this list: mixing two tokens (`bg-[color-mix(in_oklch,var(--secondary),…)]`,
+ * which `components/ui/button.tsx` ships) is still a token-derived colour and
+ * is the sanctioned way to derive one.
+ */
+const LITERAL_COLOUR_FUNCTION = /\b(?:oklch|oklab|lab|lch|rgba?|hsla?)\(/g;
+
+/**
+ * REMAINING GAP, recorded rather than pretended away.
+ *
+ * The palette regex above is anchored on the numeric suffix, because a bare
+ * `-(red|blue|…)-` prefix pattern would also flag `bg-white`, `border-border`
+ * and `bg-muted` — which are as much an off-palette colour as `bg-red-500`, but
+ * need their own allowlist-of-one decision. The consequence is that
+ * `bg-white`, `text-black`, `bg-transparent` and `bg-current` in a component are
+ * still uncaught by this gate.
+ *
+ * That is a real gap, not a rounding error: `--card` is white in light mode, so
+ * `bg-white` is the kind of thing a contributor reaches for. It needs its own
+ * rule plus a decision about which of `white` / `black` / `transparent` are
+ * legitimate, so it is left to the next task rather than half-solved here.
+ */
 
 /* ------------------------------------------------------------------ */
 /* Expectations                                                         */
@@ -398,10 +477,17 @@ const SUPPORTING = ["--secondary-foreground", "--card-foreground", "--popover-fo
 
 /**
  * Brand colour used AS TEXT rather than as a fill. A brand hue that clears AA
- * as a fill under its own ink does not clear AA as a label on a light surface,
- * so the two jobs need separate tokens.
+ * as a fill under its own ink does not clear AA as a label on a surface, so the
+ * two jobs need separate tokens.
+ *
+ * `--primary-ink` was missing from this list and the gate did not notice. The
+ * fill pair `["--primary", "--primary-foreground"]` passed comfortably, and
+ * nothing asserted `--primary` *as text* — where it measures 2.93:1 on
+ * background. `components/ui/button.tsx` and `components/ui/badge.tsx` both ship
+ * `link: "text-primary …"`, so `<Button variant="link">` was one call away from
+ * shipping unreadable text with a green gate.
  */
-const ON_SURFACE = ["--success-ink", "--destructive-ink"] as const;
+const ON_SURFACE = ["--success-ink", "--destructive-ink", "--primary-ink"] as const;
 
 const ALL_TOKENS = [...Object.keys(BRAND), ...SEMANTIC, ...SUPPORTING, ...ON_SURFACE];
 
@@ -426,13 +512,32 @@ const TEXT_PAIRS: ReadonlyArray<readonly [string, string]> = [
   ["--success-ink", "--background"],
   ["--destructive-ink", "--card"],
   ["--destructive-ink", "--background"],
+  ["--primary-ink", "--card"],
+  ["--primary-ink", "--background"],
+  // `--brand-secondary` clears AA as text on its own (4.93:1 on background), so
+  // an `info` label may use the brand colour directly rather than an ink. This
+  // is asserted rather than assumed because components/shared/status-badge.tsx
+  // documents exactly that, and a doc comment citing a contrast number that no
+  // test holds is how the 3.67:1 figure it used to cite survived review.
+  ["--brand-secondary", "--background"],
+  ["--brand-secondary", "--card"],
 ];
 
-/** Non-text UI, which WCAG 1.4.11 puts at 3:1. */
+/**
+ * Non-text UI, which WCAG 1.4.11 puts at 3:1.
+ *
+ * `--border` is here because it has two consumers with different claims, and
+ * only one of them was being honoured. As a table rule it really is decoration
+ * and 1.4.11 does not apply. As the `outline` Button variant's
+ * `border-border bg-background` edge, the border IS the component boundary,
+ * which is precisely the case 1.4.11 is about — and that one measured 1.84:1 on
+ * background in light mode, i.e. a button with no perceivable edge.
+ */
 const NON_TEXT_PAIRS: ReadonlyArray<readonly [string, string]> = [
   ["--input", "--background"],
   ["--ring", "--background"],
   ["--ring", "--card"],
+  ["--border", "--background"],
 ];
 
 const AA_TEXT = 4.5;
@@ -516,25 +621,34 @@ describe("palette provenance", () => {
   );
 
   it.each([
-    ["--brand-primary", "--brand-secondary", "--brand-destructive", "--brand-success", "--brand-navy"],
+    [
+      "--brand-primary",
+      "--brand-secondary",
+      "--brand-destructive",
+      "--brand-success",
+      "--brand-navy",
+    ],
     // ...and the one that moves the other way. #b5bdbb is already a light
     // grey; carrying it unchanged into dark mode would make every table rule
     // and card outline the loudest thing on the page.
     ["--brand-neutral"],
-  ])("re-lights every brand colour for dark mode rather than reusing the light value", (...names) => {
-    for (const name of names) {
-      const light = parseColor(requireToken(rootVars, name));
-      const dark = parseColor(requireToken(darkVars, name));
-      if (light === null || dark === null || !isOklch(light) || !isOklch(dark)) {
-        throw new Error(`${name} must be an oklch() literal`);
+  ])(
+    "re-lights every brand colour for dark mode rather than reusing the light value",
+    (...names) => {
+      for (const name of names) {
+        const light = parseColor(requireToken(rootVars, name));
+        const dark = parseColor(requireToken(darkVars, name));
+        if (light === null || dark === null || !isOklch(light) || !isOklch(dark)) {
+          throw new Error(`${name} must be an oklch() literal`);
+        }
+        if (name === "--brand-neutral") {
+          expect(dark.L, `${name} is unchanged in dark mode`).toBeLessThan(light.L);
+        } else {
+          expect(dark.L, `${name} is unchanged in dark mode`).toBeGreaterThan(light.L);
+        }
       }
-      if (name === "--brand-neutral") {
-        expect(dark.L, `${name} is unchanged in dark mode`).toBeLessThan(light.L);
-      } else {
-        expect(dark.L, `${name} is unchanged in dark mode`).toBeGreaterThan(light.L);
-      }
-    }
-  });
+    },
+  );
 });
 
 describe("contrast", () => {
@@ -561,6 +675,118 @@ describe("contrast", () => {
     expect(tokenContrast(rootVars, "--brand-neutral", "--background")).toBeLessThan(AA_TEXT);
     expect(tokenContrast(darkVars, "--brand-neutral", "--background")).toBeLessThan(AA_TEXT);
   });
+
+  it("keeps the brand primary out of body-text duty, which is what --primary-ink exists for", () => {
+    // The counterpart to the neutral assertion. `--brand-primary` clears AA as
+    // a FILL under `--primary-foreground` and fails AA badly as a label
+    // (2.93:1 light, 8.88:1 dark). These two assertions are what make the ink
+    // token mandatory rather than decorative: if a future palette change
+    // lightens the brand enough to pass as text, the ink becomes unnecessary
+    // and this test tells you so instead of leaving a redundant token behind.
+    expect(tokenContrast(rootVars, "--brand-primary", "--background")).toBeLessThan(AA_TEXT);
+    expect(tokenContrast(rootVars, "--brand-primary", "--card")).toBeLessThan(AA_TEXT);
+  });
+
+  it("keeps --border usable as a component boundary, not just as decoration", () => {
+    // WCAG 1.4.11 applies to the `outline` Button's edge, so `--border` has to
+    // clear 3:1 in BOTH modes. It used to be asserted nowhere at all and
+    // measured 1.84:1 in light mode. The card/muted pairs below are not gated —
+    // see the note in globals.css — but they are computed and printed here so a
+    // future change to the value cannot quietly regress them unnoticed.
+    const surfaces: ReadonlyArray<readonly [string, Map<string, string>]> = [
+      ["light", rootVars],
+      ["dark", darkVars],
+    ];
+    for (const [mode, vars] of surfaces) {
+      for (const surface of ["--background", "--card", "--muted"] as const) {
+        const ratio = tokenContrast(vars, "--border", surface);
+        const gated = surface === "--background";
+        const ok = gated ? ratio >= AA_NON_TEXT : ratio >= AA_NON_TEXT;
+        expect(
+          ok,
+          `--border on ${surface} in ${mode} mode is ${ratio.toFixed(2)}:1 (3:1 required${
+            gated ? "" : ", reported only"
+          })`,
+        ).toBe(true);
+      }
+    }
+  });
+});
+
+describe("the font actually resolves", () => {
+  /*
+   * M3. `--font-sans` used to be declared `var(--font-sans)` — a custom property
+   * referencing itself. Per spec that is invalid at computed-value time and
+   * resolves to the guaranteed-invalid value, so `font-family: var(--font-sans)`
+   * resolves to nothing and the element falls back to the system font.
+   *
+   * It LOOKED fine only because `next/font` emits its `--font-*` variable
+   * unlayered on the element, and an unlayered declaration outranks any
+   * `@layer`. Put the font into a layer, or let next/font change how it emits,
+   * and every heading reverts with no error anywhere.
+   *
+   * The fix is shadcn's own convention: next/font owns `--font-geist-sans` and
+   * Tailwind's theme points at it. These assertions pin all three links —
+   * next/font's declaration, the theme bridge, and the absence of a cycle — so
+   * renaming one end without the other fails here instead of silently.
+   */
+
+  const LAYOUT = readFileSync(join(REPO_ROOT, "app", "layout.tsx"), "utf8");
+  const themeVars = declarations(topLevelRuleFor(GLOBALS_CSS, "@theme inline")?.body ?? "");
+
+  /** Follows `var(--x)` references the way the browser does. Throws on a cycle. */
+  function resolveVarChain(start: string, vars: Map<string, string>): string[] {
+    const chain: string[] = [];
+    let current = start;
+    while (current !== undefined) {
+      if (chain.includes(current))
+        throw new Error(`circular reference: ${[...chain, current].join(" -> ")}`);
+      chain.push(current);
+      const next = /^var\(\s*(--[\w-]+)\s*\)$/.exec((vars.get(current) ?? "").trim())?.[1];
+      if (next === undefined) return chain;
+      current = next;
+    }
+    return chain;
+  }
+
+  it("no declaration in @theme inline references itself", () => {
+    // The general form of the defect, so the next token that tries it fails too.
+    const selfReferential = [...themeVars.entries()]
+      .filter(([name, value]) => value.trim() === `var(${name})`)
+      .map(([name]) => name);
+
+    expect(
+      selfReferential,
+      `self-referential custom properties: ${selfReferential.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it.each(["--font-sans", "--font-heading"])(
+    "%s resolves through --font-geist-sans, not itself",
+    (name) => {
+      expect(themeVars.get(name)).toBe("var(--font-geist-sans)");
+      // The browser's own algorithm, run over the declarations: follow the var()
+      // reference until it lands on a non-reference. A cycle throws.
+      expect(resolveVarChain(name, themeVars)).toEqual([name, "--font-geist-sans"]);
+    },
+  );
+
+  it("app/layout.tsx declares the custom property the theme points at", () => {
+    // The far end of the chain. If next/font's variable is renamed without the
+    // theme following, `--font-geist-sans` is simply never declared and every
+    // heading silently falls back — with both of the assertions above still
+    // green, because the theme's own text is unchanged.
+    expect(LAYOUT).toMatch(/variable:\s*["']--font-geist-sans["']/);
+    expect(LAYOUT).not.toMatch(/variable:\s*["']--font-sans["']/);
+    expect(LAYOUT).toMatch(/className=\{geist\.variable\}/);
+  });
+
+  it("the heading utility is actually used, so the chain has a consumer", () => {
+    // `--font-heading` existing is not the same as anything reaching for it.
+    expect(
+      readFileSync(join(REPO_ROOT, "components", "shared", "page-header.tsx"), "utf8"),
+    ).toContain("font-heading");
+  });
 });
 
 describe("no hard-coded colour outside the token blocks", () => {
@@ -569,12 +795,20 @@ describe("no hard-coded colour outside the token blocks", () => {
     expect(offenders, `hex literals in globals.css: ${offenders.join(", ")}`).toEqual([]);
   });
 
-  it.each(
-    [...uiSourceFiles(join(REPO_ROOT, "components")), ...uiSourceFiles(join(REPO_ROOT, "app"))].map(
-      (file) => [file.slice(REPO_ROOT.length + 1).replace(/\\/g, "/"), file] as const,
-    ),
-  )("%s contains no hex literal", (_label, file) => {
+  it.each(scannedUiSource())("%s contains no hex literal", (_label, file) => {
     expect(stripComments(readFileSync(file, "utf8")).match(HEX_LITERAL) ?? []).toEqual([]);
+  });
+
+  it.each(scannedUiSource(true))("%s uses no off-palette Tailwind colour class", (_label, file) => {
+    expect(stripComments(readFileSync(file, "utf8")).match(TAILWIND_PALETTE_CLASS) ?? []).toEqual(
+      [],
+    );
+  });
+
+  it.each(scannedUiSource(true))("%s calls no literal colour function", (_label, file) => {
+    expect(stripComments(readFileSync(file, "utf8")).match(LITERAL_COLOUR_FUNCTION) ?? []).toEqual(
+      [],
+    );
   });
 });
 
@@ -599,19 +833,21 @@ describe("the hex rule is not vacuous", () => {
   });
 
   it("reports a hex planted in a top-level @layer base rule", () => {
-    expect(findHexLiterals(`${withTokens}\n@layer base { body { background: #123456; } }`)).toEqual([
-      "#123456",
-    ]);
+    expect(findHexLiterals(`${withTokens}\n@layer base { body { background: #123456; } }`)).toEqual(
+      ["#123456"],
+    );
   });
 
   it("reports a hex in a top-level @theme bridge", () => {
-    expect(findHexLiterals(`${withTokens}\n@theme inline { --color-x: #05ab29; }`)).toEqual(["#05ab29"]);
+    expect(findHexLiterals(`${withTokens}\n@theme inline { --color-x: #05ab29; }`)).toEqual([
+      "#05ab29",
+    ]);
   });
 
   it("reports a hex in a :root nested inside @media — nesting is not a token block", () => {
-    expect(findHexLiterals(`${withTokens}\n@media (min-width: 40rem) { :root { --x: #abcdef; } }`)).toEqual([
-      "#abcdef",
-    ]);
+    expect(
+      findHexLiterals(`${withTokens}\n@media (min-width: 40rem) { :root { --x: #abcdef; } }`),
+    ).toEqual(["#abcdef"]);
   });
 
   it("reports a hex in a rule nested inside .dark", () => {
@@ -631,23 +867,65 @@ describe("the hex rule is not vacuous", () => {
    * matches the brief's constraint, "no component may hardcode a hex", and a
    * gate that passes because it walked zero files is not a gate.
    */
-  it("walks the component tree, so the per-file assertion has files to assert on", () => {
-    const files = [...uiSourceFiles(join(REPO_ROOT, "components")), ...uiSourceFiles(join(REPO_ROOT, "app"))];
+  it("walks the component tree, so the per-file assertions have files to assert on", () => {
+    const files = scannedUiFiles();
     expect(files.length).toBeGreaterThan(5);
-    expect(files.some((file) => file.endsWith("status-badge.tsx"))).toBe(true);
-    expect(files.some((file) => file.endsWith(join("app", "globals.css")))).toBe(true);
+    expect(files).toContain("components/shared/status-badge.tsx");
+    expect(files).toContain("app/globals.css");
+    // M7: `lib/` used to be outside the scan roots, so a component placed there
+    // was invisible to the gate. That the root is walked is now asserted rather
+    // than assumed.
+    expect(files).toContain("lib/utils/cn.ts");
   });
 
   it("flags a hex pasted into a component the same way it flags one in CSS", () => {
     // The per-file assertion is `stripComments(source).match(HEX_LITERAL)`, run
     // over each file's own contents. Reproduced here on synthetic source so a
     // future edit to `stripComments` or to HEX_LITERAL cannot quietly neuter
-    // the scan — in particular, a hex inside a component comment is fine (it is
-    // documentation) while a hex in the returned className is not.
+    // the scan.
+    //
+    // DELIBERATE LOOPHOLE: a hex inside a COMPONENT COMMENT is not reported,
+    // because `stripComments` runs first. That is intentional — a component
+    // comment is allowed to say "--brand-neutral is #b5bdbb", and globals.css
+    // depends on the same behaviour for its token provenance. The cost is that
+    // a colour could in principle be parked in a comment to evade the gate; the
+    // benefit is that the palette cannot be documented at the point of use.
+    // The loophole is stated here because a silent loophole is how a gate stops
+    // meaning anything.
     const flagged = (source: string): string[] => stripComments(source).match(HEX_LITERAL) ?? [];
     expect(flagged('<span className="bg-[#05ab29]">')).toEqual(["#05ab29"]);
     expect(flagged('const c = "#b5bdbb"; // brand neutral, see globals.css')).toEqual(["#b5bdbb"]);
     expect(flagged('/* --brand-neutral is #b5bdbb */\n<span className="bg-muted" />')).toEqual([]);
     expect(flagged('<span className="bg-muted text-foreground" />')).toEqual([]);
+  });
+
+  it("flags off-palette Tailwind classes and literal colour functions", () => {
+    // Negative controls for the two rules added after review. `bg-red-500` is
+    // the exact class tests/unit/cn.test.tsx uses, which is why the reviewer
+    // could name a violation this gate would have waved through.
+    const palette = (source: string): string[] =>
+      stripComments(source).match(TAILWIND_PALETTE_CLASS) ?? [];
+    expect(palette('<span className="bg-red-500" />')).toEqual(["-red-500"]);
+    expect(palette('<span className="border-slate-200 text-zinc-900" />')).toEqual([
+      "-slate-200",
+      "-zinc-900",
+    ]);
+    expect(palette('<span className="bg-primary text-brand-navy border-border" />')).toEqual([]);
+    expect(palette('<span className="bg-muted text-muted-foreground" />')).toEqual([]);
+    // A palette word inside an identifier must not match.
+    expect(palette('const redundancy = "blue-500";')).toEqual([]);
+
+    const fn = (source: string): string[] =>
+      stripComments(source).match(LITERAL_COLOUR_FUNCTION) ?? [];
+    expect(fn('style={{ color: "oklch(0.6 0.2 30)" }}')).toEqual(["oklch("]);
+    expect(fn('style={{ color: "hsl(210 80% 40%)" }}')).toEqual(["hsl("]);
+    // `color-mix` over two tokens is a token-derived colour, not a literal —
+    // components/ui/button.tsx ships exactly this and must stay legal.
+    expect(
+      fn(
+        '<Button className="hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)]" />',
+      ),
+    ).toEqual([]);
+    expect(fn('<span className="bg-primary text-primary-foreground" />')).toEqual([]);
   });
 });

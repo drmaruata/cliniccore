@@ -83,7 +83,9 @@ describe("PageHeader", () => {
 
   it("renders an actions slot only when actions are supplied", () => {
     const withoutActions = renderToStaticMarkup(<PageHeader title="Patients" />);
-    const withActions = renderToStaticMarkup(<PageHeader title="Patients" actions={<button>Add</button>} />);
+    const withActions = renderToStaticMarkup(
+      <PageHeader title="Patients" actions={<button>Add</button>} />,
+    );
 
     expect(withoutActions).not.toContain('data-slot="page-header-actions"');
     expect(withoutActions).not.toContain("sm:flex-row");
@@ -136,9 +138,13 @@ describe("StatusBadge", () => {
    * `[a]:hover:bg-primary/80` — a legitimate hover fill the generated Badge
    * ships — from being counted as a second unconditional background.
    */
-  function unconditionalColourClasses(html: string, prefix: "bg" | "text", suffix: string): string[] {
+  function unconditionalColourClasses(
+    html: string,
+    prefix: "bg" | "text",
+    suffix: string,
+  ): string[] {
     const tokens = (html.match(/class="[^"]*"/g) ?? []).flatMap((attr) =>
-      attr.slice("class=\"".length, -1).split(/\s+/),
+      attr.slice('class="'.length, -1).split(/\s+/),
     );
     const pattern = new RegExp(`^${prefix}-(${TONE_NAMES})${suffix}$`);
     return tokens.filter((token) => pattern.test(token));
@@ -230,7 +236,12 @@ describe("DataTable", () => {
 
   it("shows the empty state instead of a bare table when the query found nothing", () => {
     const html = renderToStaticMarkup(
-      <DataTable columns={COLUMNS} rows={[]} getRowKey={(row: Patient) => row.id} emptyTitle="No patients" />,
+      <DataTable
+        columns={COLUMNS}
+        rows={[]}
+        getRowKey={(row: Patient) => row.id}
+        emptyTitle="No patients"
+      />,
     );
     expect(html).toContain("No patients");
     expect(html).not.toContain("<table");
@@ -267,7 +278,7 @@ describe("Skeleton", () => {
   });
 
   it("clamps a negative count to zero rather than throwing", () => {
-    expect(renderToStaticMarkup(<SkeletonRows count={-1} />)).not.toContain("data-slot=\"skeleton\"");
+    expect(renderToStaticMarkup(<SkeletonRows count={-1} />)).not.toContain('data-slot="skeleton"');
   });
 });
 

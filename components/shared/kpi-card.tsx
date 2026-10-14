@@ -19,13 +19,7 @@
  */
 import type * as React from "react";
 
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils/cn";
 
 /** Direction is stated explicitly. `flat` is a real answer, not a missing one. */
@@ -57,14 +51,7 @@ export interface KpiCardProps extends React.ComponentProps<typeof Card> {
   delta?: KpiDelta;
 }
 
-export function KpiCard({
-  label,
-  value,
-  hint,
-  delta,
-  className,
-  ...props
-}: KpiCardProps) {
+export function KpiCard({ label, value, hint, delta, className, ...props }: KpiCardProps) {
   return (
     <Card className={cn("min-w-0", className)} {...props}>
       <CardHeader>

@@ -1,6 +1,27 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "shadcn/tailwind.css";
+/*
+ * Vendored, not imported from node_modules.
+ *
+ * `shadcn@latest init` originally wrote `@import "shadcn/tailwind.css"` here,
+ * which put a devDependency on the build-time CSS resolution path: Tailwind
+ * reads node_modules while it compiles, so any build that installs with
+ * `--omit=dev` (a self-hosted or Docker production build) could not resolve the
+ * import. Vercel installs devDependencies for its build phase, so the green
+ * local and Vercel builds never exercised that path.
+ *
+ * Only the two `@custom-variant` blocks the generated components actually
+ * reference are vendored, in ./shadcn.css. The rest of the upstream file
+ * (accordion keyframes, `no-scrollbar`, the `scroll-fade-*` and `shimmer-*`
+ * families) is unused here and is deliberately not copied.
+ *
+ * Do not "simplify" this back to the package import, and do not delete the
+ * variants: `components/ui/alert-dialog.tsx` drives its enter/exit animation
+ * from `data-open:` and `data-closed:`, and `components/shared/confirm-dialog.tsx`
+ * is built on that alert dialog. Losing these rules fails the build nowhere and
+ * shows up as a dialog that pops in with no animation.
+ */
+@import "./shadcn.css";
 
 /*
  * Dark mode is class-based, not media-based.
@@ -95,17 +116,41 @@
      "paid" label — so the on-surface variant is darkened until it clears AA
      (5.47:1 on card, 5.24:1 on background). Destructive already clears AA as
      text, so its ink IS the brand colour; the token exists anyway so no
-     caller has to know which of the two is which. */
+     caller has to know which of the two is which.
+
+     `--primary-ink` exists for the same reason and for the same defect: the
+     brand primary measures 2.93:1 on background and 3.06:1 on card, which fails
+     AA as text twice over. `components/ui/button.tsx` and `components/ui/badge.tsx`
+     both ship `link: "text-primary …"`, so the first feature to use
+     `<Button variant="link">` gets unreadable link text unless it asks for
+     `text-primary-ink`. L 0.5 is the same move as `--success-ink` above, on the
+     brand's own chroma and hue: 5.08:1 on background, 5.30:1 on card, 4.65:1 on
+     muted. */
   --success-ink: oklch(0.5 0.13 161.64);
   --destructive-ink: var(--brand-destructive);
+  --primary-ink: oklch(0.5 0.2049 144.41);
 
   /* --- low-chroma surfaces and focus ------------------------------------- */
   --muted: oklch(0.955 0.004 250);
   --muted-foreground: oklch(0.5 0.02 262);
   --accent: oklch(0.94 0.04 144.41);
   --accent-foreground: oklch(0.25 0.02 262);
-  /* Decorative only. A table rule has no information to convey on its own. */
-  --border: var(--brand-neutral);
+  /* Darkened off the brand neutral, exactly the move `--input` below makes, and
+     for exactly the reason `--input` makes it.
+
+     `--border` has two very different consumers and the older comment here
+     ("decorative only — a table rule has no information to convey on its own")
+     only covered the first:
+
+       - a table rule or a card edge, where it genuinely is decoration; and
+       - the `outline` Button variant, `border-border bg-background …`, where the
+         border IS the component boundary. WCAG 1.4.11 requires 3:1 for that.
+
+     Carrying the brand neutral straight through measured 1.84:1 on background,
+     so the outline button was a rectangle with no perceivable edge. L 0.62 keeps
+     the neutral hue recognisable and clears 3:1 on every light surface it can
+     land on: 3.47:1 on background, 3.62:1 on card, 3.18:1 on muted. */
+  --border: oklch(0.62 0.0093 179.53);
   /* A form control boundary DOES carry information, so it is darkened off the
      neutral until it clears the 3:1 of WCAG 1.4.11. It reads as the same
      family; it just has to be legible. */
@@ -178,13 +223,20 @@
      on-surface variants are the re-lightened brands unchanged. */
   --success-ink: var(--brand-success);
   --destructive-ink: var(--brand-destructive);
+  --primary-ink: var(--brand-primary);
 
   /* --- low-chroma surfaces and focus ------------------------------------- */
   --muted: oklch(0.28 0.012 262);
   --muted-foreground: oklch(0.74 0.015 255);
   --accent: oklch(0.33 0.04 144.41);
   --accent-foreground: oklch(0.97 0.005 250);
-  --border: var(--brand-neutral);
+  /* Re-lightened off the dark brand neutral, for the reason `--border` above is
+     darkened off the light one. The dark brand neutral measures 3.09:1 on
+     background — enough to pass the 3:1 of 1.4.11 there — but only 2.83:1 on
+     card and 2.44:1 on muted, so the same outline button drawn on either of
+     those still had no perceivable edge. L 0.58 clears 3:1 on all three:
+     4.33:1 on background, 3.96:1 on card, 3.42:1 on muted. */
+  --border: oklch(0.58 0.0093 179.53);
   --input: oklch(0.55 0.015 200);
   --ring: oklch(0.78 0.18 144.41);
 
@@ -217,8 +269,24 @@
  * is in force at run time.
  */
 @theme inline {
-  --font-heading: var(--font-sans);
-  --font-sans: var(--font-sans);
+  /*
+   * `--font-sans` used to be declared as `var(--font-sans)`, i.e. it pointed at
+   * itself. Tailwind emits that verbatim into `@layer theme { :root, :host { … } }`,
+   * and a self-referencing custom property is invalid at computed-value time —
+   * it resolves to the guaranteed-invalid value, so `var(--font-sans)` resolves
+   * to nothing and `font-family` falls back.
+   *
+   * It appeared to work only because `next/font` emits its `--font-*` variable
+   * UNLAYERED on the element, and an unlayered declaration outranks any
+   * `@layer`. Introduce a layer — or let next/font change how it emits — and
+   * every heading silently reverts to the system font with nothing failing.
+   *
+   * The fix is shadcn's own convention: next/font owns `--font-geist-sans`, and
+   * Tailwind's theme points at it. The two ends cannot collide, and the
+   * direction of the reference is always the same.
+   */
+  --font-sans: var(--font-geist-sans);
+  --font-heading: var(--font-geist-sans);
 
   --color-brand-primary: var(--brand-primary);
   --color-brand-secondary: var(--brand-secondary);
@@ -243,6 +311,7 @@
   --color-success-foreground: var(--success-foreground);
   --color-success-ink: var(--success-ink);
   --color-destructive-ink: var(--destructive-ink);
+  --color-primary-ink: var(--primary-ink);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
   --color-accent: var(--accent);

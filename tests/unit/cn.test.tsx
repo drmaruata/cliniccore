@@ -5,6 +5,9 @@
  *     `.tsx` test that vitest never matched — `npm test` reported success while
  *     silently skipping it. If this file stops running, the glob regressed.
  *  3. Pin this repo to ONE merge engine. See the single-engine test below.
+ *
+ * (Three, since the tripwire was added in review. The numbering was left alone
+ * deliberately — the "Two jobs" line is referenced from the Task 1 report.)
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -12,6 +15,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { cn } from "@/lib/utils/cn";
+import { stripComments } from "@/scripts/check-no-secrets";
 
 function Badge({ className, tone }: { className?: string; tone: "neutral" | "danger" }) {
   return (
@@ -59,8 +63,14 @@ describe("cn", () => {
  * rather than by the class. `tailwind-merge`, which `@/lib/utils/cn` wraps, has
  * no such gap.
  *
- * A later `shadcn add` re-emits that import and re-adds the dependency, and
- * nothing about it is a type error or a lint error. This is the tripwire.
+ * `components.json` sets `"aliases": { "utils": "@/lib/utils/cn" }`. That is NOT
+ * a defence and is deliberately not cited as one anywhere: the CLI emitted
+ * `from "cn"` in spite of it.
+ *
+ * A later `shadcn add` re-emits that import and re-adds the dependency. The
+ * import half is also covered by an `no-restricted-imports` rule in
+ * eslint.config.mjs, so it fails at lint time rather than here; the dependency
+ * half is only observable from this file, which is why it is asserted here.
  */
 describe("cn is the only merge engine", () => {
   function repoRoot(): string {
@@ -83,15 +93,73 @@ describe("cn is the only merge engine", () => {
     return out;
   }
 
+  /*
+   * Deliberately wider than `from "cn"`.
+   *
+   * The original pattern was exact-double-quote and would have missed every one
+   * of these: `from 'cn'`, `from "cn/index"`, `require("cn")`, and a bare
+   * side-effect `import "cn"`. Each resolves to the same npm package, so each
+   * reintroduces the same defect. The eslint rule covers the common shapes; this
+   * is the backstop that does not care about quote style or entry point.
+   */
+  const BARE_CN_IMPORT =
+    /(?:from\s*|import\s*|require\s*\(\s*)["']cn(?:\/[^"']*)?["']|\bimport\s+["']cn(?:\/[^"']*)?["']/g;
+
   it("no file under app/ or components/ imports cn from the bare 'cn' package", () => {
     const root = repoRoot();
     const offenders = [...sources(join(root, "app")), ...sources(join(root, "components"))]
-      .filter((file) => /from\s+"cn"/.test(readFileSync(file, "utf8")))
+      .filter((file) => {
+        BARE_CN_IMPORT.lastIndex = 0;
+        return BARE_CN_IMPORT.test(stripComments(readFileSync(file, "utf8")));
+      })
       .map((file) => file.slice(root.length + 1).replace(/\\/g, "/"));
 
     expect(
       offenders,
       `${offenders.join(", ")} import cn from the npm 'cn' package instead of @/lib/utils/cn`,
     ).toEqual([]);
+  });
+
+  it("the pattern this test uses would actually catch every spelling of the import", () => {
+    // Negative controls. A widened regex that never matches is the same as no
+    // regex at all.
+    const caught = [
+      'import { cn } from "cn"',
+      "import { cn } from 'cn'",
+      'import { cn } from "cn/index"',
+      'const { cn } = require("cn")',
+      'import "cn"',
+      'import { cn } from "cn/tables"',
+    ];
+    for (const source of caught) {
+      BARE_CN_IMPORT.lastIndex = 0;
+      expect(BARE_CN_IMPORT.test(source), source).toBe(true);
+    }
+
+    const allowed = [
+      'import { cn } from "@/lib/utils/cn"',
+      'import { clsx } from "clsx"',
+      'import { cva } from "class-variance-authority"',
+      // The word "cn" inside an identifier or a path must not match.
+      'import { config } from "./cn"',
+      'const cname = "cn"',
+    ];
+    for (const source of allowed) {
+      BARE_CN_IMPORT.lastIndex = 0;
+      expect(BARE_CN_IMPORT.test(source), source).toBe(false);
+    }
+  });
+
+  it("package.json does not depend on the npm 'cn' package", () => {
+    // The other half of the failure mode. Even if every import were repointed,
+    // a dependency entry left behind means the next `shadcn add` finds the
+    // package already resolvable and silently uses it.
+    const manifest = JSON.parse(readFileSync(join(repoRoot(), "package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+
+    expect(Object.keys(manifest.dependencies ?? {})).not.toContain("cn");
+    expect(Object.keys(manifest.devDependencies ?? {})).not.toContain("cn");
   });
 });
