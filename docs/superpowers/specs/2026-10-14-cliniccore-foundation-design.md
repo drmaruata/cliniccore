@@ -59,12 +59,13 @@ records by any route, including direct API calls.**
 | Subscription plans, entitlements, usage limits, tenant lifecycle | 8 | Razorpay sandbox integration lands here. |
 | Reports, exports, notifications | 9 | Needs real operational data to report on. |
 | Full marketing page set (features, pricing, security, legal, SEO) | 4 | Copy and design review needed. |
-| Razorpay API calls | 8 | Only the provider-agnostic seam is built now. |
+| Razorpay sandbox wiring (real API calls, HMAC webhook verification) | 8 | See §4.10. |
 
 ### 2.3 The one scope judgement worth defending
 
 The brief's scope for this phase does not mention a `patients` table. It is
-nonetheless included — **schema and RLS policy only, no UI**.
+nonetheless included — **schema and RLS policy only, no UI** — reviewed and
+confirmed.
 
 Rationale: tenant isolation cannot be meaningfully proven against membership and
 configuration tables alone. Those tables are small, structurally simple, and their
@@ -281,7 +282,27 @@ recalled:
   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (new Supabase key naming), with a fallback
   to the legacy anon key.
 
-Auth endpoints: signup, login, logout, email verification, password reset.
+Auth endpoints: signup, login, logout, password reset, and email verification.
+
+**Email confirmation is disabled in the Supabase project** (configured by the
+operator), so a new test user reaches the application without confirming an address.
+Consequences that must be honoured rather than assumed away:
+
+- Signup proceeds directly to organization onboarding. No "check your inbox"
+  interstitial, because none would ever fire.
+- The verify-email route must not be a dead page. It handles the already-signed-in
+  case gracefully and explains that confirmation is disabled for this environment.
+  It is **not** claimed as verified behaviour in this configuration.
+- Password reset still depends on Supabase's outbound email. If no custom SMTP is
+  configured, delivery falls back to Supabase's built-in service, which is heavily
+  rate-limited on the free tier. Reset is therefore **implemented but unverified**
+  until demonstrated, and recorded as such.
+
+**Production blocker.** Disabling email confirmation is acceptable for a test
+environment and is not acceptable for production: it removes the control that stops
+unverified or throwaway accounts from registering. Re-enabling it is a mandatory
+pre-launch step, recorded in `docs/DEPLOYMENT.md` and `docs/IMPLEMENTATION_STATUS.md`.
+
 OAuth is wired structurally but stays inert and **unclaimed as functional** until a
 provider is configured.
 
@@ -302,6 +323,43 @@ ever public.
 `bigint` minor units (paise for INR). No floating-point arithmetic anywhere in the
 financial path. Foundation-level type and helper only this phase; the invoicing
 engine is Phase 7.
+
+### 4.10 Payment provider: seam now, sandbox in Phase 8
+
+Two distinct things, easily confused:
+
+- **Provider seam** — a `PaymentProvider` interface (createCheckout, verifyWebhook,
+  refund) plus an unconfigured stub that throws on every call. No HTTP request ever
+  leaves the server. Subscription state logic is written and unit-tested against a
+  fake. Swapping providers later is a one-file change. Nothing about billing can be
+  claimed as functional.
+- **Sandbox wiring** — that same interface implemented against Razorpay's real test
+  servers using `rzp_test_…` keys, with HMAC webhook signature verification,
+  idempotency-key storage against replayed deliveries, and test cards driving the
+  full flow.
+
+This increment builds **the seam only**.
+
+The argument against pulling sandbox wiring forward is sequencing, not effort.
+Working sandbox billing requires `subscription_plans`, `organization_subscriptions`
+and `subscription_usage` to exist, plus the entitlement checks gating them and the
+tenant-lifecycle policy for lapsed subscriptions. Building that chain now would ship
+subscription lifecycle and entitlement enforcement *ahead of* the clinical
+foundation behind them — and Phases 5 and 6 will stress the tenancy model, which
+would force the entitlement layer to be reworked afterwards.
+
+There is a second, quieter reason. Webhook verification is security-sensitive code
+that deserves its own focused pass with adversarial tests: forged signature, replayed
+delivery, out-of-order event, duplicate idempotency key. Bundling it into the same
+batch as the RLS policies would reduce the scrutiny applied to exactly the code where
+a subtle bug silently grants free access.
+
+Two honest consequences:
+
+- With only a seam, onboarding **must not** present a payment step. Where the chosen
+  plan supports a trial, onboarding continues straight to clinic setup.
+- Razorpay cannot be verified in either form until test keys are supplied. Until
+  then it is recorded as **BLOCKED**, never as complete.
 
 ## 5. Schema outline (Phase 3)
 
@@ -402,16 +460,30 @@ Asserted for every tenant-owned table:
 ### 8.3 Mutation verification — the rule that makes the suite mean something
 
 A green suite can pass for the wrong reason. Every isolation test must therefore be
-shown capable of failing:
+shown capable of failing, through a strictly ordered loop:
 
-> For each policy under test, temporarily drop it, re-run the corresponding test,
-> **assert the test fails**, then restore the policy and assert the test passes
-> again.
+1. Apply the mutation (drop the policy, narrow the constraint).
+2. **Verify the mutation actually applied** by querying the catalogue. A silently
+   failed mutation is indistinguishable from a passing test and is the single most
+   dangerous outcome of this procedure.
+3. Run the corresponding test; assert it **fails**.
+4. Restore, and assert it passes again.
+
+Three failure modes this ordering exists to prevent, all encountered previously:
+
+- Reverting before the test runs, so the assertion checks the unmutated system and
+  passes for free.
+- The mutation silently failing to apply, so a green result is read as "the test
+  cannot catch this" when the truth is "the mutation never happened".
+- A mutation that applies but the test still passes because the test cannot actually
+  reach the mutated path — typically because it exercises one tenant twice, where a
+  *global* constraint would also reject the legitimate case.
 
 A test that has not been demonstrated to fail is not evidence of anything and will
-not be reported as passing. Mutation is applied to the **migrations**, not to
-runtime code — mutating application code proves nothing when the schema is the thing
-under test.
+not be reported as passing.
+
+Mutation is applied to the **migrations**, not to runtime code — mutating application
+code proves nothing when the schema is the thing under test.
 
 Related discipline carried over from earlier work: uniqueness tests must assert both
 the *rejection* case and the *legitimate cross-tenant* case. A test that creates a
@@ -445,8 +517,10 @@ tasks. It is updated per batch, not written once at the end.
 | RLS policy recursion (`42P17`) | All queries fail for affected roles | All cross-table checks go through `private` security-definer helpers owned by `postgres` |
 | Test suite passes for the wrong reason | False security confidence | §8.3 mutation verification is mandatory |
 | Service-role key leaking to the browser | Full database compromise | Server-only module, no `NEXT_PUBLIC_` prefix, CI grep gate |
-| Email verification needs SMTP the project lacks | Signup blocked | Confirm project auth settings before onboarding is claimed complete |
+| Email verification needs SMTP the project lacks | Signup blocked | Confirmation is disabled for this environment; password reset remains dependent on Supabase's rate-limited built-in email and is marked unverified until demonstrated |
+| Razorpay unavailable | Billing cannot be verified | Seam only this increment; recorded BLOCKED pending test keys (§4.10) |
 | Marketing copy implies certifications or integrations | Unsupported claims | No such claims; testimonials omitted rather than fabricated |
+| Email confirmation left disabled into production | Unverified-account abuse | Recorded as a mandatory pre-launch re-enable step (§4.7, `docs/DEPLOYMENT.md`) |
 
 ## 11. Acceptance criteria
 
@@ -455,9 +529,11 @@ This increment is done when **all** of the following hold:
 1. `tsc --noEmit`, ESLint, Vitest and `next build` all pass on a clean run.
 2. Migrations apply from zero against a clean database via Composio, verified by
    querying the catalogue.
-3. Signup → email verification → organization creation → clinic creation → owner
-   membership completes end to end.
-4. Login, logout, password reset, and protected-route redirect work.
+3. Signup → organization creation → clinic creation → owner membership completes
+   end to end, with no email-confirmation interstitial.
+4. Login, logout, password reset, and protected-route redirect work. Password reset
+   is reported as verified only if a reset message is demonstrably delivered;
+   otherwise it is recorded as implemented-but-unverified.
 5. A user belonging to two organizations can switch between them, and only to those.
 6. All eight isolation assertions in §8.2 pass **and** each has been
    mutation-verified per §8.3.
