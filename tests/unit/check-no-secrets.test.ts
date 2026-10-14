@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -11,6 +12,8 @@ import {
   findViolations,
   isAllowedServiceRolePath,
   isClientFile,
+  isScannableFileName,
+  isSourceFilePath,
   normalizePath,
   resolveImportSpecifier,
   resolvesIntoServerModule,
@@ -30,9 +33,17 @@ const tempRoots: string[] = [];
  * every test file for the life of the project — and test fixtures are precisely
  * where real payloads get pasted in by accident.
  *
- * So the secret-shaped strings below are assembled at runtime. The literal
- * never appears in any tracked file, which is also what lets the
- * "is clean against the real repository tree" test below stay meaningful.
+ * So the credential-shaped strings below are assembled at runtime. Specifically:
+ * `FAKE_SECRET_KEY`, `FAKE_JWT` and everything derived from them exist in no
+ * tracked file as literals — that is what lets the "is clean against the real
+ * repository tree" test below stay meaningful.
+ *
+ * This is NOT a claim about every secret-shaped string in the tree. The inert
+ * placeholder `sb_secret_replace_me` does appear verbatim in tracked files —
+ * `.env.example`, `scripts/check-no-secrets.ts`, this file, and the plan
+ * document. It is a marker, not a credential, and it is what
+ * `PLACEHOLDER_ALLOWLIST` exists to permit.
+ *
  * If you add a new rule-4 case, build the literal this way too.
  *
  * Asserted by: "flags a hard-coded secret inside tests/ — no exemption".
@@ -445,5 +456,184 @@ describe("run(): filesystem walk", () => {
       "lib/ok.ts": "export const ok = 1;",
     });
     expect(violations).toHaveLength(2);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Walk scope — .env* dot-files and .sql migrations                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A realistic-but-inert `.env.example`, shaped like the tracked template: a
+ * comment header, an empty anon key, and the `replace_me` service-role marker.
+ * `serviceRoleValue` is swapped for a runtime-built key by the tests that need
+ * to prove the gate actually fails.
+ */
+function envExample(serviceRoleValue: string): string {
+  return [
+    "# ClinicCore environment template.",
+    "",
+    "NEXT_PUBLIC_SUPABASE_URL=https://your-project-ref.supabase.co",
+    "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_replace_me",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY=",
+    "",
+    "# SERVER ONLY. Never prefix with NEXT_PUBLIC_.",
+    `SUPABASE_SERVICE_ROLE_KEY=${serviceRoleValue}`,
+    "",
+    "SUPABASE_PROJECT_REF=replace_me",
+    "",
+  ].join("\n");
+}
+
+describe("walk scope: .env* files and .sql migrations", () => {
+  it("flags a credential pasted into .env.example — the file the old walk skipped", () => {
+    // The incident this exists for: a real service-role key in the tracked
+    // template produced ZERO violations, because collectFiles dropped every
+    // dot-prefixed entry. `.env.example` is a tracked file, so it must be read.
+    const violations = runOnTempTree({
+      ".env.example": envExample(FAKE_SECRET_KEY),
+      "app/page.tsx": "export default function Page() { return null; }",
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain(".env.example");
+    expect(violations[0]).toContain("Supabase secret key");
+  });
+
+  it("flags a hard-coded JWT pasted into .env.example", () => {
+    const violations = runOnTempTree({
+      ".env.example": `NEXT_PUBLIC_SUPABASE_ANON_KEY=${FAKE_JWT}\n`,
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("hard-coded JWT");
+  });
+
+  it("keeps .env.example green because its values are inert, not because it is exempt", () => {
+    // Same file, same walk, no exemption — only the value differs. An empty
+    // anon key and the replace_me marker match no rule-4 pattern.
+    expect(runOnTempTree({ ".env.example": envExample("sb_secret_replace_me") })).toEqual([]);
+  });
+
+  it("flags a credential pasted into a .sql migration", () => {
+    const violations = runOnTempTree({
+      "supabase/migrations/20261014000000_init.sql":
+        "-- bootstrap\ninsert into app_settings (name, value)\n" +
+        `values ('service_role', '${FAKE_SECRET_KEY}');\n`,
+      "app/page.tsx": "export default function Page() { return null; }",
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("supabase/migrations/20261014000000_init.sql");
+    expect(violations[0]).toContain("Supabase secret key");
+  });
+
+  it("does not apply the code rules to .env or .sql files", () => {
+    expect(isSourceFilePath(".env.example")).toBe(false);
+    expect(isSourceFilePath("supabase/migrations/20261014000000_init.sql")).toBe(false);
+    expect(isSourceFilePath("app/page.tsx")).toBe(true);
+    // Naming the env var is what an env template and a migration comment are
+    // FOR. Rule 4 is the rule that catches a pasted key, and it still runs.
+    expect(check([[".env.example", "SUPABASE_SERVICE_ROLE_KEY=sb_secret_replace_me\n"]])).toBe(
+      true,
+    );
+    expect(
+      check([
+        [
+          "supabase/migrations/20261014000000_init.sql",
+          "-- SUPABASE_SERVICE_ROLE_KEY is injected by the platform, never stored.\ncreate table t (id int);\n",
+        ],
+      ]),
+    ).toBe(true);
+  });
+
+  it("rule 4 still fires on an env assignment line — only rules 1-3 are skipped", () => {
+    const violations = findViolations({
+      path: ".env.example",
+      contents: `SUPABASE_SERVICE_ROLE_KEY=${FAKE_SECRET_KEY}\nNEXT_PUBLIC_SUPABASE_ANON_KEY=\n`,
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.reason).toContain("Supabase secret key");
+  });
+
+  it("skips the gitignored .env* variants, which cannot be committed", () => {
+    // Deliberate, and the reason is threat model rather than convenience: this
+    // repo's .gitignore is `.env*` + `!.env.example`, so these files cannot be
+    // committed without `git add -f`. They are also where real credentials are
+    // SUPPOSED to live — scanning them would make the gate permanently red in
+    // every correct checkout. Verified against git by the test below.
+    const violations = runOnTempTree({
+      ".env.local": envExample(FAKE_SECRET_KEY),
+      ".env.production": envExample(FAKE_SECRET_KEY),
+      ".env.test": envExample(FAKE_SECRET_KEY),
+      "app/page.tsx": "export default function Page() { return null; }",
+    });
+    expect(violations).toEqual([]);
+    // and the walk still reads the one env file that IS tracked
+    expect(
+      runOnTempTree({
+        ".env.local": envExample(FAKE_SECRET_KEY),
+        ".env.example": envExample(FAKE_SECRET_KEY),
+      }),
+    ).toHaveLength(1);
+  });
+
+  it("still ignores other dot-files and other extensions", () => {
+    expect(isScannableFileName(".env.example")).toBe(true);
+    expect(isScannableFileName(".env.local")).toBe(false);
+    expect(isScannableFileName(".env.production")).toBe(false);
+    expect(isScannableFileName(".git")).toBe(false);
+    expect(isScannableFileName("app/page.tsx")).toBe(true);
+    expect(isScannableFileName("supabase/migrations/0001_init.sql")).toBe(true);
+    // explicitly NOT widened: prose and data files carry illustrative
+    // credentials in this repo and would be permanent false positives.
+    expect(isScannableFileName("docs/superpowers/plans/2026-10-14-cliniccore-foundation.md")).toBe(
+      false,
+    );
+    expect(isScannableFileName("package.json")).toBe(false);
+    expect(isScannableFileName("tsconfig.json")).toBe(false);
+    expect(isScannableFileName(".github/workflows/ci.yml")).toBe(false);
+  });
+});
+
+/** Env-file names used to cross-check the walk exclusion against real git. */
+const GIT_PROBE_ENV_FILES = [
+  ".env.local",
+  ".env.production",
+  ".env.staging.local",
+  ".env.development",
+  ".env.test",
+  ".envrc",
+  ".env.example",
+];
+
+function gitAvailable(): boolean {
+  try {
+    execFileSync("git", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+describe.skipIf(!gitAvailable())("the .env* walk exclusion matches real git behaviour", () => {
+  it("reads every env file git ignores and skips every one git does not", () => {
+    const stdout = execFileSync("git", ["check-ignore", "--stdin"], {
+      cwd: process.cwd(),
+      input: GIT_PROBE_ENV_FILES.join("\n") + "\n",
+      encoding: "utf8",
+    });
+    const ignored = new Set(stdout.split(/\r?\n/).filter(Boolean));
+
+    for (const name of GIT_PROBE_ENV_FILES) {
+      // If git ignores it, it cannot be committed, so the walk must skip it.
+      // If git tracks it, the walk must read it. Any divergence between the
+      // constant in scripts/check-no-secrets.ts and the real .gitignore shows
+      // up here as a failing assertion instead of a silently blind gate.
+      expect(isScannableFileName(name)).toBe(!ignored.has(name));
+    }
+
+    // Spelled out so the intent survives a future edit that makes the loop vacuous.
+    expect(ignored.has(".env.local")).toBe(true);
+    expect(ignored.has(".env.production")).toBe(true);
+    expect(ignored.has(".env.example")).toBe(false);
+    expect(isScannableFileName(".env.example")).toBe(true);
   });
 });

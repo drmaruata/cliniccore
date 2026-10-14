@@ -19,12 +19,19 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *          Such a file names neither the env var nor a secret literal, so
  *          rules 1, 2 and 4 cannot see it. Resolution handles `@/lib/supabase/…`,
  *          `lib/supabase/…` and relative `../lib/supabase/…` specifiers.
- * Rule 4 — no source file may contain a literal Supabase secret key
+ * Rule 4 — no scanned file may contain a literal Supabase secret key
  *          (`sb_secret_...`) or a hard-coded JWT (`eyJ...`), subject only to the
  *          placeholder allowlist. There is NO path-based exemption: rule 4 is
  *          the only rule that catches a hard-coded credential, so it applies
  *          everywhere, `tests/` included. Fixtures that need a secret-shaped
  *          literal construct it at runtime rather than embedding it.
+ *
+ * WHAT IS SCANNED. Source files, `.sql` files, and the tracked env template.
+ * Rules 1–3 are *code* rules and apply only to source files; an env file or a
+ * migration legitimately names `SUPABASE_SERVICE_ROLE_KEY` in a comment or an
+ * assignment, so flagging that would be a false positive on the template. Rule
+ * 4 applies to every scanned file — that is the rule that catches a pasted
+ * key, and `.env.example` is scanned like anything else.
  *
  * ENFORCEMENT LAYERS. `lib/supabase/server.ts` MUST begin with
  * `import "server-only"`; that is the PRIMARY defence, because it fails at
@@ -55,6 +62,43 @@ const SERVER_MODULE_PREFIX = "lib/supabase/";
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"];
 
 /**
+ * Extensions scanned for a hard-coded credential (rule 4). Superset of
+ * `SOURCE_EXTENSIONS`: a Postgres migration is just as capable of carrying a
+ * pasted key as a TypeScript file, and the walk used to be blind to it.
+ *
+ * `.md`, `.json`, `.yml` and friends are deliberately NOT here. The plan
+ * document under `docs/superpowers/plans/` carries illustrative credentials
+ * (`postgres://user:hunter2@`, `sb_secret_replace_me`) that are part of its
+ * prose, so widening the walk to prose or data files would make those permanent
+ * false positives and train people to ignore the gate. `.env*` is handled
+ * separately, by name, because it is both the highest-value target and the one
+ * case where a blanket rule would be wrong.
+ */
+const CREDENTIAL_SCAN_EXTENSIONS = [...SOURCE_EXTENSIONS, ".sql"];
+
+/**
+ * The `.env*` files that are walked.
+ *
+ * `.gitignore` is `.env*` with `!.env.example`, so `.env.example` is the only
+ * env file that can reach version control — and therefore the only one whose
+ * contents are a leak risk. It is scanned like any other file; a real key
+ * pasted into it fails the gate.
+ *
+ * The other `.env*` names are skipped because they are gitignored *by this
+ * repo's own policy*: they cannot be committed without `git add -f`, and the
+ * gate's entire threat model is a committed leak. They also hold real
+ * developer credentials by design — `.env.local` is the file you are told to
+ * put the service-role key in — so scanning them would make `check:secrets`
+ * permanently red in every correctly configured checkout. A gate people have
+ * to disable is not a gate, and that is worse than the gap it closes.
+ *
+ * The exclusion is verified against the real `.gitignore` by the unit test
+ * "the .env* walk exclusion matches what git actually ignores"; if the two ever
+ * diverge, that test fails rather than the gate quietly going blind.
+ */
+const TRACKED_ENV_FILES = [".env.example"];
+
+/**
  * Directory names never walked. The walk starts at the repo root so that
  * root-level sources — notably `middleware.ts`, which Next.js runs on every
  * request and which Supabase SSR session refresh requires — are covered.
@@ -83,8 +127,19 @@ const SECRET_LITERAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
 ];
 
 /**
- * Doc/test placeholders that are safe to mention in source without tripping the
- * gate — e.g. the literal `sb_secret_replace_me` used in `.env.example`.
+ * Doc/test placeholders that are safe to mention in a scanned file without
+ * tripping rule 4.
+ *
+ * The justification is the literal in `tests/unit/check-no-secrets.test.ts`,
+ * NOT `.env.example` (which this comment previously cited). The allowlist has to
+ * be exercised against a literal string, so the test file keeps
+ * `sb_secret_replace_me` verbatim; emptying this list fails that test and the
+ * "is clean against the real repository tree" test, because the literal sits in
+ * a file the walk reads.
+ *
+ * `.env.example` is scanned too, but it does not motivate this list: its only
+ * secret-shaped value is the same inert placeholder, and it is allowed for that
+ * reason rather than exempted. `replace_me` is a marker, not a credential.
  */
 const PLACEHOLDER_ALLOWLIST = [/replace_me/];
 
@@ -234,6 +289,22 @@ export function isClientFile(contents: string): boolean {
   return /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*\s*(?:"use client"|'use client')/.test(contents);
 }
 
+/**
+ * True when `path` is a source file, i.e. one the code-shaped rules 1–3 apply
+ * to. Data and config files that the walk reads for rule 4 — `.env*` and `.sql`
+ * — return false, because naming `SUPABASE_SERVICE_ROLE_KEY` in an env
+ * assignment or in a `--` SQL comment is how those files are *supposed* to look.
+ * Flagging it would be a false positive, and on `.env.example` a permanent one.
+ *
+ * Known limitation: adding a new non-source extension to
+ * `CREDENTIAL_SCAN_EXTENSIONS` silently opts it out of rules 1–3. Intentional —
+ * those rules are about TypeScript/JavaScript shapes — but worth remembering.
+ */
+export function isSourceFilePath(path: string): boolean {
+  const base = toPosix(path).split("/").pop() ?? "";
+  return SOURCE_EXTENSIONS.some((ext) => base.endsWith(ext));
+}
+
 /** True when `path` is permitted to reference the service role key. */
 export function isAllowedServiceRolePath(path: string): boolean {
   const normalized = normalizePath(path);
@@ -251,26 +322,32 @@ export function findViolations(file: SecretCheckInput): SecretViolation[] {
   const client = isClientFile(file.contents);
   const code = stripComments(file.contents);
 
-  if (code.includes(SERVICE_ROLE_ENV)) {
-    if (client) {
-      violations.push({
-        path: file.path,
-        reason: `"use client" file references ${SERVICE_ROLE_ENV} — the service role key can never reach the browser`,
-      });
-    } else if (!isAllowedServiceRolePath(file.path)) {
-      violations.push({
-        path: file.path,
-        reason: `${SERVICE_ROLE_ENV} is only readable in ${ALLOWED_SERVICE_ROLE_FILES.join(", ")} or ${ALLOWED_SERVICE_ROLE_PREFIXES.join(", ")}`,
-      });
+  // Rules 1–3 read code. `.env*` and `.sql` files are walked for rule 4 only:
+  // an env template has to name SUPABASE_SERVICE_ROLE_KEY on its assignment
+  // line, and a migration may name it in a `--` comment, so applying the code
+  // rules to them would fail on correct files rather than on leaks.
+  if (isSourceFilePath(file.path)) {
+    if (code.includes(SERVICE_ROLE_ENV)) {
+      if (client) {
+        violations.push({
+          path: file.path,
+          reason: `"use client" file references ${SERVICE_ROLE_ENV} — the service role key can never reach the browser`,
+        });
+      } else if (!isAllowedServiceRolePath(file.path)) {
+        violations.push({
+          path: file.path,
+          reason: `${SERVICE_ROLE_ENV} is only readable in ${ALLOWED_SERVICE_ROLE_FILES.join(", ")} or ${ALLOWED_SERVICE_ROLE_PREFIXES.join(", ")}`,
+        });
+      }
     }
-  }
 
-  if (client) {
-    for (const specifier of findServerModuleImports(file)) {
-      violations.push({
-        path: file.path,
-        reason: `"use client" file imports ${specifier} — ${SERVER_MODULE_PREFIX}* is server-only (see the server-only / rule 3 note in scripts/check-no-secrets.ts)`,
-      });
+    if (client) {
+      for (const specifier of findServerModuleImports(file)) {
+        violations.push({
+          path: file.path,
+          reason: `"use client" file imports ${specifier} — ${SERVER_MODULE_PREFIX}* is server-only (see the server-only / rule 3 note in scripts/check-no-secrets.ts)`,
+        });
+      }
     }
   }
 
@@ -308,6 +385,20 @@ export function check(files: readonly SecretCheckEntry[]): boolean {
 /* CLI                                                                 */
 /* ------------------------------------------------------------------ */
 
+/**
+ * True when a file with this basename should be read by the walk.
+ *
+ * Dot-files used to be skipped wholesale, which meant the gate could not see
+ * `.env.example` at all: a real service-role key pasted there produced zero
+ * violations and `check:secrets` exited 0. `.env*` is now walked, and `.sql`
+ * joined the credential-scanned extensions.
+ */
+export function isScannableFileName(entry: string): boolean {
+  if (entry.startsWith(".env")) return TRACKED_ENV_FILES.includes(entry);
+  if (entry.startsWith(".")) return false;
+  return CREDENTIAL_SCAN_EXTENSIONS.some((ext) => entry.endsWith(ext));
+}
+
 function collectFiles(root: string, out: string[] = []): string[] {
   let entries: string[];
   try {
@@ -316,12 +407,13 @@ function collectFiles(root: string, out: string[] = []): string[] {
     return out;
   }
   for (const entry of entries) {
-    if (IGNORED_DIRECTORIES.has(entry) || entry.startsWith(".")) continue;
+    if (IGNORED_DIRECTORIES.has(entry)) continue;
     const full = join(root, entry);
     const stats = statSync(full);
     if (stats.isDirectory()) {
+      if (entry.startsWith(".")) continue;
       collectFiles(full, out);
-    } else if (SOURCE_EXTENSIONS.some((ext) => entry.endsWith(ext))) {
+    } else if (isScannableFileName(entry)) {
       out.push(full);
     }
   }
