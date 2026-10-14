@@ -1,7 +1,290 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
 /*
- * Design tokens (colour, type scale, spacing) are owned by Task 2.
- * Task 1 deliberately ships no tokens beyond the Tailwind defaults so that the
- * token decision has a single home.
+ * Dark mode is class-based, not media-based.
+ *
+ * Tailwind v4's default `dark` variant is `prefers-color-scheme`, which cannot
+ * express "the user chose light inside an OS set to dark" — the whole point of
+ * a manual switch. Re-registering the variant against the `.dark` class makes
+ * `dark:` utilities follow the class, and the theme swap in `.dark` below
+ * follows with it.
  */
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * ---------------------------------------------------------------------------
+ * ClinicCore token layer
+ * ---------------------------------------------------------------------------
+ *
+ * `:root` and `.dark` are the ONLY places a colour is written — including in
+ * prose. Every other rule in this file, every Tailwind `bg-*` / `text-*`
+ * utility and every component reaches colour through one of these custom
+ * properties. tests/unit/design-tokens.test.ts enforces that: a hex literal
+ * outside these two blocks fails the build, comments included.
+ *
+ * Comments elsewhere in this file therefore name a token, never a value; the
+ * provenance of each brand colour lives on its own declaration below, where
+ * the value it documents is declared.
+ *
+ * Six mandated brand colours, converted from hex to OKLCH. OKLCH rather than
+ * hex because every derivative token below is a lightness/chroma move off a
+ * brand hue, and OKLCH is the space where that move is perceptual rather than
+ * a guess. In light mode the conversion round-trips exactly, and the test
+ * asserts that — so the mandate cannot drift by a rendering tolerance.
+ *
+ * Three constraints from the brief shape what follows:
+ *
+ *   - navy carries typography, not large fills;
+ *   - destructive is reserved for destructive actions;
+ *   - neutral backgrounds support the palette.
+ *
+ * The consequence worth stating up front: the brand neutral is a mid grey that
+ * measures about 1.8:1 on white. It is a border and muted-surface colour and
+ * nothing else. The test suite asserts it never qualifies as text, so "just
+ * use the brand grey for helper text" fails loudly instead of shipping
+ * unreadable copy.
+ *
+ * Foreground pairs are chosen per mode against WCAG AA, not inherited from
+ * shadcn's defaults. Two of them are the reason this file is not just a copy
+ * of the generated palette: white on the brand primary and white on the brand
+ * success both measure 3.06:1, below AA. Those two fills therefore carry a
+ * deep ink instead, which clears AA on both.
+ *
+ * `color-scheme` is set explicitly on both blocks. Without it a dark page
+ * still gets a light native scrollbar, light form-control chrome and a light
+ * autofill dropdown, because those are painted by the user agent from the
+ * colour-scheme keyword rather than from any token.
+ */
+:root {
+  color-scheme: light;
+
+  /* --- the six mandated brand colours, light mode ------------------------ */
+  /* Round-trip to the mandated hex is exact; the test asserts it. */
+  --brand-primary: oklch(0.6442 0.2049 144.41); /* #05ab29 — actions, active, "go" */
+  --brand-secondary: oklch(0.537 0.1559 251.47); /* #066fc4 — informational actions, links */
+  --brand-destructive: oklch(0.5118 0.2009 29.44); /* #bf140b — destructive actions ONLY */
+  --brand-neutral: oklch(0.7915 0.0093 179.53); /* #b5bdbb — borders and muted surfaces ONLY */
+  --brand-success: oklch(0.6497 0.1237 161.64); /* #35a677 — confirmed, paid, healthy */
+  --brand-navy: oklch(0.3453 0.1893 268.45); /* #172099 — headings and emphasis, NOT fills */
+
+  /* --- surfaces and text ------------------------------------------------- */
+  --background: oklch(0.985 0.002 250);
+  --foreground: oklch(0.28 0.02 262);
+  --card: oklch(1 0 0);
+  --card-foreground: var(--foreground);
+  --popover: oklch(1 0 0);
+  --popover-foreground: var(--foreground);
+
+  /* --- brand-backed semantic roles --------------------------------------- */
+  --primary: var(--brand-primary);
+  /* NOT white: white on #05ab29 is 3.06:1. This deep ink is 5.70:1. */
+  --primary-foreground: oklch(0.22 0.06 275);
+  --secondary: var(--brand-secondary);
+  --secondary-foreground: oklch(1 0 0); /* white on #066fc4: 5.15:1 */
+  --destructive: var(--brand-destructive);
+  --destructive-foreground: oklch(1 0 0); /* white on #bf140b: 6.32:1 */
+  --success: var(--brand-success);
+  /* NOT white: white on #35a677 is 3.06:1. This deep ink is 5.71:1. */
+  --success-foreground: oklch(0.22 0.06 275);
+
+  /* Brand colour used AS TEXT on a light surface, which is a different job
+     from being the fill under an ink. The brand success measures 3.06:1 on
+     white — perfectly good under the ink above, unreadable as a KPI delta or a
+     "paid" label — so the on-surface variant is darkened until it clears AA
+     (5.47:1 on card, 5.24:1 on background). Destructive already clears AA as
+     text, so its ink IS the brand colour; the token exists anyway so no
+     caller has to know which of the two is which. */
+  --success-ink: oklch(0.5 0.13 161.64);
+  --destructive-ink: var(--brand-destructive);
+
+  /* --- low-chroma surfaces and focus ------------------------------------- */
+  --muted: oklch(0.955 0.004 250);
+  --muted-foreground: oklch(0.5 0.02 262);
+  --accent: oklch(0.94 0.04 144.41);
+  --accent-foreground: oklch(0.25 0.02 262);
+  /* Decorative only. A table rule has no information to convey on its own. */
+  --border: var(--brand-neutral);
+  /* A form control boundary DOES carry information, so it is darkened off the
+     neutral until it clears the 3:1 of WCAG 1.4.11. It reads as the same
+     family; it just has to be legible. */
+  --input: oklch(0.65 0.012 250);
+  --ring: oklch(0.55 0.17 144.41);
+
+  /* --- structural -------------------------------------------------------- */
+  --radius: 0.625rem;
+
+  /* Data-viz ramp, mapped onto the brand set so a chart never introduces a
+     seventh hue. Ordered by how well the colours separate at a glance. */
+  --chart-1: var(--brand-primary);
+  --chart-2: var(--brand-secondary);
+  --chart-3: var(--brand-success);
+  --chart-4: var(--brand-navy);
+  --chart-5: var(--brand-destructive);
+
+  /* Sidebar, pre-mapped so a later `shadcn add sidebar` cannot reintroduce
+     shadcn's default blue. */
+  --sidebar: oklch(0.985 0.002 250);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--brand-primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+/*
+ * Dark mode re-lights every brand colour instead of reusing the light value.
+ *
+ * Keeping the light navy here is not an option: navy on the dark surface below
+ * measures about 1.5:1, so the heading colour would simply disappear. Each
+ * value keeps its brand hue exactly and raises lightness until it clears AA on
+ * the dark background; the test suite asserts both the hue match and the
+ * lightness increase, so the dark palette cannot silently drift into an
+ * unrelated set of colours. Fills then carry a dark ink, for the same reason
+ * the light fills carry one.
+ */
+.dark {
+  color-scheme: dark;
+
+  /* --- the six brand colours, re-lightened on their own hues ------------- */
+  --brand-primary: oklch(0.75 0.19 144.41);
+  --brand-secondary: oklch(0.76 0.13 251.47);
+  --brand-destructive: oklch(0.7 0.16 29.44);
+  --brand-neutral: oklch(0.5 0.0093 179.53);
+  --brand-success: oklch(0.78 0.13 161.64);
+  --brand-navy: oklch(0.75 0.14 268.45);
+
+  /* --- surfaces and text ------------------------------------------------- */
+  --background: oklch(0.19 0.012 265);
+  --foreground: oklch(0.96 0.005 250);
+  --card: oklch(0.23 0.012 262);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.235 0.012 262);
+  --popover-foreground: var(--foreground);
+
+  /* --- brand-backed semantic roles --------------------------------------- */
+  --primary: var(--brand-primary);
+  --primary-foreground: oklch(0.17 0.02 265);
+  --secondary: var(--brand-secondary);
+  --secondary-foreground: oklch(0.17 0.02 265);
+  --destructive: var(--brand-destructive);
+  --destructive-foreground: oklch(0.17 0.02 265);
+  --success: var(--brand-success);
+  --success-foreground: oklch(0.17 0.02 265);
+  /* On a dark surface the brand colour IS already the accessible one, so the
+     on-surface variants are the re-lightened brands unchanged. */
+  --success-ink: var(--brand-success);
+  --destructive-ink: var(--brand-destructive);
+
+  /* --- low-chroma surfaces and focus ------------------------------------- */
+  --muted: oklch(0.28 0.012 262);
+  --muted-foreground: oklch(0.74 0.015 255);
+  --accent: oklch(0.33 0.04 144.41);
+  --accent-foreground: oklch(0.97 0.005 250);
+  --border: var(--brand-neutral);
+  --input: oklch(0.55 0.015 200);
+  --ring: oklch(0.78 0.18 144.41);
+
+  /* --- structural -------------------------------------------------------- */
+  --radius: 0.625rem;
+
+  --chart-1: var(--brand-primary);
+  --chart-2: var(--brand-secondary);
+  --chart-3: var(--brand-success);
+  --chart-4: var(--brand-navy);
+  --chart-5: var(--brand-destructive);
+
+  --sidebar: oklch(0.23 0.012 262);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--brand-primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
+}
+
+/*
+ * The bridge from CSS custom properties into Tailwind's colour namespace.
+ *
+ * `inline` is load-bearing. Without it Tailwind resolves each `var(...)` at
+ * build time and inlines the light-mode value into the utility, so `.dark`
+ * could never re-colour anything. With it, `bg-primary` compiles to
+ * `background-color: var(--primary)`, which resolves against whichever block
+ * is in force at run time.
+ */
+@theme inline {
+  --font-heading: var(--font-sans);
+  --font-sans: var(--font-sans);
+
+  --color-brand-primary: var(--brand-primary);
+  --color-brand-secondary: var(--brand-secondary);
+  --color-brand-destructive: var(--brand-destructive);
+  --color-brand-neutral: var(--brand-neutral);
+  --color-brand-success: var(--brand-success);
+  --color-brand-navy: var(--brand-navy);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-ink: var(--success-ink);
+  --color-destructive-ink: var(--destructive-ink);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    @apply font-sans;
+  }
+}
