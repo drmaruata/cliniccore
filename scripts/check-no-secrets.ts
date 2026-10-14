@@ -20,9 +20,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *          rules 1, 2 and 4 cannot see it. Resolution handles `@/lib/supabase/…`,
  *          `lib/supabase/…` and relative `../lib/supabase/…` specifiers.
  * Rule 4 — no source file may contain a literal Supabase secret key
- *          (`sb_secret_...`) or a hard-coded JWT (`eyJ...`), subject to the
- *          placeholder allowlist and to a narrow exemption for `tests/`, which
- *          must embed adversarial fixtures in order to assert rule 4 fires.
+ *          (`sb_secret_...`) or a hard-coded JWT (`eyJ...`), subject only to the
+ *          placeholder allowlist. There is NO path-based exemption: rule 4 is
+ *          the only rule that catches a hard-coded credential, so it applies
+ *          everywhere, `tests/` included. Fixtures that need a secret-shaped
+ *          literal construct it at runtime rather than embedding it.
  *
  * ENFORCEMENT LAYERS. `lib/supabase/server.ts` MUST begin with
  * `import "server-only"`; that is the PRIMARY defence, because it fails at
@@ -85,15 +87,6 @@ const SECRET_LITERAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
  * gate — e.g. the literal `sb_secret_replace_me` used in `.env.example`.
  */
 const PLACEHOLDER_ALLOWLIST = [/replace_me/];
-
-/**
- * Rule 4 alone is relaxed under `tests/`. The gate's own unit tests must embed
- * adversarial examples (`sb_secret_…`, `eyJ…`) in order to assert that rule 4
- * fires at all; flagging them would make the gate untestable. Rules 1–3 stay
- * fully enforced here, and rule 4 stays enforced everywhere else, so this is a
- * narrow exemption rather than a blanket hole.
- */
-const ALLOWED_LITERAL_SECRET_PREFIXES = ["tests/"];
 
 /** Module specifiers that are rooted at the repo, written without `./`. */
 const ROOTED_SPECIFIER_PREFIXES = ["app/", "components/", "lib/", "scripts/", "tests/"];
@@ -281,14 +274,15 @@ export function findViolations(file: SecretCheckInput): SecretViolation[] {
     }
   }
 
-  if (
-    !ALLOWED_LITERAL_SECRET_PREFIXES.some((prefix) => normalizePath(file.path).startsWith(prefix))
-  ) {
-    for (const { name, pattern } of SECRET_LITERAL_PATTERNS) {
-      const match = file.contents.match(pattern)?.[0] ?? "";
-      if (match && !PLACEHOLDER_ALLOWLIST.some((allowed) => allowed.test(match))) {
-        violations.push({ path: file.path, reason: `possible hard-coded secret: ${name}` });
-      }
+  // Rule 4 is enforced EVERYWHERE, including under tests/. There is no path-based
+  // exemption: it is the only rule that catches a hard-coded credential, and a
+  // leaked key need not appear under the env-var name or a module path. Test
+  // fixtures that need a secret-shaped literal build it at runtime instead —
+  // see the note above tests/unit/check-no-secrets.test.ts.
+  for (const { name, pattern } of SECRET_LITERAL_PATTERNS) {
+    const match = file.contents.match(pattern)?.[0] ?? "";
+    if (match && !PLACEHOLDER_ALLOWLIST.some((allowed) => allowed.test(match))) {
+      violations.push({ path: file.path, reason: `possible hard-coded secret: ${name}` });
     }
   }
 

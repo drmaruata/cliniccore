@@ -20,6 +20,33 @@ import {
 
 const tempRoots: string[] = [];
 
+/*
+ * RULE 4 FIXTURES ARE BUILT AT RUNTIME — READ THIS BEFORE EDITING.
+ *
+ * Rule 4 is the only rule that catches a hard-coded credential, so it has no
+ * path-based exemption: it scans `tests/` exactly as it scans `app/`. An earlier
+ * revision exempted `tests/` wholesale so these fixtures could be literals, and
+ * that exemption was removed because it disabled credential detection across
+ * every test file for the life of the project — and test fixtures are precisely
+ * where real payloads get pasted in by accident.
+ *
+ * So the secret-shaped strings below are assembled at runtime. The literal
+ * never appears in any tracked file, which is also what lets the
+ * "is clean against the real repository tree" test below stay meaningful.
+ * If you add a new rule-4 case, build the literal this way too.
+ *
+ * Asserted by: "flags a hard-coded secret inside tests/ — no exemption".
+ */
+const FAKE_SECRET_KEY = `${["sb", "secret"].join("_")}_abcdef1234567890`;
+const FAKE_JWT_HEADER = ["eyJ", "hbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"].join("");
+const FAKE_JWT_PAYLOAD = ["eyJ", "zdWIiOiIxIn0"].join("");
+const FAKE_JWT = `${FAKE_JWT_HEADER}.${FAKE_JWT_PAYLOAD}.sig`;
+
+/** A source line embedding the fake key, ready to drop into a fixture. */
+const srcWithKey = `const k = "${FAKE_SECRET_KEY}";`;
+/** A source line embedding the fake JWT, ready to drop into a fixture. */
+const srcWithJwt = `const jwt = "${FAKE_JWT}";`;
+
 /** Build a throwaway repo tree and run the real filesystem walk over it. */
 function runOnTempTree(files: Record<string, string>): string[] {
   const root = mkdtempSync(join(tmpdir(), "cliniccore-gate-"));
@@ -82,41 +109,46 @@ describe("check-no-secrets gate", () => {
   });
 
   it("flags hard-coded sb_secret keys and JWTs", () => {
-    expect(check([["lib/supabase/server.ts", 'const k = "sb_secret_abcdef1234567890";']])).toBe(
-      false,
-    );
-    expect(
-      check([
-        [
-          "lib/supabase/server.ts",
-          'const jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig";',
-        ],
-      ]),
-    ).toBe(false);
+    expect(check([["lib/supabase/server.ts", srcWithKey]])).toBe(false);
+    expect(check([["lib/supabase/server.ts", srcWithJwt]])).toBe(false);
   });
 
   it("allows documented placeholders like sb_secret_replace_me", () => {
+    // Deliberately a literal: this test asserts the PLACEHOLDER_ALLOWLIST, and
+    // fragmenting it would make the assertion meaningless. It is still not a
+    // real credential — `replace_me` is the documented inert placeholder.
     expect(check([["lib/supabase/server.ts", 'const k = "sb_secret_replace_me";']])).toBe(true);
   });
 
-  it("exempts tests/ from rule 4 only, so adversarial fixtures can exist", () => {
-    // allowed: the gate's own tests must be able to embed a bad-looking literal
-    expect(check([["tests/unit/x.test.ts", 'const k = "sb_secret_abcdef1234567890";']])).toBe(true);
-    // still enforced everywhere else
-    expect(check([["app/x.ts", 'const k = "sb_secret_abcdef1234567890";']])).toBe(false);
-    expect(
-      check([
-        ["lib/x.ts", 'const j = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig";'],
-      ]),
-    ).toBe(false);
-    // rules 1 and 2 stay enforced under tests/
+  it("flags a hard-coded secret inside tests/ — no exemption", () => {
+    // Regression guard. Rule 4 once skipped every path under tests/, which
+    // silently disabled the only rule that detects a pasted credential.
+    const violations = findViolations({
+      path: "tests/unit/fixtures/real-payload.test.ts",
+      contents: srcWithKey,
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.reason).toContain("Supabase secret key");
+    expect(check([["tests/unit/x.test.ts", srcWithKey]])).toBe(false);
+    expect(check([["tests/unit/x.test.ts", srcWithJwt]])).toBe(false);
+    expect(check([["tests/integration/y.test.ts", srcWithKey]])).toBe(false);
+    expect(check([["tests/e2e/z.test.ts", srcWithJwt]])).toBe(false);
+    // and still enforced everywhere else
+    expect(check([["app/x.ts", srcWithKey]])).toBe(false);
+    expect(check([["lib/x.ts", srcWithJwt]])).toBe(false);
+  });
+
+  it("keeps rules 1, 2 and 3 enforced under tests/", () => {
+    // rules 1 and 2
     expect(
       check([["tests/unit/x.test.ts", '"use client";\nprocess.env.SUPABASE_SERVICE_ROLE_KEY;']]),
     ).toBe(false);
-    // rule 3 stays enforced under tests/
+    // rule 3
     expect(
       check([["tests/unit/x.test.tsx", '"use client";\nimport a from "@/lib/supabase/server";']]),
     ).toBe(false);
+    // rule 1's path allowance is unchanged: naming the env var under tests/ is fine
+    expect(check([["tests/unit/x.test.ts", "process.env.SUPABASE_SERVICE_ROLE_KEY;"]])).toBe(true);
   });
 
   it("ignores the env var name when it appears only in comments", () => {
@@ -134,12 +166,18 @@ describe("check-no-secrets gate", () => {
     ).toBe(true);
   });
 
-  it("still flags the env var name used as code after a comment on the same line", () => {
+  it("still flags the env var name used as code on a line after a comment", () => {
     expect(
       check([
         ["app/page.tsx", "// documented below\nconst k = process.env.SUPABASE_SERVICE_ROLE_KEY;"],
       ]),
     ).toBe(false);
+    // a comment on the SAME line as real code does not hide the code either
+    expect(
+      check([["app/page.tsx", "const k = process.env.SUPABASE_SERVICE_ROLE_KEY; // used here"]]),
+    ).toBe(false);
+    // a comment preceding a name-only mention is still only a comment
+    expect(check([["app/page.tsx", "// SUPABASE_SERVICE_ROLE_KEY\nconst k = 1;"]])).toBe(true);
   });
 
   it("preserves string literals while stripping comments, so // inside a string survives", () => {

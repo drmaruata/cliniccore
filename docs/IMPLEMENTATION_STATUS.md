@@ -166,3 +166,22 @@ targets must exist before their tasks land).
 
 See `.superpowers/sdd/cliniccore-foundation/task-1-report.md` for the full
 report.
+
+### OBLIGATION FOR TASK 15 — remove `--pass-with-no-tests` from `e2e`
+
+`package.json` currently defines:
+
+```json
+"e2e": "playwright test --pass-with-no-tests"
+```
+
+Task 1 has no E2E specs by design. Without the flag, `npm run e2e` fails with
+`Error: No tests found` (exit 1) for a reason that is not a defect — there is
+simply nothing to run — which makes the gate lie in both directions: it reports
+failure for a healthy repo, and it would report success for a repo whose specs
+failed to be collected.
+
+**Task 15 must remove `--pass-with-no-tests` from both the `e2e` and
+`test:e2e` scripts when it adds the first real spec.** From that point on an
+empty or uncollectable spec set must be a hard failure again. Do not carry the
+flag forward past Task 15.
