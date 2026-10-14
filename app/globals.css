@@ -156,6 +156,15 @@
      family; it just has to be legible. */
   --input: oklch(0.65 0.012 250);
   --ring: oklch(0.55 0.17 144.41);
+  /* The hover fill for the destructive Button, and the reason it is a token
+     rather than a `color-mix()` in the rule further down: that rule paints an
+     unconditional solid fill, which outranks the generated
+     `hover:bg-destructive/20`, so hover feedback has to be put back by hand —
+     and a colour written outside these two blocks fails the hex gate. It is the
+     same move `--input` makes, off `--destructive` toward `--foreground` (which
+     is dark here): L 0.5118 -> 0.4886, still on the brand hue at 28.93deg
+     against 29.44. Measured: 6.33:1 at rest, 6.91:1 on hover. */
+  --destructive-hover: oklch(0.4886 0.1796 28.93);
 
   /* --- structural -------------------------------------------------------- */
   --radius: 0.625rem;
@@ -239,6 +248,14 @@
   --border: oklch(0.58 0.0093 179.53);
   --input: oklch(0.55 0.015 200);
   --ring: oklch(0.78 0.18 144.41);
+  /* The mirror of the light-mode `--destructive-hover`, and the reason it is not
+     the same value: `--foreground` is LIGHT here, so the move off
+     `--destructive` goes the other way — L 0.70 -> 0.726, 29.31deg against
+     29.44. Mixing toward BLACK in dark mode instead is the trap this token
+     exists to avoid: the fill goes from 6.69:1 to 1.09:1 on hover, because the
+     dark destructive is a light coral under a near-black ink. Measured here:
+     6.69:1 at rest, 7.43:1 on hover. */
+  --destructive-hover: oklch(0.726 0.1436 29.31);
 
   /* --- structural -------------------------------------------------------- */
   --radius: 0.625rem;
@@ -407,35 +424,106 @@
 }
 
 /*
- * Compensating rules for the DESTRUCTIVE variant in dark mode.
+ * Compensating rules for the DESTRUCTIVE variant.
  *
- * A DIFFERENT SHAPE OF PROBLEM, and the reason the gate above had to learn to
- * look at `background-color` as well as `color`.
+ * A DIFFERENT SHAPE OF PROBLEM from the rule above, and the reason the gate
+ * learned to look at `background-color` as well as `color`.
+ *
+ * THE DEFECT IS WCAG 1.4.11 — THE CONTROL BOUNDARY, NOT ITS TEXT.
  *
  * The generated destructive variant is `bg-destructive/10 text-destructive` with
- * a `dark:bg-destructive/20` override. Text, surface and wash are all the same
- * hue, so the surface moves WITH the text and the ratio barely depends on how
- * light the text is. Measured in dark mode: 2.44:1 on the `/10` wash, 2.06:1 on
- * the `/20` one. Sweeping the ink on its own hue confirms there is no text-side
- * answer — at L 0.7 it is 2.06:1, and even at L 0.93, essentially white, it only
- * reaches 3.35:1. A colour cannot clear AA against a tint of itself.
+ * a `dark:bg-destructive/20` override. Its TEXT was never the problem: with the
+ * colour maths corrected (see the OKLab note in tests/unit/design-tokens.test.ts)
+ * the destructive ink on its own wash measures 5.10:1 in light mode on the `/10`
+ * wash and 4.83:1 in dark on the `/20` one — both above AA. An earlier version
+ * of this comment claimed otherwise, from a transform that was computing
+ * `cbrt(gamma)` instead of `cbrt(linear)` and had invented a 2.06:1 failure. It
+ * did not exist. (Those two figures are the gamma-sRGB compositing model; the
+ * oklab-interpolation model, which the gate also measures, gives 5.23:1 and
+ * 4.96:1. The gate holds the LOWER of the two — see `mixOklab` in the test.)
  *
- * The surface is therefore what changes: a solid `--destructive` fill under
- * `--destructive-foreground`. That is the same shape the light-mode `default`
- * Button already uses — a brand fill under a deep ink — and it is how a
- * destructive control is expected to read: an unmistakable block, with a label
- * that is unambiguous about it. It also lands on `ConfirmDialog`'s confirm
- * button, which is the single most safety-critical piece of text in the app.
+ * The real failure is that the control has no perceivable EDGE. Comparing the
+ * tint the variant paints against the page it sits on, both models:
  *
- * Scoped to `.dark` deliberately. Light mode's tinted destructive already
- * measures 6.06:1 on background and 5.54:1 on its own `/10` wash, so it is left
- * looking tinted; only dark mode is rescued.
+ *               vs `--background`        vs `--card`
+ *   light `/10`  1.19:1 / 1.16:1         1.19:1 / 1.16:1
+ *   light `/20`  1.42:1 / 1.35:1         1.43:1 / 1.36:1
+ *   dark  `/10`  1.13:1 / 1.12:1          1.15:1 / 1.14:1
+ *   dark  `/20`  1.34:1 / 1.30:1          1.36:1 / 1.33:1
  *
- * Unlayered, for the same reason as the rule above: `@layer utilities` would
- * outrank nothing here and be outranked by `dark:bg-destructive/20`.
+ * 1.4.11 requires 3:1 for the visual information that identifies a UI component.
+ * Swept across every alpha, the tint reaches 3:1 only at about 70% opacity —
+ * 1.07:1 at 5%, 1.16:1 at the 10% the generated variant uses in light, 1.35:1 at
+ * 20%, and 6.06:1 only when fully solid. In dark the same sweep is 1.05 / 1.12 /
+ * 1.30, and 6.46:1 solid. So the two alphas shadcn actually generates are
+ * nowhere near a visible edge, and getting there would need a fill about three
+ * and a half times heavier than the one shipped — a different design, on the
+ * brand's own mandated hue, which is the other reason the alpha cannot simply
+ * be raised. This is the same failure `--border` had before Task 2 fix round 1
+ * — the same reason `--input` is darkened off the neutral — one variant over, on
+ * the app's most safety-critical control.
+ *
+ * THE FIX, AND WHY IT IS NOT SCOPED TO DARK.
+ *
+ * A solid `--destructive` fill under `--destructive-foreground`. Measured at
+ * 6.06:1 against `--background` and 6.33:1 against `--card` in light, 6.46:1 and
+ * 5.90:1 in dark — so the fill clears 3:1 on every surface it can land on, and
+ * its label clears AA as text (6.33:1 light, 6.69:1 dark).
+ *
+ * An earlier version of this rule was scoped to `.dark`, justified by the
+ * false 2.06:1 measurement, on the reasoning that light mode's tinted
+ * destructive "already clears AA". It cleared AA for its TEXT and failed
+ * 1.4.11 for its EDGE, which is the property that was actually broken — so
+ * scoping it to dark mode left light mode shipping a 1.19:1 edge on the button
+ * that asks a user to confirm deleting a patient. Dropping the `.dark` prefix is
+ * the same accepted design decision applied consistently, and it makes the
+ * destructive variant match the light `default` Button, which is already a
+ * solid fill under a deep ink.
+ *
+ * Unlayered, for the same reason as the rule above: Tailwind emits utilities
+ * into `@layer utilities`, and an unlayered declaration outranks every layer
+ * regardless of specificity. The `dark:bg-destructive/20` this replaces is
+ * inside that layer, so it cannot win here.
  */
-.dark [data-slot="button"][data-variant="destructive"],
-.dark [data-slot="badge"][data-variant="destructive"] {
+[data-slot="button"][data-variant="destructive"],
+[data-slot="badge"][data-variant="destructive"] {
   background-color: var(--destructive);
   color: var(--destructive-foreground);
+}
+
+/*
+ * Hover for the rule above.
+ *
+ * WHY IT EXISTS. `background-color` there is unconditional, and it outranks the
+ * generated `hover:bg-destructive/20` for the same layer reason it outranks the
+ * resting tint — so without this rule the compensating rule would also have
+ * removed every scrap of hover feedback from the control. That is a regression
+ * the resting gate cannot see, because it reads unprefixed utilities and a
+ * hover rule is a state rule.
+ *
+ * WHY A TOKEN AND NOT `color-mix()` HERE. The fill lives in `--destructive-hover`
+ * in the two token blocks, which is where this file requires a colour to be
+ * declared. The move it encodes is "off `--destructive`, toward `--foreground`",
+ * which is automatically the right direction in each mode because `--foreground`
+ * is dark in light mode and light in dark:
+ *
+ * light  6.33:1 resting -> 6.91:1 hover
+ * dark   6.69:1 resting -> 7.43:1 hover
+ *
+ * An earlier version of this rule wrote `color-mix(in oklab, var(--destructive)
+ * 88%, black)` unlayered and shipped the 1.09:1 dark hover state. The test now
+ * holds every hover compensation to AA.
+ *
+ * WHY BUTTON ONLY. A Badge is not a pointer-driven control, and the generated
+ * `badge` variant scopes its own hover to `[a]:` — anchors. Giving the badge a
+ * bare `:hover` would recolour a static label under the cursor for no reason.
+ * The consequence, recorded: an anchor-styled destructive Badge loses the
+ * generated `[a]:hover:bg-destructive/20`, exactly as the resting rule already
+ * outranks it. Nothing in the app renders a destructive Badge as a link today.
+ *
+ * `:hover` does not fire on touch, so touch users get no hover state — which is
+ * what the generated `hover:` utilities already gave them.
+ */
+[data-slot="button"][data-variant="destructive"]:hover {
+  background-color: var(--destructive-hover);
 }

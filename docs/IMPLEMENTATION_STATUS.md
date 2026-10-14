@@ -292,6 +292,50 @@ it actually paints, or to have such a rule — and requires the rule's own token
 to clear AA too. A new `shadcn add` shipping `variant="subtle": "text-primary"`
 fails the suite without anyone thinking of it.
 
+### Round 3 — the colour maths under that gate was wrong, and the ruling that fell with it
+
+**OKLab needs the sRGB→linear-light step.** `srgbToOklab` fed gamma-encoded
+channels straight into the LMS matrix, computing `cbrt(gamma)` where the spec
+says `cbrt(linear)`. They agree only at 0 and 1. For a neutral grey,
+`L == relativeLuminance^(1/3)` is the defining property: sRGB 0.10 → linear Y
+0.0100 → L **0.2156** (the broken function gave 0.4642), 0.50 → 0.2140 → **0.5982**
+(0.7937), 0.90 → 0.7874 → **0.9234** (0.9655). Round-trip `oklabToSrgb(srgbToOklab(x))`
+is exact for neutrals and for every brand hex. **Do not remove the
+linearisation** — the suite pins it by round-trip, by the `L == Y^(1/3)` property,
+and by a negative control asserting `L(0.5)` is _not_ `cbrt(0.5)`.
+
+**The gate takes the MINIMUM of two compositing models.** `mixOklab` (oklab
+interpolation, what `color-mix(in oklab, …)` specifies) and `compositeGammaSrgb`
+(gamma-sRGB premultiplied, what a translucent layer actually contributes) are
+different computations. The controller's ruling named oklab interpolation as "the
+conservative model, the lower of the two" — measurement says it is the HIGHER on
+both samples the palette uses: dark `--destructive` on its own `/20` wash is
+4.96:1 oklab vs 4.83:1 gamma, and light on `/10` is 5.23:1 vs 5.10:1. The gate
+therefore asserts the minimum, and a test bounds the gap at 0.5:1 across every
+variant/mode/host (max observed: 0.45:1 on `button:outline` dark). The dispatch's
+5.70:1 / 5.76:1 pair corresponds to the **/10** wash, not /20 — the /20 pair is
+4.83 / 4.96.
+
+**The destructive defect is WCAG 1.4.11, the boundary, not the text.** Round 2's
+2.06:1 dark text failure was an artefact of the broken transform; the text is
+4.83–4.96:1 and was never failing. What actually fails is the control's edge: the
+tint against the page is 1.19:1 (light `/10`), 1.42:1 (light `/20`), 1.13:1
+(dark `/10`), 1.34:1 (dark `/20`), and clears 3:1 only at about 70% opacity. So
+the compensating rule paints a solid `--destructive` fill under
+`--destructive-foreground` (6.06/6.33:1 light, 6.46/5.90:1 dark) and is
+**unscoped** — the round-2 `.dark`-only scoping rested on the false 2.06:1 and
+left light mode shipping a 1.19:1 edge on the app's most safety-critical button.
+
+**Because that rule is unconditional, it deletes hover feedback** — it outranks
+the generated `hover:bg-destructive/20` for the same layer reason. `--destructive-hover`
+exists to put it back, and its direction is mode-dependent: `color-mix(…
+var(--destructive) 88%, black)` is right in light (6.33:1 → 20.62:1) and
+catastrophic in dark (6.69:1 → **1.09:1**), because dark `--destructive` is a
+light coral under a near-black ink. The token moves off `--destructive` toward
+`--foreground` instead, which is automatically the right way in each mode. The
+gate holds every hover compensation to AA; without that assertion a broken hover
+fill passes, because the resting gate reads unprefixed utilities only.
+
 ### OBLIGATION FOR A LATER TASK — `--input` on `--muted` is 2.83:1 in light mode
 
 Measured, not asserted. `--muted` is `oklch(0.955 0.004 250)` against

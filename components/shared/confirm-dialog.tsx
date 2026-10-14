@@ -11,10 +11,20 @@
  * COLOUR. Destructive styling is opt-in and is the *only* place this
  * component spends the destructive token, matching the brief's rule that
  * destructive is reserved for destructive actions. The default is the
- * brand-primary `Button`; `tone="destructive"` switches to the generated
- * destructive variant, which is a tinted background with destructive text —
- * not a solid red block, which would be an alarming use of the colour on a
- * button the user still has to aim at. Nothing here names a colour value.
+ * brand-primary `Button`.
+ *
+ * `tone="destructive"` switches to the generated destructive variant, which
+ * renders as a SOLID `--destructive` fill under `--destructive-foreground` —
+ * a red block, in both modes. That is not an alarming use of the colour on a
+ * button the user still has to aim at; it is the point of the tone. An earlier
+ * version of this comment said the variant was "a tinted background with
+ * destructive text — not a solid red block", which described how `shadcn`
+ * *generates* it and what the variant painted before
+ * `app/globals.css`'s compensating rule existed. The generated tint measures
+ * 1.19:1 against the page at its light-mode `/10` opacity and 1.34:1 at the
+ * `/20` one dark mode selects: WCAG 1.4.11 wants 3:1 for a control's boundary,
+ * so the tinted control had no perceivable edge at all. The solid fill now
+ * matches the light `default` Button's shape. Nothing here names a colour value.
  *
  * `onConfirm` may be async. While it is in flight the dialog stays open and
  * the confirm button is disabled, so a slow mutation cannot be double-submitted
@@ -73,7 +83,6 @@ export interface ConfirmDialogProps {
   /** Required. What happens, and what cannot be undone. */
   description: React.ReactNode;
   /**
-   /**
    * The action being confirmed — usually the mutation itself. Called on confirm
    * and nowhere else, and it may be async.
    *

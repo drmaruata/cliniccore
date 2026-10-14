@@ -284,24 +284,44 @@ function contrast(a: Rgb, b: Rgb): number {
 /* ------------------------------------------------------------------ */
 
 /**
- * Gamma-encoded sRGB to OKLab (Björn Ottosson's matrices, as CSS uses them).
+ * Gamma-encoded sRGB to OKLab (Björn Ottosson's matrices, as CSS Color 4 §12.2
+ * uses them).
  *
  * Needed because a generated variant can name a TINTED background —
  * `bg-destructive/10` on the destructive Button, `dark:bg-input/30` on the
  * outline Button — and `bg-destructive` is not the colour that ends up behind
- * the text. Tailwind v4 emits its `/N` alpha modifier as
- * `color-mix(in oklab, var(--x) N%, transparent)`, so oklab is the space the
- * real composite happens in; averaging in sRGB would not be measuring the same
- * thing the browser does.
+ * the text.
  *
- * Measured alongside the ratios the review reproduced: the destructively-tinted
- * Button clears AA with margin, so this modelling is not load-bearing for the
- * verdict — it is there so the gate is right rather than approximately right.
+ * THE LINEARISATION IS NOT OPTIONAL. OKLab is defined as
+ * `cbrt(linear-light sRGB) -> LMS -> M2`. The previous version of this function
+ * fed GAMMA-ENCODED channels straight into the LMS matrix, which computes
+ * `cbrt(gamma)` where it should compute `cbrt(linear)`. The two agree only at 0
+ * and 1.
+ *
+ * OKLab's defining property is that, for a neutral, `L == relativeLuminance^(1/3)`.
+ * Measured against that property:
+ *
+ * | sRGB channel | linear Y | correct L | cbrt(gamma) L |
+ * | --- | --- | --- | --- |
+ * | 0.10 | 0.0100 | 0.2156 | 0.4642 |
+ * | 0.50 | 0.2140 | 0.5982 | 0.7937 |
+ * | 0.90 | 0.7874 | 0.9234 | 0.9655 |
+ *
+ * The error is bidirectional — `oklabToSrgb` was correct, so every tint computed
+ * through the pair was systematically too light, which made composited
+ * backgrounds measure too close to the text sitting on them. The
+ * `the OKLab transform is correct` describe block pins the fixed version by
+ * round-trip and against the `L == Y^(1/3)` property directly, because the
+ * previous self-test used only black and white, which is exactly where the two
+ * models coincide.
  */
 export function srgbToOklab([r, g, b]: Rgb): readonly [number, number, number] {
-  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
-  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
-  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+  const lr = srgbToLinear(r);
+  const lg = srgbToLinear(g);
+  const lb = srgbToLinear(b);
+  const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
   return [
     0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
     1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
@@ -322,12 +342,64 @@ export function oklabToSrgb([L, a, bb]: readonly [number, number, number]): Rgb 
   return linear.map((channel) => Math.min(1, Math.max(0, linearToSrgb(channel)))) as unknown as Rgb;
 }
 
-/** CSS `color-mix(in oklab, a p%, b)`. */
+/**
+ * CSS `color-mix(in oklab, a p%, b)` — oklab interpolation.
+ *
+ * One of TWO compositing models, because they are NOT the same computation and
+ * a verdict that depends on which one you happened to pick is not a verdict.
+ *
+ *   - **oklab interpolation** (`this`) — interpolate in OKLab. This is what
+ *     `color-mix(in oklab, …)` is specified to do, and what the colour-mix
+ *     layer of a `/N` modifier computes.
+ *   - **gamma-sRGB premultiplied** (`compositeGammaSrgb`) — `a*p + b*(1-p)` per
+ *     channel in gamma-encoded sRGB. This is what a translucent layer actually
+ *     contributes once the browser composites the resulting semi-transparent
+ *     colour over an opaque backdrop, which is the paint that reaches the
+ *     screen. `color-mix(in oklab, var(--x) N%, transparent)` does NOT produce
+ *     "the oklab mix of x and the backdrop"; premultiplied interpolation toward
+ *     `transparent` leaves the colour's own channels alone, so it yields the
+ *     token at alpha N — and the mixing with the backdrop happens afterwards,
+ *     in sRGB.
+ *
+ * MEASURED ON BOTH SAMPLES THE GATE CARES ABOUT — `--destructive` as text on
+ * its own generated wash — gamma-sRGB is the LOWER of the two:
+ *
+ *   | sample                       | oklab-interp | gamma-sRGB |
+ *   | ---------------------------- | ------------ | ---------- |
+ *   | light, ink on its `/10` wash | 5.23:1       | 5.10:1     |
+ *   | dark, ink on its `/20` wash  | 4.96:1       | 4.83:1     |
+ *
+ * The ruling that built this gate described oklab interpolation as "the
+ * conservative model, the lower of the two". It is not: on both samples it is
+ * the higher, by 0.13:1 in dark and 0.13:1 in light. The number the round-2
+ * report carried for the dark sample (2.06:1) came from the broken transform;
+ * the number the dispatch carried (5.70:1 / 5.76:1) could not be reproduced
+ * here by either model — re-measured independently, the pair is 4.83:1 and
+ * 4.96:1. Those figures are what this comment and the tests now use.
+ *
+ * SO THE GATE TAKES THE MINIMUM OF THE TWO. That satisfies the ruling's actual
+ * intent — "a gate must not admit a failing paint" — without depending on which
+ * model happens to be lower, which is a property of the palette and not of the
+ * code. A second test below pins that the two models agree to within 0.25:1 on
+ * every surface the shipped variants actually use, so the min is a guard
+ * against future divergence rather than a permanent tax; if a future change
+ * pushes them apart, that test fails and the gate is already conservative.
+ */
 export function mixOklab(a: Rgb, b: Rgb, percent: number): Rgb {
   const [al, aa, ab] = srgbToOklab(a);
   const [bl, ba, bb] = srgbToOklab(b);
   const t = percent / 100;
   return oklabToSrgb([al * t + bl * (1 - t), aa * t + ba * (1 - t), ab * t + bb * (1 - t)]);
+}
+
+/** Alpha compositing in gamma-encoded sRGB: `a*p + b*(1-p)`, per channel. */
+export function compositeGammaSrgb(a: Rgb, b: Rgb, percent: number): Rgb {
+  const t = percent / 100;
+  return [
+    a[0] * t + b[0] * (1 - t),
+    a[1] * t + b[1] * (1 - t),
+    a[2] * t + b[2] * (1 - t),
+  ] as unknown as Rgb;
 }
 
 /** Contrast between two literal colours. Used for the brief's fixed navy pairs. */
@@ -848,7 +920,7 @@ export function cvaVariantClasses(source: string): Record<string, string> {
 /** A colour utility and the alpha Tailwind applies to it, as `[name, percent]`. */
 type Utility = readonly [string, number];
 
-function utilities(classString: string, prefix: "bg" | "text", variant = ""): Utility[] {
+function utilities(classString: string, prefix: "bg" | "text" | "border", variant = ""): Utility[] {
   const head = `${variant}${prefix}-`;
   const out: Utility[] = [];
   for (const token of classString.split(/\s+/).filter(Boolean)) {
@@ -861,7 +933,7 @@ function utilities(classString: string, prefix: "bg" | "text", variant = ""): Ut
 }
 
 /**
- * The foreground and background a variant actually paints in one mode.
+ * The foreground, background and border a variant actually paints in one mode.
  *
  * Only utilities in force AT REST are considered. A state rule
  * (`hover:text-foreground`, `focus-visible:ring-destructive/20`) is a different
@@ -870,27 +942,57 @@ function utilities(classString: string, prefix: "bg" | "text", variant = ""): Ut
  * class tokens rather than substrings.
  *
  * `dark:` utilities only apply in dark mode and take precedence there, because
- * that is what Tailwind emits for them. A tinted `bg-…/N` is composited over
- * the page surface in oklab rather than taken at face value, so
- * `bg-destructive/10` is not treated as solid `--destructive`.
+ * Tailwind compiles them to `:is(.dark *)`, which carries a class of specificity
+ * the unprefixed utility does not have. Verified against a running build: the
+ * outline Button computes `--input/30` in dark despite `bg-background` also being
+ * present.
+ *
+ * `declaresBackground` is carried out because a variant naming no `bg-*` does not
+ * sit on `--background` by definition — it inherits whatever surface it was placed
+ * on, which for a Badge is very often `--card` or `--muted`. Assuming
+ * `--background` is optimistic by construction; the caller uses this flag to test
+ * such a variant against every host surface instead.
+ *
+ * A tinted `bg-…/N` is returned as-is, not flattened to the token: `--destructive`
+ * is not the colour that ends up on screen.
  */
-function restingColours(classString: string, mode: "light" | "dark"): { fg: string; bg: Utility } {
-  const pick = (prefix: "bg" | "text", darkMode: boolean): Utility | undefined => {
+function restingColours(
+  classString: string,
+  mode: "light" | "dark",
+): { fg: string; bg: Utility; declaresBackground: boolean; border: Utility | undefined } {
+  // Two unconditional `bg-*` utilities in the SAME mode is precisely the
+  // StatusBadge merge defect this repo already suffered. Picking the first would
+  // model the result rather than flag it, so fail loudly instead of guessing
+  // which one wins. An unprefixed utility AND its `dark:` override is not that —
+  // that is the normal light/dark pairing — so each mode is checked separately.
+  for (const prefix of ["bg", "text", "border"] as const) {
+    for (const scope of ["", "dark:"] as const) {
+      const count = utilities(classString, prefix, scope).length;
+      expect(
+        count,
+        `${classString} declares ${count} unconditional \`${scope}${prefix}-*\` utilities ` +
+          `(mode ${scope === "dark:" ? "dark" : "light"}); this gate can only model one`,
+      ).toBeLessThanOrEqual(1);
+    }
+  }
+
+  const pick = (prefix: "bg" | "text" | "border", darkMode: boolean): Utility | undefined => {
     if (darkMode) {
-      // A `dark:` utility BEATS the unprefixed utility it overrides, and not
-      // because of where it sits in the class string — because Tailwind compiles
-      // it to `.dark\:bg-input\/30:is(.dark *)`, whose `:is(.dark *)` adds a
-      // class of specificity that the plain `.bg-background` does not have.
-      // Verified against a running build: the outline Button computes
-      // `--input/30` in dark mode despite `bg-background` also being present.
       const dark = utilities(classString, prefix, "dark:");
       if (dark.length > 0) return dark[0];
     }
     return utilities(classString, prefix)[0];
   };
+
+  const bg = pick("bg", mode === "dark");
+  const border = pick("border", mode === "dark");
   return {
     fg: pick("text", mode === "dark")?.[0] ?? "--foreground",
-    bg: pick("bg", mode === "dark") ?? ["--background", 100],
+    bg: bg ?? ["--background", 100],
+    declaresBackground: bg !== undefined,
+    // `border-transparent` is on the base string of every generated variant; it
+    // is not a boundary, so it is reported as absent rather than as `--border`.
+    border: border !== undefined && border[0] !== "--transparent" ? border : undefined,
   };
 }
 
@@ -922,19 +1024,84 @@ export function compensatingRule(
   );
   for (const rule of rules) {
     const selectors = rule.prelude.split(",").map((selector) => selector.trim());
-    const hit = selectors.some(
+
+    // A STATE selector cannot be a resting-state compensation. `…:hover` paints
+    // a different colour than the resting state, and modelling it as the resting
+    // compensation would attribute the fix to the wrong rule.
+    if (
+      selectors.some((selector) =>
+        /:(?:hover|focus|focus-visible|active|disabled)\b/.test(selector),
+      )
+    ) {
+      continue;
+    }
+
+    // The rule must be entirely about THIS variant. One rule may legitimately
+    // serve several slots at once (`[data-slot="button"][data-variant="link"]`,
+    // `[data-slot="badge"][data-variant="link"]` in a single selector list), so
+    // the test is that every branch keys this variant — not that every branch
+    // names this slot. A list mixing two variants is therefore rejected rather
+    // than half-applied.
+    const keyedBySlot = selectors.some(
       (selector) =>
         selector.includes(`[data-slot="${slot}"]`) &&
         selector.includes(`[data-variant="${variant}"]`),
     );
-    if (!hit) continue;
-    if (rule.prelude.includes(".dark") !== (mode === "dark")) continue;
+    if (!keyedBySlot) continue;
+    if (!selectors.every((selector) => selector.includes(`[data-variant="${variant}"]`))) continue;
+
+    // Mode scoping, per branch. A selector applies in a mode unless it is
+    // `.dark`-scoped and the mode is light. An UNSCOPED rule therefore applies in
+    // both — which is the case round 3 had to get right, since dropping the
+    // `.dark` prefix from the destructive rule is the fix itself. A genuinely
+    // mixed list like `.dark [x], [x]` has an always-applicable branch and so
+    // applies in both; the conservative direction, because over-applying a
+    // compensation can only make the gate demand more, never less.
+    const applies = selectors.some((selector) => !selector.includes(".dark") || mode === "dark");
+    if (!applies) continue;
+
     const decls = declarations(rule.body);
     const colour = decls.get("color");
     const background = decls.get("background-color") ?? decls.get("background");
     if (colour !== undefined || background !== undefined) return { colour, background };
   }
   return {};
+}
+
+/**
+ * A bare `var(--x)`, which is the only form a compensating rule may declare a
+ * colour in.
+ *
+ * `color-mix(in oklab, var(--x) 90%, …)` is refused even though it is
+ * token-derived: the gate has to resolve the paint and hold the RESULT to AA,
+ * and a tint smuggled back in at this point is what would make the assertion
+ * vacuous. `ref()` is also why a compensating rule pointing at an inaccessible
+ * token fails rather than silently passing.
+ */
+function refToken(value: string | undefined, message: string): string {
+  const token = /^var\(\s*(--[\w-]+)\s*\)$/.exec((value ?? "").trim())?.[1];
+  expect(token, message).toBeDefined();
+  return token as string;
+}
+
+/**
+ * `refToken`, naming the variant that owns the rule in the failure message.
+ *
+ * Kept out of the per-case closure so the hover test can use the same
+ * requirement without duplicating the regex.
+ */
+function ref(value: string, context: string, mode: "light" | "dark"): string {
+  return refToken(value, `${context} in ${mode} mode declares "${value}", which is not a var()`);
+}
+
+/** The `data-slot` a compensating-rule selector keys on, if it keys on one. */
+function slotOf(selector: string): string | undefined {
+  return /\[data-slot="([^"]+)"\]/.exec(selector)?.[1];
+}
+
+/** The `data-variant` a compensating-rule selector keys on, if it keys on one. */
+function variantOf(selector: string): string | undefined {
+  return /\[data-variant="([^"]+)"\]/.exec(selector)?.[1];
 }
 
 type VariantCase = readonly [string, string, string];
@@ -979,55 +1146,72 @@ describe("every generated variant clears AA as text, or is compensated", () => {
   it.each(VARIANT_CASES)(
     "%s variant=%s paints text that clears AA, or has a compensating rule",
     (slot, variant, classString) => {
+      const HOSTS = ["--background", "--card", "--muted"] as const;
+
       for (const mode of ["light", "dark"] as const) {
         const vars = mode === "light" ? rootVars : darkVars;
-        const backdrop = resolveRgb(requireToken(vars, "--background"), vars);
 
-        /** Resolves a `Utility` to the surface it actually paints, tint and all. */
-        const surfaceOf = (bg: Utility): Rgb => {
+        /**
+         * Contrast of `fg` on the surface `bg` paints over `host`, under the
+         * CONSERVATIVE of the two compositing models.
+         *
+         * Taking the minimum is what makes the gate safe: gamma-sRGB is the lower
+         * model on both samples the palette actually uses (see `mixOklab`), but
+         * that is a property of these hues rather than a guarantee, and a gate
+         * must not admit a paint either model would fail. A solid fill (alpha
+         * 100) is identical under both, so this only ever does work on a tint.
+         */
+        const paintedContrast = (fg: string, bg: Utility, host: Rgb): number => {
+          const foreground = resolveRgb(requireToken(vars, fg), vars);
           const colour = resolveRgb(requireToken(vars, bg[0]), vars);
-          return bg[1] >= 100 ? colour : mixOklab(colour, backdrop, bg[1]);
+          if (bg[1] >= 100) return contrast(foreground, colour);
+          return Math.min(
+            contrast(foreground, mixOklab(colour, host, bg[1])),
+            contrast(foreground, compositeGammaSrgb(colour, host, bg[1])),
+          );
         };
 
         const asPainted = restingColours(classString, mode);
-        const painted = contrast(
-          resolveRgb(requireToken(vars, asPainted.fg), vars),
-          surfaceOf(asPainted.bg),
-        );
-        if (painted >= AA_TEXT) continue;
-
-        const where =
-          `${slot} variant="${variant}" paints ${asPainted.fg} on ` +
-          `${asPainted.bg[0]}${asPainted.bg[1] < 100 ? `/${asPainted.bg[1]}` : ""}, ` +
-          `which is ${painted.toFixed(2)}:1 in ${mode} mode — below AA ${AA_TEXT}:1`;
-
         const rule = compensatingRule(slot, variant, mode);
-        expect(
-          Object.keys(rule).length,
-          `${where}, and globals.css has no compensating rule for ` +
-            `[data-slot="${slot}"][data-variant="${variant}"] that applies in ${mode} mode`,
-        ).toBeGreaterThan(0);
-
-        // Apply whatever the rule changed, then hold the RESULT to AA. A rule
-        // pointing at another inaccessible token is not a compensation.
-        const ref = (value: string): string => {
-          const token = /^var\(\s*(--[\w-]+)\s*\)$/.exec(value.trim())?.[1];
-          expect(
-            token,
-            `${where}, and its rule declares "${value}", which is not a var()`,
-          ).toBeDefined();
-          return token as string;
-        };
-        const fixedFg = rule.colour === undefined ? asPainted.fg : ref(rule.colour);
+        const hasRule = Object.keys(rule).length > 0;
+        const context = `${slot} variant="${variant}"`;
+        const fixedFg = rule.colour === undefined ? asPainted.fg : ref(rule.colour, context, mode);
         const fixedBg: Utility =
-          rule.background === undefined ? asPainted.bg : [ref(rule.background), 100];
+          rule.background === undefined ? asPainted.bg : [ref(rule.background, context, mode), 100];
 
-        const fixed = contrast(resolveRgb(requireToken(vars, fixedFg), vars), surfaceOf(fixedBg));
-        expect(
-          fixed,
-          `${where}, and its compensating rule yields ${fixedFg} on ${fixedBg[0]}, ` +
-            `which is only ${fixed.toFixed(2)}:1`,
-        ).toBeGreaterThanOrEqual(AA_TEXT);
+        // A variant that declares no `bg-*` inherits whatever it is placed on,
+        // which for a Badge is usually `--card` or `--muted`. Testing only
+        // `--background` would be optimistic by construction, so every host is
+        // tested; a variant that declares its own fill is host-independent.
+        const hosts = asPainted.declaresBackground ? (["--background"] as const) : HOSTS;
+
+        for (const hostToken of hosts) {
+          const host = resolveRgb(requireToken(vars, hostToken), vars);
+          const where =
+            `${context} in ${mode} mode on ${hostToken}: painted ${asPainted.fg} on ` +
+            `${asPainted.bg[0]}${asPainted.bg[1] < 100 ? `/${asPainted.bg[1]}` : ""} = ` +
+            `${paintedContrast(asPainted.fg, asPainted.bg, host).toFixed(2)}:1`;
+
+          const painted = paintedContrast(asPainted.fg, asPainted.bg, host);
+          if (painted >= AA_TEXT && !hasRule) continue;
+
+          expect(
+            hasRule,
+            `${where}, which is below AA ${AA_TEXT}:1, and globals.css has no compensating rule for ` +
+              `[data-slot="${slot}"][data-variant="${variant}"] applying in ${mode} mode`,
+          ).toBe(true);
+
+          // Apply whatever the rule changed, then hold the RESULT to AA. A rule
+          // pointing at another inaccessible token is not a compensation, and a
+          // rule painting a solid background while leaving the text alone fails
+          // here too — text == background is 1:1.
+          const fixed = paintedContrast(fixedFg, fixedBg, host);
+          expect(
+            fixed,
+            `${where}, and its compensating rule yields ${fixedFg} on ${fixedBg[0]}, ` +
+              `which is only ${fixed.toFixed(2)}:1`,
+          ).toBeGreaterThanOrEqual(AA_TEXT);
+        }
       }
     },
   );
@@ -1046,34 +1230,173 @@ describe("every generated variant clears AA as text, or is compensated", () => {
     expect(tokenContrast(darkVars, "--primary", "--background")).toBeGreaterThanOrEqual(AA_TEXT);
   });
 
-  it("covers the destructive variants, which cannot be fixed by changing the text", () => {
+  it("covers the destructive variants, whose defect is the boundary, not the text", () => {
     /*
-     * A second real finding the generalised gate produced, and the reason the
-     * compensating-rule model understands `background-color` as well as `color`.
+     * The second finding from generalising the gate, and the one where an
+     * earlier version of this file was wrong in a way that mattered.
      *
-     * shadcn's destructive variant is `bg-destructive/10 text-destructive`: the
-     * text colour, the surface behind it and the wash are all the same hue, so
-     * the surface moves WITH the text. Measured in dark mode: 2.44:1 on the
-     * `/10` wash and 2.06:1 on the `/20` one the `dark:` override selects.
+     * Round 2 reported shadcn's destructive variant at 2.06:1 as TEXT in dark
+     * mode and shipped a fix justified by it. That number was an artefact of a
+     * broken `srgbToOklab` which computed `cbrt(gamma)` instead of
+     * `cbrt(linear)`. With the transform corrected the text measures 5.10:1
+     * (light, on its `/10` wash) and 4.96:1 (dark, on the `/20` wash) — it was
+     * never failing, and the round-2 comment block claiming it did was false.
      *
-     * Lightening the ink does not rescue it, and the sweep is the proof: at
-     * L 0.7 it is 2.06:1 on the `/20` wash, at L 0.93 (near-white) it is only
-     * 3.35:1. A colour can never reach AA against a tint of ITSELF. The fix has
-     * to be the surface, which is why the dark destructive rule replaces the
-     * wash with a solid `--destructive` fill under `--destructive-foreground` —
-     * the same shape the light-mode `default` Button already uses.
+     * The defect is real but different: WCAG 1.4.11, the control BOUNDARY. The
+     * tint the variant paints against the page it sits on, as gamma-sRGB /
+     * oklab-interpolation:
+     *
+     *   light /10  1.19:1 / 1.16:1      dark /10  1.13:1 / 1.12:1
+     *   light /20  1.42:1 / 1.35:1      dark /20  1.34:1 / 1.30:1
+     *
+     * Swept across every alpha the tint only clears 3:1 at about 70% opacity
+     * (1.07:1 at 5% in light, 6.06:1 solid), so the two alphas shadcn generates
+     * leave the control with no perceivable edge. That is the `--border` defect
+     * from fix round 1 — the same reason `--input` is darkened off the neutral —
+     * one variant over, on the control that asks a user to confirm deleting a
+     * patient.
+     *
+     * A text-side fix cannot exist either. Round 2's sweep claimed lightening
+     * the ink only moved the `/20` wash from 2.06:1 to 3.35:1 even at L 0.93;
+     * re-derived with the corrected transform, the same sweep is 4.96:1 at
+     * L 0.70 and 8.82:1 at L 0.93. The surface moves WITH the ink, so the ratio
+     * improves, but the EDGE does not move at all — and the edge is what fails.
      */
-    const darkBg = resolveRgb(requireToken(darkVars, "--background"), darkVars);
-    const destructiveDark = resolveRgb(requireToken(darkVars, "--destructive"), darkVars);
-    expect(contrast(destructiveDark, mixOklab(destructiveDark, darkBg, 20))).toBeLessThan(AA_TEXT);
+    const BOUNDARY = 3;
+    for (const [mode, vars] of [
+      ["light", rootVars],
+      ["dark", darkVars],
+    ] as const) {
+      for (const host of ["--background", "--card"] as const) {
+        const backdrop = resolveRgb(requireToken(vars, host), vars);
+        for (const alpha of [10, 20]) {
+          const tint = mixOklab(
+            resolveRgb(requireToken(vars, "--destructive"), vars),
+            backdrop,
+            alpha,
+          );
+          // Assert the DEFECT first, so this test cannot quietly become vacuous
+          // if the gate or the palette ever changes underneath it.
+          expect(
+            contrast(tint, backdrop),
+            `destructive ${alpha}% on ${host} in ${mode} mode — if this now clears 3:1 the defect is gone and this block should be deleted`,
+          ).toBeLessThan(BOUNDARY);
+        }
+        // And the compensation, which is unscoped, clears it in both modes.
+        const solid = resolveRgb(requireToken(vars, "--destructive"), vars);
+        expect(contrast(solid, backdrop)).toBeGreaterThanOrEqual(BOUNDARY);
+      }
+    }
 
-    const rule = compensatingRule("button", "destructive", "dark");
+    // Text was never the problem, and saying so with a number stops the next
+    // reader re-deriving the round-2 claim.
+    const lightDestructive = resolveRgb(requireToken(rootVars, "--destructive"), rootVars);
+    const darkDestructive = resolveRgb(requireToken(darkVars, "--destructive"), darkVars);
+    const lightBg = resolveRgb(requireToken(rootVars, "--background"), rootVars);
+    const darkBg = resolveRgb(requireToken(darkVars, "--background"), darkVars);
+    expect(
+      contrast(lightDestructive, mixOklab(lightDestructive, lightBg, 10)),
+    ).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrast(darkDestructive, mixOklab(darkDestructive, darkBg, 20))).toBeGreaterThanOrEqual(
+      AA_TEXT,
+    );
+
+    const rule = compensatingRule("button", "destructive", "light");
     expect(rule.background).toBe("var(--destructive)");
     expect(rule.colour).toBe("var(--destructive-foreground)");
     expect(compensatingRule("badge", "destructive", "dark").background).toBe("var(--destructive)");
-    // Light mode's tinted destructive already clears AA on its own, and must be
-    // left looking tinted — the rule is scoped to `.dark` for that reason.
-    expect(compensatingRule("button", "destructive", "light")).toEqual({});
+    // Unscoped, which is the whole point: a `.dark`-only rule left light mode
+    // shipping a 1.19:1 edge on the safety-critical button.
+    expect(compensatingRule("button", "destructive", "light")).not.toEqual({});
+    expect(compensatingRule("button", "destructive", "dark")).not.toEqual({});
+  });
+
+  it("holds every hover compensation to AA, a state the resting gate cannot see", () => {
+    /*
+     * The resting gate reads a variant's UNPREFIXED utilities, so `:hover` is
+     * invisible to it by construction — right for the generated
+     * `hover:bg-muted` on the ghost variant, wrong for a hover rule globals.css
+     * writes itself.
+     *
+     * Round 3 makes the destructive compensation UNSCOPED, and an unlayered
+     * unconditional `background-color` outranks the generated
+     * `hover:bg-destructive/20` for the same layer reason it outranks the
+     * resting tint. So the compensation necessarily deletes hover feedback and
+     * a rule has to put it back. That rule is where the danger is: an earlier
+     * version wrote `color-mix(in oklab, var(--destructive) 88%, black)`
+     * unlayered, which is right in light (6.33:1 -> 20.62:1) and catastrophic in
+     * dark (6.69:1 -> 1.09:1), because dark `--destructive` is a light coral
+     * under a near-black ink. Nothing above would have caught it, so it gets its
+     * own assertion here.
+     */
+    for (const rule of topLevelRules(GLOBALS_CSS)) {
+      if (rule.prelude.trimStart().startsWith("@layer")) continue;
+      const selectors = rule.prelude.split(",").map((selector) => selector.trim());
+      if (!selectors.some((selector) => /:hover\b/.test(selector))) continue;
+      for (const mode of ["light", "dark"] as const) {
+        const vars = mode === "light" ? rootVars : darkVars;
+        // Per branch, the same mode test the resting gate uses: a selector
+        // applies unless it is `.dark`-scoped and the mode is light.
+        if (!selectors.some((selector) => !selector.includes(".dark") || mode === "dark")) continue;
+        const decls = declarations(rule.body);
+        const background = decls.get("background-color") ?? decls.get("background");
+        const fill = refToken(
+          background,
+          `${rule.prelude.trim()} in ${mode} mode declares "${background}", which is not a var()`,
+        );
+        // The label is whatever the resting rule left on the control, read out
+        // of the generated sources rather than named here, so a hover rule for a
+        // different variant is checked against its own ink.
+        const target = selectors
+          .map((selector) => [slotOf(selector), variantOf(selector)] as const)
+          .find(([s, v]) => s !== undefined && v !== undefined);
+        if (target === undefined) continue; // not about one variant; nothing to compare
+        const [slot, variant] = target;
+        const source = VARIANT_SOURCES.find(([name]) => name === slot)?.[1];
+        const classes =
+          source === undefined
+            ? undefined
+            : cvaVariantClasses(readFileSync(join(REPO_ROOT, source), "utf8"))[variant as string];
+        const resting = classes === undefined ? "--foreground" : restingColours(classes, mode).fg;
+        const compensatingColour = compensatingRule(slot as string, variant as string, mode).colour;
+        const ink =
+          compensatingColour === undefined
+            ? resting
+            : refToken(
+                compensatingColour,
+                `${slot} ${variant} in ${mode} mode declares "${compensatingColour}", which is not a var()`,
+              );
+        const ratio = tokenContrast(vars, ink, fill);
+        expect(
+          ratio,
+          `${rule.prelude.trim()} paints ${fill} under ${ink}, which is ` +
+            `${ratio.toFixed(2)}:1 in ${mode} mode`,
+        ).toBeGreaterThanOrEqual(AA_TEXT);
+      }
+    }
+
+    // Not vacuous. The loop above is a `for`, so it would pass silently with no
+    // hover rules at all — and "the destructive variant has no hover rule" is
+    // exactly the regression this test exists to catch, because deleting the
+    // rule leaves the control with no hover feedback rather than an unreadable
+    // one. So its existence is asserted, and the two variants that must NOT
+    // need one are asserted not to have one.
+    const hoverRulesFor = (variant: string): string[] =>
+      topLevelRules(GLOBALS_CSS)
+        .filter((rule) => !rule.prelude.trimStart().startsWith("@layer"))
+        .filter((rule) =>
+          rule.prelude
+            .split(",")
+            .map((selector) => selector.trim())
+            .some((selector) => variantOf(selector) === variant && /:hover\b/.test(selector)),
+        )
+        .map((rule) => rule.prelude.trim());
+    expect(hoverRulesFor("destructive")).toEqual([
+      '[data-slot="button"][data-variant="destructive"]:hover',
+    ]);
+    // `link` is compensated by a `color:` change, which leaves the generated
+    // `hover:underline` alone, so it needs no hover rule of its own.
+    expect(hoverRulesFor("link")).toEqual([]);
   });
 
   it("reads what it thinks it reads out of the generated sources", () => {
@@ -1086,49 +1409,161 @@ describe("every generated variant clears AA as text, or is compensated", () => {
     expect(Object.keys(button)).not.toContain("lg"); // that is a SIZE, not a variant
 
     // Resting colours: a state rule must not be mistaken for the resting one.
-    expect(restingColours("text-primary underline-offset-4 hover:underline", "light")).toEqual({
+    // `border-transparent` is on every generated base string and is reported as
+    // no border at all, because a transparent border is not a boundary.
+    const resting = (classString: string, mode: "light" | "dark" = "light") => {
+      const { fg, bg, declaresBackground, border } = restingColours(classString, mode);
+      return { fg, bg, declaresBackground, border };
+    };
+    expect(resting("text-primary underline-offset-4 hover:underline")).toEqual({
       fg: "--primary",
       bg: ["--background", 100],
+      declaresBackground: false,
+      border: undefined,
     });
-    expect(restingColours("hover:bg-muted hover:text-foreground", "light")).toEqual({
+    expect(resting("hover:bg-muted hover:text-foreground border border-transparent")).toEqual({
       fg: "--foreground",
       bg: ["--background", 100],
+      declaresBackground: false,
+      border: undefined,
     });
+    // A declared border IS reported, so the 1.4.11 boundary of an outline
+    // control is visible to the gate rather than assumed absent.
+    expect(resting("border-border bg-background").border).toEqual(["--border", 100]);
     // Dark-only utilities apply in dark mode only.
-    expect(restingColours("bg-background dark:bg-input/30", "light").bg).toEqual([
+    expect(resting("bg-background dark:bg-input/30", "light").bg).toEqual(["--background", 100]);
+    expect(resting("bg-background dark:bg-input/30", "dark").bg).toEqual(["--input", 30]);
+    // A variant that declares no fill says so, which is what makes it get
+    // tested against --card and --muted rather than assuming --background.
+    expect(resting("text-foreground").declaresBackground).toBe(false);
+    expect(resting("bg-muted text-foreground").declaresBackground).toBe(true);
+    // Alpha modifiers are carried through rather than flattened to the token.
+    expect(resting("bg-destructive/10 text-destructive").bg).toEqual(["--destructive", 10]);
+    // An arbitrary value is not a token reference.
+    expect(resting("bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)]").bg).toEqual([
       "--background",
       100,
     ]);
-    expect(restingColours("bg-background dark:bg-input/30", "dark").bg).toEqual(["--input", 30]);
-    // Alpha modifiers are carried through rather than flattened to the token.
-    expect(restingColours("bg-destructive/10 text-destructive", "light").bg).toEqual([
-      "--destructive",
-      10,
-    ]);
-    // An arbitrary value is not a token reference.
-    expect(
-      restingColours("bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)]", "light").bg,
-    ).toEqual(["--background", 100]);
   });
 
-  it("mixes tinted backgrounds in oklab, the way Tailwind's /N modifier does", () => {
-    // Sanity on the composite, because every tinted-background verdict above
-    // rests on it. If these fail, those verdicts are meaningless.
+  it("refuses to model two unconditional utilities of the same kind", () => {
+    // The StatusBadge defect this repo already shipped: two `bg-*` on one
+    // element, merge failed, both survived. Picking the first would model the
+    // result instead of reporting it.
+    expect(() => restingColours("bg-primary bg-success", "light")).toThrow(/unconditional/);
+    expect(() => restingColours("text-primary text-success-foreground", "light")).toThrow(
+      /unconditional/,
+    );
+    // An unprefixed utility and its `dark:` override is the normal pairing, not
+    // a conflict, and must not trip the guard.
+    expect(() => restingColours("bg-destructive/10 dark:bg-destructive/20", "dark")).not.toThrow();
+  });
+
+  it("round-trips sRGB through OKLab", () => {
+    // The previous self-test for this transform used only black, white and
+    // white@37% — precisely the inputs where "cbrt(gamma)" and "cbrt(linear)"
+    // agree, so it could not have caught the missing linearisation. This one
+    // sweeps the range and both models' agreement point disappears.
+    for (const v of [0, 0.02, 0.1, 0.25, 0.5, 0.75, 0.9, 0.98, 1]) {
+      const grey: Rgb = [v, v, v];
+      const back = oklabToSrgb(srgbToOklab(grey));
+      for (const channel of back) {
+        expect(Math.abs(channel - v), `grey ${v} round-tripped to ${channel}`).toBeLessThan(1e-6);
+      }
+    }
+    // Chromatic too: the brand hexes, and every token the palette is built from.
+    for (const hex of ["#05ab29", "#066fc4", "#bf140b", "#b5bdbb", "#35a677", "#172099"]) {
+      const source = hexToRgb(hex);
+      const back = oklabToSrgb(srgbToOklab(source));
+      expect(Math.max(...back.map((c, i) => Math.abs(c - source[i]!))), hex).toBeLessThan(1e-6);
+    }
+  });
+
+  it("satisfies OKLab's defining property: L == Y^(1/3) for neutrals", () => {
+    // This is the property the broken transform violated, stated as a property
+    // rather than as three magic numbers, so it holds at any lightness.
+    for (const v of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+      const [L] = srgbToOklab([v, v, v]);
+      expect(L, `L at sRGB ${v}`).toBeCloseTo(Math.cbrt(srgbToLinear(v)), 7);
+    }
+    // And the specific figures the review reproduced, to three decimals.
+    expect(srgbToOklab([0.1, 0.1, 0.1])[0]).toBeCloseTo(0.2156, 3);
+    expect(srgbToOklab([0.5, 0.5, 0.5])[0]).toBeCloseTo(0.5982, 3);
+    expect(srgbToOklab([0.9, 0.9, 0.9])[0]).toBeCloseTo(0.9234, 3);
+  });
+
+  it("does not confuse cbrt(gamma) with cbrt(linear) — the bug this replaced", () => {
+    // Stated as a negative so a future refactor that drops the linearisation
+    // fails here with a readable diff rather than silently shifting 697 ratios.
+    const [L] = srgbToOklab([0.5, 0.5, 0.5]);
+    expect(L).not.toBeCloseTo(Math.cbrt(0.5), 3); // the old, wrong answer
+  });
+
+  it("composites tints with a model, not an accident, and keeps the two honest", () => {
+    // Endpoints are exact under both models.
     const black: Rgb = [0, 0, 0];
     const white: Rgb = [1, 1, 1];
-
-    // Endpoints are exact.
     expect(rgbToHex(mixOklab(black, white, 0))).toBe("#ffffff");
     expect(rgbToHex(mixOklab(black, white, 100))).toBe("#000000");
     expect(rgbToHex(mixOklab(white, white, 37))).toBe("#ffffff");
 
-    // The 50% midpoint is #636363, NOT the sRGB average #808080 — oklab's
-    // lightness is not linear in gamma-encoded sRGB, which is the entire reason
-    // for doing this in oklab rather than averaging channels. Pinning the
-    // difference means a future refactor to a naive average fails here instead
-    // of quietly changing every tinted-background number.
+    // The 50% neutral is the one interior value both models must agree on, and
+    // it is NOT the sRGB average: oklab's L is not linear in gamma-encoded sRGB,
+    // which is the whole reason for compositing here rather than averaging
+    // channels.
     expect(rgbToHex(mixOklab(black, white, 50))).toBe("#636363");
+    expect(rgbToHex(compositeGammaSrgb(black, white, 50))).toBe("#808080");
     expect(rgbToHex(mixOklab(black, white, 50))).not.toBe("#808080");
+
+    // The two models are genuinely different computations, not aliases.
+    const brand = hexToRgb("#05ab29");
+    expect(rgbToHex(mixOklab(brand, white, 30))).not.toBe(
+      rgbToHex(compositeGammaSrgb(brand, white, 30)),
+    );
+  });
+
+  it("the two compositing models agree on every surface the shipped variants use", () => {
+    // The gate holds the MINIMUM of the two models, which is only a guard
+    // against future divergence rather than a permanent tax while they agree.
+    // Where they diverge, which one is right depends on the browser's painting
+    // path, and a 1.4.11 or AA verdict must not hinge on that — so the gap is
+    // measured on the exact quantity the gate decides on: the FOREGROUND
+    // contrast the painted surface produces, per variant, mode and host.
+    //
+    // MEASURED, not guessed: the largest gap on today's palette is 0.45:1, on
+    // `button:outline` in dark mode (12.21:1 oklab vs 11.76:1 gamma-sRGB on
+    // `--background`), and 0.32:1 on `--card`. That is the same pair the review
+    // quoted as 4.76:1 under the broken transform, and it clears AA by more than
+    // 7:1 of margin under either, so the 0.5 threshold below sits just above the
+    // observed maximum: a change that pushes the models apart materially trips
+    // this, and today's noise does not.
+    const MAX_GAP = 0.5;
+    const divergences: string[] = [];
+    for (const [, rel] of VARIANT_SOURCES) {
+      for (const [variant, classString] of Object.entries(
+        cvaVariantClasses(readFileSync(join(REPO_ROOT, rel), "utf8")),
+      )) {
+        for (const mode of ["light", "dark"] as const) {
+          const vars = mode === "light" ? rootVars : darkVars;
+          const painted = restingColours(classString, mode);
+          const foreground = resolveRgb(requireToken(vars, painted.fg), vars);
+          for (const host of ["--background", "--card", "--muted"] as const) {
+            const backdrop = resolveRgb(requireToken(vars, host), vars);
+            const tint = resolveRgb(requireToken(vars, painted.bg[0]), vars);
+            const gap = Math.abs(
+              contrast(foreground, mixOklab(tint, backdrop, painted.bg[1])) -
+                contrast(foreground, compositeGammaSrgb(tint, backdrop, painted.bg[1])),
+            );
+            if (gap > MAX_GAP) {
+              divergences.push(
+                `${rel} variant=${variant} ${mode} on ${host}: models differ by ${gap.toFixed(2)}:1`,
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(divergences, divergences.join("; ")).toEqual([]);
   });
 });
 
@@ -1286,13 +1721,47 @@ describe("the hex rule is not vacuous", () => {
    */
   it("walks the component tree, so the per-file assertions have files to assert on", () => {
     const files = scannedUiFiles();
-    expect(files.length).toBeGreaterThan(5);
+    const code = files.filter((file) => /\.(tsx?)$/.test(file));
+    const css = files.filter((file) => file.endsWith(".css"));
+
+    // Exact counts, so a change to the scan roots or to the file extensions is
+    // a visible diff rather than a silent narrowing. Measured, not guessed: the
+    // hex and palette rules run on both kinds of file, the literal
+    // colour-function rule on code only — every token declaration in a
+    // stylesheet is an `oklch(` call, so that rule cannot apply to CSS at all.
+    //
+    // (Round 1 and round 2 of this report both said "17 x 3 = 51" for the
+    // per-file count. Both were wrong twice over: there were 18 code files then
+    // as well, and `.css` files never got three cases. Only the *delta* of 3
+    // from a temporary demo route survived, which is the one number the
+    // controller's audit confirmed.)
+    expect(css).toEqual(["app/globals.css", "app/shadcn.css"]);
+    expect(code.length + css.length).toBe(18);
+    expect(code.length).toBe(16);
+
     expect(files).toContain("components/shared/status-badge.tsx");
-    expect(files).toContain("app/globals.css");
-    // M7: `lib/` used to be outside the scan roots, so a component placed there
-    // was invisible to the gate. That the root is walked is now asserted rather
-    // than assumed.
+    // `lib/` used to be outside the scan roots, so a component placed there was
+    // invisible and the gate went quiet without failing.
     expect(files).toContain("lib/utils/cn.ts");
+  });
+
+  it("applies the colour-function rule to code only, and the other two to CSS too", () => {
+    // The scoping is deliberate and asserted rather than implied, because the
+    // three rules differ for a reason: `.css` files may legitimately contain
+    // `oklch(` inside the token blocks, but may never contain a hex outside
+    // them or an off-palette class at all.
+    expect(
+      scannedUiSource(true)
+        .map(([label]) => label)
+        .sort(),
+    ).toEqual(
+      scannedUiFiles()
+        .filter((file) => /\.(tsx?)$/.test(file))
+        .sort(),
+    );
+    expect(scannedUiSource().length).toBe(scannedUiFiles().length);
+    // And the difference is exactly the stylesheets.
+    expect(scannedUiSource().length - scannedUiSource(true).length).toBe(2);
   });
 
   it("flags a hex pasted into a component the same way it flags one in CSS", () => {
