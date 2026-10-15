@@ -2205,8 +2205,11 @@ describe("the hex rule is not vacuous", () => {
     // from a temporary demo route survived, which is the one number the
     // controller's audit confirmed.)
     expect(css).toEqual(["app/globals.css", "app/shadcn.css"]);
-    expect(code.length + css.length).toBe(18);
-    expect(code.length).toBe(16);
+    // Task 3 added lib/permissions/registry.ts, which is not UI surface but
+    // lives under a scan root — the gate scans it rather than trusting the
+    // directory a file happens to sit in. 16 -> 17 code files; measured.
+    expect(code.length + css.length).toBe(19);
+    expect(code.length).toBe(17);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was

@@ -377,3 +377,25 @@ the `/* â€¦ */` form. A CSS-native stripper is the correct fix.
 
 See `.superpowers/sdd/cliniccore-foundation/task-2-report.md` for the full
 report, including the contrast measurements behind every token value.
+
+## Task 3 — permission registry (single source of truth)
+
+- The role x permission matrix lives once, in lib/permissions/registry.ts
+  (21 permissions, 15 roles). scripts/gen-permissions-sql.ts is the only thing
+  that turns it into SQL; Task 7 inlines generatePlatformScopeSql(), Task 8
+  inlines generateOrganizationScopedRoleSeedTemplate() with a concrete
+  organization id substituted for {{ORGANIZATION_ID}}.
+- **Determinism is the contract**: same registry in, byte-identical SQL out,
+  independent of declaration order (pinned by reversed-input tests). The
+  generator never emits timestamps. Do not hand-edit generated SQL.
+- **platform_super_admin holds the four platform.* permissions and nothing
+  clinical.** Platform operators see the tenant directory, subscription and
+  usage — never patient records. This is the registry-level half of the
+  plan's rule that private.can() must not consult is_platform_admin().
+- **Known risk**: the generated SQL has never been executed. Tests pin its
+  text shape only; Task 7's apply is the first proof it is valid PostgreSQL.
+- **Gate interaction to expect**: lib/ is a scan root of the design-token
+  no-hex gate. Any new .ts/.tsx/.css file under lib/ changes that
+  gate's pinned file count (see 	ests/unit/design-tokens.test.ts,
+  walks the component tree) and the update is intentional — the pin exists
+  so scan-set changes are visible diffs.
