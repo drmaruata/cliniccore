@@ -324,6 +324,11 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  /* Bridged on round 4. The token existed and the hover test pinned its value,
+     so it could not vanish silently — but a token that is not in this block is
+     not reachable as `bg-destructive-hover` by any caller, and the bridge gate
+     is the one that should notice that. */
+  --color-destructive-hover: var(--destructive-hover);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-success-ink: var(--success-ink);
@@ -416,10 +421,16 @@
  *
  * If you add a compensating rule, the test also checks that the token it names
  * clears AA itself — a compensating rule pointing at another inaccessible token
- * is not a compensation.
+ * is not a compensation. Round 4 added a third requirement: its selector list
+ * must cover every slot a variant can reach, including the ones a
+ * `Button asChild` wrapper emits on Button's behalf. See the destructive rule
+ * below for why, and `asChildSlots` in tests/unit/design-tokens.test.ts for the
+ * derivation.
  */
 [data-slot="button"][data-variant="link"],
-[data-slot="badge"][data-variant="link"] {
+[data-slot="badge"][data-variant="link"],
+[data-slot="alert-dialog-action"][data-variant="link"],
+[data-slot="alert-dialog-cancel"][data-variant="link"] {
   color: var(--primary-ink);
 }
 
@@ -484,9 +495,35 @@
  * into `@layer utilities`, and an unlayered declaration outranks every layer
  * regardless of specificity. The `dark:bg-destructive/20` this replaces is
  * inside that layer, so it cannot win here.
+ *
+ * FOUR SLOTS, NOT TWO, AND THE TWO EXTRA ONES ARE THE WHOLE POINT.
+ *
+ * `AlertDialogAction` and `AlertDialogCancel` are `<Button … asChild>` wrappers
+ * around Radix's `AlertDialogPrimitive.Action` / `.Cancel`. `asChild` swaps
+ * Button's own element for its child through Radix `Slot`, and
+ * `mergeProps(slotProps, childProps)` builds `{ ...childProps }` first — CHILD
+ * PROPS WIN. So the child's `data-slot` overrides the `data-slot="button"`
+ * Button sets, and the control that ships is
+ * `[data-slot="alert-dialog-action"]`, not `[data-slot="button"]`.
+ *
+ * Round 3 scoped this rule to `[data-slot="button"]` + `[data-slot="badge"]`
+ * only, so it never reached `ConfirmDialog`'s confirm button — the single most
+ * safety-critical control in the app — which kept rendering the generated tint.
+ * Measured there before this fix: boundary 1.16:1 light and 1.30:1 dark at rest,
+ * 1.42:1 / ~1.5:1 on hover, and the label on its own generated hover fill at
+ * 4.26:1 light and 3.98:1 dark, both below AA.
+ *
+ * These two selectors are the fix, and the reason they are not the last word is
+ * that they were derived by rendering, not by reading: anything that wraps
+ * `Button` with `asChild` and gives its child a `data-slot` reaches a slot this
+ * list must name. `tests/unit/design-tokens.test.ts` now derives that set by
+ * scanning for `Button asChild` wrappers and asserts every compensating rule
+ * covers all of it, so the next one cannot land on a phantom.
  */
 [data-slot="button"][data-variant="destructive"],
-[data-slot="badge"][data-variant="destructive"] {
+[data-slot="badge"][data-variant="destructive"],
+[data-slot="alert-dialog-action"][data-variant="destructive"],
+[data-slot="alert-dialog-cancel"][data-variant="destructive"] {
   background-color: var(--destructive);
   color: var(--destructive-foreground);
 }
@@ -510,20 +547,31 @@
  * light  6.33:1 resting -> 6.91:1 hover
  * dark   6.69:1 resting -> 7.43:1 hover
  *
- * An earlier version of this rule wrote `color-mix(in oklab, var(--destructive)
- * 88%, black)` unlayered and shipped the 1.09:1 dark hover state. The test now
- * holds every hover compensation to AA.
+ * AN EARLIER VERSION OF THIS RULE MIXED TOWARD `black`, and the figures round 3
+ * quoted next to it were wrong. `color-mix(in oklab, var(--destructive) 88%,
+ * black)` measures **8.14:1 light / 4.85:1 dark** — not the 20.62 / 1.09 the
+ * comment claimed. Those two numbers do describe a real mix, but a different
+ * one: 20.62:1 is P≈20 (dark 1.04 there) and 1.09:1 is P≈10, so the quoted pair
+ * was never one proportion at all. What survives the correction is the
+ * direction, and it is strong: for EVERY proportion P ≤ 25 dark collapses to
+ * about 1.0 — 1.00 at 25, 1.04 at 20, 1.09 at 10 — the label vanishing against
+ * its own fill, while light stays at 7.8 or better. Mixing toward `black` is
+ * therefore still disqualified; it is only the arithmetic that was wrong.
  *
- * WHY BUTTON ONLY. A Badge is not a pointer-driven control, and the generated
- * `badge` variant scopes its own hover to `[a]:` — anchors. Giving the badge a
- * bare `:hover` would recolour a static label under the cursor for no reason.
- * The consequence, recorded: an anchor-styled destructive Badge loses the
- * generated `[a]:hover:bg-destructive/20`, exactly as the resting rule already
- * outranks it. Nothing in the app renders a destructive Badge as a link today.
+ * WHY BUTTON AND THE DIALOG ACTION, NOT THE BADGE. The same four-selector list
+ * as the resting rule, minus the two that are not pointer-driven: a Badge is not
+ * a control, and the generated `badge` variant scopes its hover to `[a]:` —
+ * anchors. Giving a static label a bare `:hover` would recolour it under the
+ * cursor for no reason. The consequence, recorded: an anchor-styled destructive
+ * Badge loses the generated `[a]:hover:bg-destructive/20`, exactly as the
+ * resting rule already outranks it. Nothing in the app renders a destructive
+ * Badge as a link today.
  *
  * `:hover` does not fire on touch, so touch users get no hover state — which is
  * what the generated `hover:` utilities already gave them.
  */
-[data-slot="button"][data-variant="destructive"]:hover {
+[data-slot="button"][data-variant="destructive"]:hover,
+[data-slot="alert-dialog-action"][data-variant="destructive"]:hover,
+[data-slot="alert-dialog-cancel"][data-variant="destructive"]:hover {
   background-color: var(--destructive-hover);
 }

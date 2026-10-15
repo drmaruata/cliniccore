@@ -46,9 +46,13 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import * as React from "react";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { stripComments } from "@/scripts/check-no-secrets";
+import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 
 /**
  * Vitest serves test modules over a non-`file:` URL in the jsdom
@@ -631,6 +635,20 @@ const SEMANTIC = [
 const SUPPORTING = ["--secondary-foreground", "--card-foreground", "--popover-foreground"] as const;
 
 /**
+ * Tokens that are not part of the mandated semantic layer but are still
+ * declared in both blocks and reachable from `@theme inline`.
+ *
+ * `--destructive-hover` is here because the compensating rule for the
+ * destructive variant paints it, and it was the one colour token in the file
+ * that was in neither the token blocks' test coverage nor the bridge's: the
+ * hover test pinned its existence and value, so it could not vanish silently,
+ * but nothing asserted that it was *reachable* from Tailwind. A token that
+ * exists but is not bridged cannot be used as `bg-destructive-hover` by a
+ * future caller, and the bridge gate is where that should be noticed.
+ */
+const DERIVED = ["--destructive-hover"] as const;
+
+/**
  * Brand colour used AS TEXT rather than as a fill. A brand hue that clears AA
  * as a fill under its own ink does not clear AA as a label on a surface, so the
  * two jobs need separate tokens.
@@ -644,7 +662,7 @@ const SUPPORTING = ["--secondary-foreground", "--card-foreground", "--popover-fo
  */
 const ON_SURFACE = ["--success-ink", "--destructive-ink", "--primary-ink"] as const;
 
-const ALL_TOKENS = [...Object.keys(BRAND), ...SEMANTIC, ...SUPPORTING, ...ON_SURFACE];
+const ALL_TOKENS = [...Object.keys(BRAND), ...SEMANTIC, ...SUPPORTING, ...DERIVED, ...ON_SURFACE];
 
 const rootBlock = topLevelRuleFor(GLOBALS_CSS, ":root");
 const darkBlock = topLevelRuleFor(GLOBALS_CSS, ".dark");
@@ -730,6 +748,11 @@ describe("app/globals.css token blocks", () => {
   });
 
   it.each(SUPPORTING)("defines the primitive-support token %s in both modes", (name) => {
+    expect(requireToken(rootVars, name)).toMatch(/^(oklch|var\()/);
+    expect(requireToken(darkVars, name)).toMatch(/^(oklch|var\()/);
+  });
+
+  it.each(DERIVED)("defines the derived token %s in both modes", (name) => {
     expect(requireToken(rootVars, name)).toMatch(/^(oklch|var\()/);
     expect(requireToken(darkVars, name)).toMatch(/^(oklch|var\()/);
   });
@@ -884,7 +907,7 @@ describe("contrast", () => {
  * than a guess — but it is an inventory that has to be extended, which is why
  * the enumeration count is asserted below.
  */
-const VARIANT_SOURCES = [
+const DIRECT_VARIANT_SOURCES = [
   ["button", "components/ui/button.tsx"],
   ["badge", "components/ui/badge.tsx"],
 ] as const;
@@ -916,6 +939,64 @@ export function cvaVariantClasses(source: string): Record<string, string> {
   }
   return out;
 }
+
+/**
+ * Slots that a `data-variant` can actually land on, DERIVED rather than listed.
+ *
+ * This exists because round 3 shipped a compensating rule that reached nothing.
+ * `Button` accepts `asChild`, which swaps its own `<button>` element for its
+ * child through Radix `Slot`. `mergeProps(slotProps, childProps)` builds
+ * `overrideProps = { ...childProps }` first, so **the child's props win** — and
+ * a child that carries its own `data-slot` overrides the `data-slot="button"`
+ * Button sets. `AlertDialogAction` and `AlertDialogCancel` are exactly that: a
+ * `Button asChild` around a Radix primitive carrying
+ * `data-slot="alert-dialog-action"` / `"alert-dialog-cancel"`.
+ *
+ * So `[data-slot="button"][data-variant="destructive"]` never matched
+ * `ConfirmDialog`'s confirm button, and the whole accessibility work rested on a
+ * selector the shipped DOM did not carry. The gate could not see it because it
+ * read the cva class maps and modelled each variant as though it rendered on a
+ * bare element.
+ *
+ * The derivation: every `<Button … asChild>` in a generated component, paired
+ * with the `data-slot` on the child inside it. Both the wrapper count and the
+ * slot names are asserted below, so a new `asChild` wrapper is a visible diff
+ * and an empty scan is a loud failure rather than a silent narrowing.
+ */
+export function asChildSlots(files: ReadonlyArray<readonly [string, string]>): Array<{
+  file: string;
+  wrapper: string;
+  slot: string;
+}> {
+  const found: Array<{ file: string; wrapper: string; slot: string }> = [];
+  for (const [wrapper, rel] of files) {
+    const source = readFileSync(join(REPO_ROOT, rel), "utf8");
+    // `<Button … asChild>` — the open tag, so a mention in prose does not count.
+    const opens = source.matchAll(/<Button\b[^>]*\basChild\b[^>]*>/g);
+    for (const open of opens) {
+      const after = source.slice(open.index + open[0].length);
+      // The child's own `data-slot` is the first one inside the wrapper.
+      const slot = /data-slot="([^"]+)"/.exec(after)?.[1];
+      if (slot === undefined) continue;
+      found.push({ file: rel, wrapper, slot });
+    }
+  }
+  return found;
+}
+
+/** Generated components that wrap `Button`, and therefore can emit another slot. */
+const BUTTON_WRAPPERS: ReadonlyArray<readonly [string, string]> = [
+  ["alert-dialog", "components/ui/alert-dialog.tsx"],
+];
+
+/**
+ * Every slot a variant can reach: the direct `Button` / `Badge` elements, plus
+ * every slot an `asChild` wrapper emits on Button's behalf.
+ */
+const REACHABLE_SLOTS: readonly string[] = [
+  ...DIRECT_VARIANT_SOURCES.map(([slot]) => slot),
+  ...asChildSlots(BUTTON_WRAPPERS).map(({ slot }) => slot),
+];
 
 /** A colour utility and the alpha Tailwind applies to it, as `[name, percent]`. */
 type Utility = readonly [string, number];
@@ -1104,9 +1185,27 @@ function variantOf(selector: string): string | undefined {
   return /\[data-variant="([^"]+)"\]/.exec(selector)?.[1];
 }
 
+/**
+ * The class string a variant paints on a given slot.
+ *
+ * A direct slot (Button, Badge) paints its own cva map. An `asChild` slot paints
+ * **Button's** cva map, because the wrapper renders `<Button variant={…} asChild>`
+ * and it is Button that computes the class string — the Radix child contributes
+ * its own `data-slot` and `className` and nothing else. That is precisely why a
+ * slot can differ from `button` while the classes it paints are unchanged, and
+ * it is why round 3's rule was inert rather than wrong about colour.
+ */
+function variantClassesFor(slot: string, variant: string): string | undefined {
+  const direct = DIRECT_VARIANT_SOURCES.find(([name]) => name === slot)?.[1];
+  const wrapsButton = asChildSlots(BUTTON_WRAPPERS).some((entry) => entry.slot === slot);
+  if (direct === undefined && !wrapsButton) return undefined;
+  const source = direct ?? "components/ui/button.tsx";
+  return cvaVariantClasses(readFileSync(join(REPO_ROOT, source), "utf8"))[variant];
+}
+
 type VariantCase = readonly [string, string, string];
 
-const VARIANT_CASES: VariantCase[] = VARIANT_SOURCES.flatMap(([slot, rel]) =>
+const VARIANT_CASES: VariantCase[] = DIRECT_VARIANT_SOURCES.flatMap(([slot, rel]) =>
   Object.entries(cvaVariantClasses(readFileSync(join(REPO_ROOT, rel), "utf8"))).map(
     ([variant, classString]) => [slot, variant, classString] as const,
   ),
@@ -1141,6 +1240,79 @@ describe("every generated variant clears AA as text, or is compensated", () => {
     expect(names).toContain("badge:link");
     expect(names).toContain("button:destructive");
     expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("derives the slots an `asChild` Button wrapper actually emits", () => {
+    /*
+     * THE ROUND-4 CRITICAL, turned into an inventory.
+     *
+     * Round 3's compensating rule named `[data-slot="button"]` and
+     * `[data-slot="badge"]`. `ConfirmDialog`'s confirm button is neither: it is
+     * `AlertDialogAction`, a `Button asChild` wrapper whose child Radix merges
+     * with CHILD PROPS WINNING, so the emitted element carries
+     * `data-slot="alert-dialog-action"` and the rule never matched it.
+     *
+     * Reading the class maps cannot see that, because the class maps are correct
+     * — it is the DOM the wrapper emits that is not what the map implies. So the
+     * inventory is derived from the source here, and the rule-coverage assertion
+     * below holds every compensating rule to it.
+     */
+    const wrappers = asChildSlots(BUTTON_WRAPPERS);
+    expect(
+      wrappers.map(({ slot }) => slot).sort(),
+      "the `Button asChild` wrappers found in components/ui — if this changes, a compensating rule's selector list may need a new slot",
+    ).toEqual(["alert-dialog-action", "alert-dialog-cancel"]);
+    expect(wrappers.every(({ wrapper }) => wrapper === "alert-dialog")).toBe(true);
+    expect(REACHABLE_SLOTS).toContain("alert-dialog-action");
+    expect(REACHABLE_SLOTS).toContain("alert-dialog-cancel");
+    expect(REACHABLE_SLOTS).toContain("button");
+    expect(REACHABLE_SLOTS).toContain("badge");
+  });
+
+  it("every compensating rule covers every slot a variant can reach", () => {
+    /*
+     * THE ANTI-PHANTOM GUARD. A compensating rule is written against a set of
+     * `data-slot`s. If that set is narrower than the set of slots a variant can
+     * actually reach, the rule is inert on the ones it misses — which is exactly
+     * how round 3 shipped three selectors that covered none of the shipped
+     * destructive control.
+     *
+     * Every `asChild` wrapper accepts Button's full `variant` prop type, so
+     * statically any of them can carry any variant. The rule therefore has to
+     * cover ALL reachable slots, which is deliberately the strict reading: the
+     * cost of being strict is a few selectors that never match, and the cost of
+     * being loose is another phantom.
+     */
+    for (const rule of topLevelRules(GLOBALS_CSS)) {
+      if (rule.prelude.trimStart().startsWith("@layer")) continue;
+      const selectors = rule.prelude.split(",").map((selector) => selector.trim());
+      // A state selector is not a resting compensation; the hover rule is held
+      // to the same inventory by its own test below.
+      if (
+        selectors.some((selector) =>
+          /:(?:hover|focus|focus-visible|active|disabled)\b/.test(selector),
+        )
+      ) {
+        continue;
+      }
+      const keyed = selectors
+        .map((selector) => variantOf(selector))
+        .filter((variant): variant is string => variant !== undefined);
+      if (keyed.length === 0) continue;
+      const covered = new Set(
+        selectors
+          .map((selector) => slotOf(selector))
+          .filter((slot): slot is string => slot !== undefined),
+      );
+      for (const slot of REACHABLE_SLOTS) {
+        expect(
+          covered.has(slot),
+          `globals.css has a compensating rule for [data-variant="${keyed[0]}"] whose selector ` +
+            `list covers ${[...covered].sort().join(", ")} but not [data-slot="${slot}"] — a ` +
+            `variant painted on that slot would get no compensation`,
+        ).toBe(true);
+      }
+    }
   });
 
   it.each(VARIANT_CASES)(
@@ -1323,11 +1495,8 @@ describe("every generated variant clears AA as text, or is compensated", () => {
      * `hover:bg-destructive/20` for the same layer reason it outranks the
      * resting tint. So the compensation necessarily deletes hover feedback and
      * a rule has to put it back. That rule is where the danger is: an earlier
-     * version wrote `color-mix(in oklab, var(--destructive) 88%, black)`
-     * unlayered, which is right in light (6.33:1 -> 20.62:1) and catastrophic in
-     * dark (6.69:1 -> 1.09:1), because dark `--destructive` is a light coral
-     * under a near-black ink. Nothing above would have caught it, so it gets its
-     * own assertion here.
+     * version mixed toward `black`, and the figures quoted next to it were
+     * wrong (see the correction at the bottom of this block).
      */
     for (const rule of topLevelRules(GLOBALS_CSS)) {
       if (rule.prelude.trimStart().startsWith("@layer")) continue;
@@ -1352,11 +1521,7 @@ describe("every generated variant clears AA as text, or is compensated", () => {
           .find(([s, v]) => s !== undefined && v !== undefined);
         if (target === undefined) continue; // not about one variant; nothing to compare
         const [slot, variant] = target;
-        const source = VARIANT_SOURCES.find(([name]) => name === slot)?.[1];
-        const classes =
-          source === undefined
-            ? undefined
-            : cvaVariantClasses(readFileSync(join(REPO_ROOT, source), "utf8"))[variant as string];
+        const classes = variantClassesFor(slot as string, variant as string);
         const resting = classes === undefined ? "--foreground" : restingColours(classes, mode).fg;
         const compensatingColour = compensatingRule(slot as string, variant as string, mode).colour;
         const ink =
@@ -1379,8 +1544,8 @@ describe("every generated variant clears AA as text, or is compensated", () => {
     // hover rules at all — and "the destructive variant has no hover rule" is
     // exactly the regression this test exists to catch, because deleting the
     // rule leaves the control with no hover feedback rather than an unreadable
-    // one. So its existence is asserted, and the two variants that must NOT
-    // need one are asserted not to have one.
+    // one. So its existence is asserted, and the variants that must NOT need one
+    // are asserted not to have one.
     const hoverRulesFor = (variant: string): string[] =>
       topLevelRules(GLOBALS_CSS)
         .filter((rule) => !rule.prelude.trimStart().startsWith("@layer"))
@@ -1391,12 +1556,315 @@ describe("every generated variant clears AA as text, or is compensated", () => {
             .some((selector) => variantOf(selector) === variant && /:hover\b/.test(selector)),
         )
         .map((rule) => rule.prelude.trim());
-    expect(hoverRulesFor("destructive")).toEqual([
-      '[data-slot="button"][data-variant="destructive"]:hover',
-    ]);
+
+    // THE SAME INVENTORY AS THE RESTING RULE, MINUS THE BADGE. An unlayered
+    // hover rule has to cover every slot the resting rule covers, because the
+    // resting rule is what removed the generated hover on each of them. A Badge
+    // is not pointer-driven and the generated badge variant scopes its hover to
+    // `[a]:` — anchors — so it is deliberately excluded and the exclusion is
+    // asserted rather than assumed.
+    const POINTER_SLOTS = REACHABLE_SLOTS.filter((slot) => slot !== "badge");
+    const destructiveHover = hoverRulesFor("destructive");
+    expect(destructiveHover).toHaveLength(1);
+    const hoverSlots = destructiveHover[0]!
+      .split(",")
+      .map((selector) => selector.trim())
+      .map(slotOf)
+      .filter((slot): slot is string => slot !== undefined);
+    expect([...hoverSlots].sort()).toEqual([...POINTER_SLOTS].sort());
     // `link` is compensated by a `color:` change, which leaves the generated
     // `hover:underline` alone, so it needs no hover rule of its own.
     expect(hoverRulesFor("link")).toEqual([]);
+
+    /*
+     * CORRECTED PROVENANCE, round 4. The figures quoted above the loop used to
+     * read "6.33:1 -> 20.62:1 light, 6.69:1 -> 1.09:1 dark" for a mix toward
+     * `black`. Both numbers are real but they do not describe one proportion:
+     * `color-mix(in oklab, var(--destructive) 88%, black)` measures 8.14:1
+     * light and 4.85:1 dark; 20.62:1 appears at about 20% of the token (dark
+     * 1.04 there) and 1.09:1 at about 10%. What survives the correction is the
+     * direction, and it is the same conclusion: for every proportion at or below
+     * 25% the dark ratio sits at about 1.0 — the label vanishing against its own
+     * fill — while light never drops below 7.8.
+     */
+    const black: Rgb = [0, 0, 0];
+    for (const [mode, vars] of [
+      ["light", rootVars],
+      ["dark", darkVars],
+    ] as const) {
+      const destructive = resolveRgb(requireToken(vars, "--destructive"), vars);
+      const ink = resolveRgb(requireToken(vars, "--destructive-foreground"), vars);
+      const at88 = contrast(ink, mixOklab(destructive, black, 88));
+      expect(
+        at88,
+        `mixing --destructive 88% toward black leaves its ink at ${at88.toFixed(2)}:1 in ${mode} mode`,
+      ).toBeGreaterThan(0);
+      for (const percent of [25, 20, 10]) {
+        const ratio = contrast(ink, mixOklab(destructive, black, percent));
+        if (mode === "dark") {
+          expect(
+            ratio,
+            `dark --destructive mixed ${percent}% toward black leaves its ink at ${ratio.toFixed(2)}:1`,
+          ).toBeLessThan(AA_TEXT);
+        } else {
+          expect(
+            ratio,
+            `light --destructive mixed ${percent}% toward black leaves its ink at ${ratio.toFixed(2)}:1`,
+          ).toBeGreaterThanOrEqual(AA_TEXT);
+        }
+      }
+    }
+  });
+
+  describe("the compensating rules reach the controls that actually ship", () => {
+    /*
+     * React's `act` contract, set for the same reason as in
+     * tests/unit/confirm-dialog-dom.test.tsx: jsdom does not set
+     * `IS_REACT_ACT_ENVIRONMENT`, and Radix work flushing inside `act` then
+     * logs "not configured to support act(...)" per commit. Measured in this
+     * describe at 28 per run while the tests still unmounted in-body; after
+     * that redundant unmount was removed this file read clean, but the
+     * sibling file — which mounts the same dialog — measured the same
+     * warnings arriving on some runs and not others, so the emission is
+     * timing-dependent rather than gone. Every React interaction in this
+     * describe is wrapped in `act`, which is the configuration the flag
+     * declares, so set it and close the class rather than hope the timing
+     * holds.
+     */
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+    /*
+     * WHY THIS EXISTS — the round-4 Critical, and the reason it survived three
+     * rounds of review.
+     *
+     * The accessibility work of rounds 2 and 3 was inert in the one place it was
+     * justified. `AlertDialogAction` is a `Button asChild` wrapper around Radix's
+     * `AlertDialogPrimitive.Action`. Radix `Slot.mergeProps(slotProps, childProps)`
+     * builds `overrideProps = { ...childProps }` first — CHILD PROPS WIN — so the
+     * child's `data-slot` overrides the `data-slot="button"` Button sets. The
+     * shipped control therefore carries `data-slot="alert-dialog-action"`, and the
+     * rule keyed on `[data-slot="button"]` never matched it.
+     *
+     * Nothing caught it because the gate reads the cva class maps and models each
+     * variant as though it renders on a bare element. The class maps are correct;
+     * it is the emitted DOM that is not what the map implies. So this test renders
+     * the real tree, reads the attributes a browser would match selectors against,
+     * and holds the rule's selector list to them.
+     */
+    let host: HTMLElement | null = null;
+    let root: Root | null = null;
+
+    /**
+     * Mount into jsdom and return the element the dialog ACTUALLY renders into.
+     *
+     * Radix `AlertDialog` portals its content into `document.body`, not into the
+     * mount host — querying the host finds nothing, which is exactly why the
+     * committed ConfirmDialog tests in tests/unit/shared-primitives.test.tsx
+     * query `container.ownerDocument.body` and why the round-4 probe queried
+     * `document`. The first cut of this helper returned the host and saw zero
+     * controls.
+     */
+    function renderConfirmDialog(tone: "default" | "destructive"): HTMLElement {
+      host = document.createElement("div");
+      document.body.append(host);
+      root = createRoot(host);
+      act(() => {
+        root?.render(
+          React.createElement(ConfirmDialog, {
+            open: true,
+            onOpenChange: () => {},
+            title: "Delete Ada Okafor?",
+            description: "This cannot be undone.",
+            onConfirm: () => {},
+            tone,
+          }),
+        );
+      });
+      return host.ownerDocument.body;
+    }
+
+    beforeEach(() => {
+      document.body.innerHTML = "";
+    });
+
+    it("renders ConfirmDialog and holds the rule's selectors to the emitted DOM", () => {
+      const tree = renderConfirmDialog("destructive");
+      const controls = Array.from(tree.querySelectorAll("[data-variant]"));
+      expect(
+        controls.length,
+        "ConfirmDialog rendered no control carrying data-variant — the tree changed",
+      ).toBeGreaterThan(0);
+
+      const seen: Array<[string, string]> = [];
+      for (const el of controls) {
+        const slot = el.getAttribute("data-slot");
+        const variant = el.getAttribute("data-variant");
+        expect(slot, "a rendered control carries no data-slot").toBeTruthy();
+        expect(variant).toBeTruthy();
+        seen.push([slot as string, variant as string]);
+
+        const classes = variantClassesFor(slot as string, variant as string);
+        expect(
+          classes,
+          `no variant map found for slot=${slot} variant=${variant} — the inventory of slots a variant can reach is stale`,
+        ).toBeDefined();
+
+        for (const mode of ["light", "dark"] as const) {
+          const vars = mode === "light" ? rootVars : darkVars;
+          const painted = restingColours(classes as string, mode);
+
+          /** Contrast of `fg` on `Utility` over the page, the conservative model. */
+          const surfaceOf = (utility: Utility, hostToken: string): number => {
+            const backdrop = resolveRgb(requireToken(vars, hostToken), vars);
+            const colour = resolveRgb(requireToken(vars, utility[0]), vars);
+            const [r, g, b] = mixOklab(colour, backdrop, utility[1]);
+            return contrast([r, g, b], backdrop);
+          };
+
+          const BOUNDARY = 3;
+          for (const hostToken of ["--background", "--card"] as const) {
+            // The boundary a control paints is its BORDER when it declares one
+            // — "the border IS the component boundary", as the outline Button's
+            // own note under NON_TEXT_PAIRS records — and its fill otherwise.
+            // The outline cancel is the case that forces the distinction: its
+            // `bg-background` fill is 1:1 against the page by design, and its
+            // perceivable edge is `border-border`.
+            const edge = painted.border ?? painted.bg;
+            const boundary = surfaceOf(edge, hostToken);
+            const rule = compensatingRule(slot as string, variant as string, mode);
+            if (boundary >= BOUNDARY) continue;
+            // The variant's own boundary is not a boundary, so it needs help — and
+            // the help must be keyed on the slot the DOM ACTUALLY carries.
+            const covered = topLevelRules(GLOBALS_CSS).some((candidate) => {
+              if (candidate.prelude.trimStart().startsWith("@layer")) return false;
+              const selectors = candidate.prelude.split(",").map((selector) => selector.trim());
+              if (
+                selectors.some((selector) =>
+                  /:(?:hover|focus|focus-visible|active|disabled)\b/.test(selector),
+                )
+              ) {
+                return false;
+              }
+              return selectors.some(
+                (selector) =>
+                  selector.includes(`[data-slot="${slot}"]`) &&
+                  selector.includes(`[data-variant="${variant}"]`),
+              );
+            });
+            expect(
+              covered,
+              `rendered slot=${slot} variant=${variant} bounds itself by ${edge[0]}` +
+                `${edge[1] < 100 ? `/${edge[1]}` : ""} on ${hostToken} ` +
+                `at ${boundary.toFixed(2)}:1 in ${mode} mode — below 3:1 — and no compensating ` +
+                `rule in globals.css is keyed on [data-slot="${slot}"][data-variant="${variant}"]`,
+            ).toBe(true);
+
+            // Whatever the rule paints must actually clear 1.4.11 on the page.
+            const compensated = rule.background ?? painted.bg[0];
+            const fixed = surfaceOf([refToken(rule.background, "rule background"), 100], hostToken);
+            expect(
+              fixed,
+              `[data-slot="${slot}"][data-variant="${variant}"] in ${mode} mode paints ` +
+                `${compensated} on ${hostToken}, whose boundary is ${fixed.toFixed(2)}:1`,
+            ).toBeGreaterThanOrEqual(BOUNDARY);
+          }
+        }
+      }
+
+      /*
+       * NON-VACUITY, and the round-4 finding stated as an assertion.
+       *
+       * The guard above is a loop with a `continue`, so it would pass if the
+       * destructive control were never rendered at all. So the exact pairing the
+       * review found is pinned by name: the confirm button of the destructive
+       * dialog carries `alert-dialog-action` + `destructive`, and the rule covers
+       * it. Before round 4 this pairing was emitted by the DOM and matched by no
+       * selector in the file.
+       */
+      expect(seen).toContainEqual(["alert-dialog-action", "destructive"]);
+      expect(seen).toContainEqual(["alert-dialog-cancel", "outline"]);
+      const destructiveHover = topLevelRules(GLOBALS_CSS)
+        .filter((rule) => !rule.prelude.trimStart().startsWith("@layer"))
+        .filter((rule) =>
+          rule.prelude
+            .split(",")
+            .map((selector) => selector.trim())
+            .some(
+              (selector) =>
+                slotOf(selector) === "alert-dialog-action" &&
+                variantOf(selector) === "destructive" &&
+                /:hover\b/.test(selector),
+            ),
+        );
+      // The rule's prelude is a whole selector LIST (one string, several
+      // selectors), so the individual selectors are what membership has to be
+      // checked against — `toContain` on the joined prelude would compare one
+      // multi-selector string against a single selector and never match.
+      const hoverSelectors = destructiveHover.flatMap((rule) =>
+        rule.prelude.split(",").map((selector) => selector.trim()),
+      );
+      expect(
+        hoverSelectors,
+        "the shipped confirm button is hoverable, so the hover rule must be keyed on the slot it actually carries",
+      ).toContain('[data-slot="alert-dialog-action"][data-variant="destructive"]:hover');
+      // No in-test unmount: `afterEach` below owns this describe's teardown.
+      // The extra `act` an earlier cut spent unmounting here measured as 28
+      // "not configured to support act(...)" errors attributed to this test on
+      // every run; removing the redundant call removed the warnings with it.
+    });
+
+    it("renders ConfirmDialog and holds the shipped confirm button to AA in both modes", () => {
+      /*
+       * The measured consequence, asserted: the destructive confirm button's
+       * resting boundary and its hover label ratio, in both modes, against the
+       * surfaces it can land on.
+       */
+      const tree = renderConfirmDialog("destructive");
+      const confirm = tree.querySelector('[data-slot="alert-dialog-action"]');
+      expect(confirm, "ConfirmDialog emitted no alert-dialog-action control").not.toBeNull();
+      expect(confirm?.getAttribute("data-variant")).toBe("destructive");
+
+      for (const mode of ["light", "dark"] as const) {
+        const vars = mode === "light" ? rootVars : darkVars;
+        for (const hostToken of ["--background", "--card", "--muted"] as const) {
+          const backdrop = resolveRgb(requireToken(vars, hostToken), vars);
+          // Resting: the rule paints a solid fill, so the boundary is the fill.
+          const restingFill = resolveRgb(requireToken(vars, "--destructive"), vars);
+          const boundary = contrast(restingFill, backdrop);
+          expect(
+            boundary,
+            `destructive confirm button on ${hostToken} in ${mode} mode has a ${boundary.toFixed(2)}:1 boundary`,
+          ).toBeGreaterThanOrEqual(3);
+          // Label on the solid fill.
+          const label = tokenContrast(vars, "--destructive-foreground", "--destructive");
+          expect(
+            label,
+            `destructive confirm button label in ${mode} mode is ${label.toFixed(2)}:1`,
+          ).toBeGreaterThanOrEqual(AA_TEXT);
+          // Hover: the generated `hover:bg-destructive/20` is outranked by the
+          // unlayered hover rule, so what lands is `--destructive-hover`.
+          const hovered = tokenContrast(
+            vars,
+            "--destructive-foreground",
+            // resolved inline because --destructive-hover is a colour, not a pair
+            "--destructive-hover",
+          );
+          expect(
+            hovered,
+            `destructive confirm button hover in ${mode} mode is ${hovered.toFixed(2)}:1`,
+          ).toBeGreaterThanOrEqual(AA_TEXT);
+        }
+      }
+      // Teardown is `afterEach`'s, as in the test above.
+    });
+
+    afterEach(() => {
+      act(() => root?.unmount());
+      root = null;
+      host?.remove();
+      host = null;
+      document.body.innerHTML = "";
+    });
   });
 
   it("reads what it thinks it reads out of the generated sources", () => {
@@ -1494,7 +1962,8 @@ describe("every generated variant clears AA as text, or is compensated", () => {
 
   it("does not confuse cbrt(gamma) with cbrt(linear) — the bug this replaced", () => {
     // Stated as a negative so a future refactor that drops the linearisation
-    // fails here with a readable diff rather than silently shifting 697 ratios.
+    // fails here with a readable diff rather than silently shifting every
+    // tinted ratio in the suite.
     const [L] = srgbToOklab([0.5, 0.5, 0.5]);
     expect(L).not.toBeCloseTo(Math.cbrt(0.5), 3); // the old, wrong answer
   });
@@ -1539,7 +2008,7 @@ describe("every generated variant clears AA as text, or is compensated", () => {
     // this, and today's noise does not.
     const MAX_GAP = 0.5;
     const divergences: string[] = [];
-    for (const [, rel] of VARIANT_SOURCES) {
+    for (const [, rel] of DIRECT_VARIANT_SOURCES) {
       for (const [variant, classString] of Object.entries(
         cvaVariantClasses(readFileSync(join(REPO_ROOT, rel), "utf8")),
       )) {
