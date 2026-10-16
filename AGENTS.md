@@ -90,13 +90,14 @@ These were all measured. Each one silently produces a green build and a wrong re
 
 Connected Composio apps: **supabase, github, cloudflare, firecrawl, tavily, neon, instagram, payhip**. Reach for these instead of writing bespoke API calls. Check what is actually connected before assuming a toolkit is available.
 
-## How to work here
+## How to work here. DO NOT SKIP THESE STEPS
 
 1. **Invoke the relevant skill before writing or editing any code.** Skills live in `C:\Users\USER\.agents\skills` and `C:\Users\USER\.config\opencode\skills`. OpenCode also ships skills for Next.js, Tailwind, shadcn, testing and security — check before assuming none applies.
 2. **Use the context7 MCP for anything involving an official library doc** (`tools.context7["resolve-library-id"]` then `tools.context7["query-docs"]`), especially Next.js 16, Tailwind v4, shadcn, `@supabase/ssr` and Vitest. Do not answer from memory — this stack has moved past what training data covers.
 3. Use the relevant plugins/extensions when they help; do not bolt them on unasked.
 4. Task work in this repo follows the SDD flow in `.superpowers/sdd/cliniccore-foundation/`: read the task brief, implement, then run all four gates and record the outcome.
 5. Prefer measurement over assertion. This project's history is a run of implementers reporting results their own change had invalidated — when a change invalidates a measurement, re-run it and correct the write-up rather than restating it.
+6. **DO NOT WRITE NUMEROUS COMMENTS IN THE CODE. IF IT IS REQUIRED TO WRITE COMMENTS, WRITE IT AT THE TOP TO DESCRIBE WHAT THE CODE DOES AND WHAT IS IT USE FOR.**
 
 ## AGENTS.md hygiene
 
