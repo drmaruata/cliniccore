@@ -121,7 +121,7 @@ docs/*.md                            15 artefacts
 `invitations(id uuid pk, organization_id uuid not null, email citext not null, role_id uuid not null, token_hash text not null unique, clinic_ids uuid[] not null default '{}', expires_at timestamptz not null, accepted_at timestamptz, invited_by uuid not null → auth.users(id), created_at)`
 
 `permissions(key text pk, description text not null)`
-`roles(id uuid pk, organization_id uuid → organizations(id) on delete cascade null, key text not null, name text not null, is_system boolean not null default false, created_at, unique (organization_id, key))` — `organization_id IS NULL` denotes a platform role.
+`roles(id uuid pk, organization_id uuid → organizations(id) on delete cascade null, key text not null, name text not null, is_system boolean not null default false, created_at, unique nulls not distinct (organization_id, key))` — `organization_id IS NULL` denotes a platform role. `nulls not distinct` is load-bearing: a plain unique index treats NULLs as distinct, so `on conflict (organization_id, key) do update` never fires for the platform row and re-seeding duplicates it (measured on PostgreSQL 17.11).
 `role_permissions(role_id uuid → roles(id) on delete cascade, permission_key text → permissions(key) on delete cascade, pk (role_id, permission_key))`
 `user_role_assignments(id uuid pk, organization_id uuid not null, user_id uuid not null → auth.users(id) on delete cascade, role_id uuid not null → roles(id), clinic_id uuid null, created_at, unique (organization_id, user_id, role_id, clinic_id))`
 

@@ -13,6 +13,15 @@
  * permissions ONLY. Platform operators see the tenant directory, subscription
  * and usage — never a tenant's patient records. Do not add clinical
  * permissions to that role.
+ *
+ * GRANT-CEILING OBLIGATION (Task 12 must honour this). `staff.manage` is
+ * flat in the registry's terms: any holder can, on paper, grant any role —
+ * including `organization_owner`. The registry cannot express hierarchy, so
+ * the invite and role-assignment flow that consumes it MUST enforce a
+ * ceiling: a grantor may never assign a role whose privileges exceed their
+ * own, and in particular only an existing `organization_owner` may mint
+ * another `organization_owner`. Task 12 owns that check; do not assume this
+ * file provides it.
  */
 
 /** A permission key: one or more lowercase snake_case segments joined by dots. */
@@ -99,7 +108,9 @@ export const PERMISSIONS: readonly PermissionDefinition[] = [
  *    permission and no platform permission;
  *  - `auditor` is read-only viewing plus `audit.read` — never `patients.update`
  *    or `patients.export`;
- *  - `lab_technician` verifies investigations but never prescribes;
+ *  - `lab_technician` fulfils investigation orders (verifies results) but
+ *    never places them and never prescribes — `investigations.order` belongs
+ *    to the clinicians who order the test, not the lab that runs it;
  *  - `pharmacist` manages inventory but never prescribes;
  *  - `platform_super_admin` is confined to the four platform-console
  *    permissions — it must never see clinical data.
@@ -178,13 +189,7 @@ export const ROLES: readonly RoleDefinition[] = [
     key: "lab_technician",
     name: "Laboratory Technician",
     isPlatform: false,
-    permissions: [
-      "encounters.read",
-      "investigations.order",
-      "investigations.verify",
-      "patients.read",
-      "reports.view",
-    ],
+    permissions: ["encounters.read", "investigations.verify", "patients.read", "reports.view"],
   },
   {
     key: "medical_director",

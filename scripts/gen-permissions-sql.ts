@@ -14,6 +14,11 @@
  * seeded matrix. Every list is therefore sorted by key before emission, and
  * no timestamps or other volatile tokens may appear in the output.
  *
+ * The emitted statements target the plan's tenancy schema exactly:
+ * `roles.is_system` marks seeded roles, and grants are
+ * `role_permissions(role_id, permission_key)` joining to `permissions(key)`.
+ * Every statement carries an on-conflict clause so the seed is re-appliable.
+ *
  * DO NOT EDIT THE OUTPUT BY HAND. Change the registry, regenerate.
  */
 
@@ -32,6 +37,23 @@ const NO_PERMISSIONS_COMMENT = "-- (no permissions in this scope; nothing to see
 const NO_ROLES_COMMENT = "-- (no roles in this scope; nothing to seed)";
 const NO_GRANTS_COMMENT = "-- (no role-permission grants in this scope; nothing to seed)";
 
+/**
+ * Keys are inlined into the emitted SQL, so their shape is enforced at the
+ * input boundary rather than assumed. One or more lowercase snake_case
+ * segments joined by dots — `patients.read`, `platform.tenants.manage`.
+ */
+const PERMISSION_KEY_PATTERN = /^[a-z_]+(?:\.[a-z_]+)+$/;
+
+/** Role keys: a single lowercase snake_case word. */
+const ROLE_KEY_PATTERN = /^[a-z_]+$/;
+
+/**
+ * A newline is legal inside a SQL literal but breaks the one-row-per-line
+ * shape that keeps the emitted SQL greppable, so descriptions and names are
+ * rejected if they span lines.
+ */
+const NEWLINE_PATTERN = /[\r\n]/;
+
 /** Escape a SQL single-quoted literal (SQL-style: double the quote). */
 function escapeLiteral(value: string): string {
   return value.replace(/'/g, "''");
@@ -41,6 +63,16 @@ function escapeLiteral(value: string): string {
 function validateRegistry(input: RegistryInput): void {
   const permissionKeys = new Set<string>();
   for (const permission of input.permissions) {
+    if (!PERMISSION_KEY_PATTERN.test(permission.key)) {
+      throw new Error(
+        `malformed permission key: ${JSON.stringify(permission.key)} — must match ${PERMISSION_KEY_PATTERN.source} (lowercase snake_case segments joined by dots)`,
+      );
+    }
+    if (NEWLINE_PATTERN.test(permission.description)) {
+      throw new Error(
+        `permission ${permission.key} has a multi-line description — the generator emits one row per line, so a newline would break the emitted SQL`,
+      );
+    }
     if (permissionKeys.has(permission.key)) {
       throw new Error(`duplicate permission key: ${permission.key}`);
     }
@@ -49,6 +81,16 @@ function validateRegistry(input: RegistryInput): void {
 
   const roleKeys = new Set<string>();
   for (const role of input.roles) {
+    if (!ROLE_KEY_PATTERN.test(role.key)) {
+      throw new Error(
+        `malformed role key: ${JSON.stringify(role.key)} — must match ${ROLE_KEY_PATTERN.source} (a single lowercase snake_case word)`,
+      );
+    }
+    if (NEWLINE_PATTERN.test(role.name)) {
+      throw new Error(
+        `role ${role.key} has a multi-line name — the generator emits one row per line, so a newline would break the emitted SQL`,
+      );
+    }
     if (roleKeys.has(role.key)) {
       throw new Error(`duplicate role key: ${role.key}`);
     }
@@ -116,15 +158,25 @@ function rolesBlock(roles: readonly RoleDefinition[], organizationIdSql: string)
       `  (${organizationIdSql}, '${role.key}', '${escapeLiteral(role.name)}', ${role.isPlatform})`,
   );
   return [
-    "insert into public.roles (organization_id, key, name, is_platform) values",
+    "insert into public.roles (organization_id, key, name, is_system) values",
     `${rows.join(",\n")}`,
     "on conflict (organization_id, key) do update",
-    "  set name = excluded.name, is_platform = excluded.is_platform;",
+    "  set name = excluded.name, is_system = excluded.is_system;",
   ].join("\n");
 }
 
 /**
  * Emit the (role, permission) grant pairs.
+ *
+ * The column list follows the plan's schema — `role_permissions(role_id,
+ * permission_key)` with `permission_key` referencing `permissions(key)`;
+ * there is no `permissions.id` and no `permission_id` to select (review
+ * round 1, C1).
+ *
+ * `on conflict (role_id, permission_key) do nothing` makes the statement
+ * re-appliable: grants are pure join rows with nothing to update, so a
+ * re-run must skip pairs that already exist rather than raise
+ * `unique_violation` on the primary key (review round 1, I2).
  *
  * The tuple separator is a lone `  ,` line rather than a trailing comma, so
  * that every tuple line is exactly `  ('role', 'permission')`. The registry
@@ -140,13 +192,14 @@ function grantsBlock(
   }
   const rows = grants.map((grant) => `  ('${grant.role}', '${grant.permission}')`);
   return [
-    "insert into public.role_permissions (role_id, permission_id)",
-    "select r.id, p.id",
+    "insert into public.role_permissions (role_id, permission_key)",
+    "select r.id, p.key",
     "from (values",
     rows.join("\n  ,\n"),
     ") as seed(role_key, permission_key)",
     `join public.roles r on ${rolesJoin}`,
-    "join public.permissions p on p.key = seed.permission_key;",
+    "join public.permissions p on p.key = seed.permission_key",
+    "on conflict (role_id, permission_key) do nothing;",
   ].join("\n");
 }
 

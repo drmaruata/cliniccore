@@ -152,7 +152,7 @@ function roleKeysInValues(sql: string): string[] {
   const keys: string[] = [];
   for (const row of valuesRows(
     sql,
-    "insert into public.roles (organization_id, key, name, is_platform) values",
+    "insert into public.roles (organization_id, key, name, is_system) values",
   )) {
     const match = row.match(/^  \((?:null|\{\{ORGANIZATION_ID\}\}), '([a-z_]+)'/);
     if (match) keys.push(match[1] ?? "");
@@ -162,7 +162,7 @@ function roleKeysInValues(sql: string): string[] {
 
 /** (role key, permission key) pairs in the order the grants VALUES block lists them. */
 function grantPairsInValues(sql: string): Array<{ role: string; permission: string }> {
-  const marker = "insert into public.role_permissions (role_id, permission_id)";
+  const marker = "insert into public.role_permissions (role_id, permission_key)";
   const start = sql.indexOf(marker);
   if (start === -1) return [];
   const pairs: Array<{ role: string; permission: string }> = [];
@@ -284,6 +284,13 @@ describe("the role x permission matrix", () => {
     expect(lab).not.toContain("prescriptions.create");
   });
 
+  it("does not let lab_technician order investigations", () => {
+    // Review round 1, Minor 2: lab techs fulfil orders, they do not place
+    // them. investigations.order stays with medical_director, doctor, nurse
+    // and clinical_assistant, so no permission is orphaned by this ruling.
+    expect(defaultPermissionsFor("lab_technician")).not.toContain("investigations.order");
+  });
+
   it("lets pharmacist manage inventory but never prescribe", () => {
     const pharmacist = defaultPermissionsFor("pharmacist");
     expect(pharmacist).toContain("inventory.manage");
@@ -367,7 +374,10 @@ describe("generatePlatformScopeSql", () => {
   it("upserts roles against (organization_id, key)", () => {
     const sql = generatePlatformScopeSql();
     expect(sql).toContain("on conflict (organization_id, key) do update");
-    expect(sql).toContain("  set name = excluded.name, is_platform = excluded.is_platform;");
+    expect(sql).toContain("  set name = excluded.name, is_system = excluded.is_system;");
+    // Review round 1, C2: the plan's column is roles.is_system; is_platform
+    // exists nowhere in the schema.
+    expect(sql).not.toContain("is_platform");
   });
 
   it("grants the platform role only platform-console permissions", () => {
@@ -383,6 +393,28 @@ describe("generatePlatformScopeSql", () => {
     );
     expect(pairs.every((pair) => pair.permission.startsWith("platform."))).toBe(true);
     expect(sql).toContain("r.organization_id is null and r.key = seed.role_key");
+  });
+
+  it("keys grants by permission_key and resolves it to permissions.key", () => {
+    // Review round 1, C1: the plan's schema has no permissions.id and no
+    // role_permissions.permission_id — the grant columns are
+    // (role_id, permission_key) with permission_key referencing
+    // permissions(key). The old (role_id, permission_id) form dies at apply
+    // time with undefined_column.
+    const sql = generatePlatformScopeSql();
+    expect(sql).toContain("insert into public.role_permissions (role_id, permission_key)");
+    expect(sql).toContain("select r.id, p.key");
+    expect(sql).not.toContain("permission_id");
+  });
+
+  it("leaves existing grants alone on re-apply", () => {
+    // Review round 1, I2: without an on-conflict clause the second apply
+    // raises unique_violation on the role_permissions primary key. Grants
+    // are pure join rows with nothing to update, so do nothing is the
+    // whole clause.
+    expect(generatePlatformScopeSql()).toContain(
+      "on conflict (role_id, permission_key) do nothing;",
+    );
   });
 });
 
@@ -419,6 +451,17 @@ describe("generateOrganizationScopedRoleSeedTemplate", () => {
       role.permissions.map((permission) => ({ role: role.key, permission })),
     );
     expect(pairs).toEqual(byPairKey(expected));
+  });
+
+  it("keys grants by permission_key and leaves existing grants alone on re-apply", () => {
+    // C1 and I2 in the organization scope too: Task 8 runs this template at
+    // onboarding, so it must target the plan's real columns and survive a
+    // retry without unique_violation.
+    const template = generateOrganizationScopedRoleSeedTemplate();
+    expect(template).toContain("insert into public.role_permissions (role_id, permission_key)");
+    expect(template).toContain("select r.id, p.key");
+    expect(template).not.toContain("permission_id");
+    expect(template).toContain("on conflict (role_id, permission_key) do nothing;");
   });
 });
 
@@ -536,5 +579,75 @@ describe("quoting and validation of generator input", () => {
     expect(() => generateOrganizationScopedRoleSeedTemplate(invalid)).toThrow(
       /lists the permission patients\.read more than once/,
     );
+  });
+
+  it("refuses a malformed permission key", () => {
+    // Review round 1, Minor 1: keys are inlined into emitted SQL, so shape is
+    // enforced at the input boundary, not assumed. RegistryInput invites
+    // synthetic input; an off-pattern key must never reach the SQL text.
+    for (const key of [
+      "patientsread", // no segment separator
+      "patients.", // empty tail segment
+      "patients..read", // empty middle segment
+      "Patients.read", // uppercase
+      "patients.2fa", // digits
+      "patients.read all", // space
+      "patients-read", // hyphen
+    ]) {
+      const invalid: RegistryInput = {
+        permissions: [{ key: key as PermissionKey, description: "View patient records" }],
+        roles: [],
+      };
+      expect(() => generatePlatformScopeSql(invalid), `accepted key: ${key}`).toThrow(
+        /malformed permission key/,
+      );
+    }
+  });
+
+  it("refuses a malformed role key", () => {
+    // Review round 1, Minor 1: role keys become RLS-visible identifiers and
+    // are inlined into emitted SQL the same way permission keys are.
+    for (const key of ["Doctor", "lab technician", "lab-tech", "lab_tech.2"]) {
+      const invalid: RegistryInput = {
+        permissions: [{ key: "patients.read", description: "View patient records" }],
+        roles: [
+          {
+            key: key as RoleKey,
+            name: "Whatever",
+            isPlatform: false,
+            permissions: ["patients.read"],
+          },
+        ],
+      };
+      expect(
+        () => generateOrganizationScopedRoleSeedTemplate(invalid),
+        `accepted key: ${key}`,
+      ).toThrow(/malformed role key/);
+    }
+  });
+
+  it("refuses a multi-line description", () => {
+    // Review round 1, Minor 4: a newline is legal inside a SQL literal, but it
+    // would break the one-row-per-line shape that keeps the emitted SQL
+    // greppable. Reject it loudly at the input boundary instead.
+    const invalid: RegistryInput = {
+      permissions: [
+        { key: "patients.read", description: "View patient records\nand appointments" },
+      ],
+      roles: [],
+    };
+    expect(() => generatePlatformScopeSql(invalid)).toThrow(/multi-line description/);
+  });
+
+  it("refuses a multi-line role name", () => {
+    // Same greppability rule as descriptions — role names are emitted as
+    // literals on the roles VALUES rows.
+    const invalid: RegistryInput = {
+      permissions: [{ key: "patients.read", description: "View patient records" }],
+      roles: [
+        { key: "doctor", name: "Doc\ntor", isPlatform: false, permissions: ["patients.read"] },
+      ],
+    };
+    expect(() => generatePlatformScopeSql(invalid)).toThrow(/multi-line name/);
   });
 });
