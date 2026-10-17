@@ -505,8 +505,10 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   boundary. Its real value is the PostgREST table-endpoint path, where a client
   cannot inject `SET ROLE`. The hard barriers are the absence of a
   SQL-execution surface reachable by anon/authenticated and the `profiles` RLS
-  policies (Task 9). Tasks 9/12/13 must not treat a role check as a security
-  boundary.
+  policies (Task 9) - and these are not independent: `service_role` has
+  `rolbypassrls = true`, so RLS falls with the same escalation, making "no
+  client-reachable SQL surface" the load-bearing barrier. Tasks 9/12/13 must not
+  treat a role check as a security boundary.
 - The two migrations were edited and re-applied once, in fix round 1, after the
   forgeable-GUC finding: they had been applied minutes earlier inside the same
   task loop, nothing depended on them, and a fresh replay must receive the
