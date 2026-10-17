@@ -54,12 +54,12 @@ describe("tenancy schema migration", () => {
     expect(TENANCY).not.toContain("create policy");
   });
 
-  it("makes both clinic_memberships foreign keys composite, including organization_id", () => {
+  it("makes both clinic_memberships foreign keys composite and cascading, including organization_id", () => {
     expect(TENANCY).toContain(
-      "foreign key (organization_id, membership_id) references public.organization_memberships (organization_id, id)",
+      "foreign key (organization_id, membership_id) references public.organization_memberships (organization_id, id) on delete cascade",
     );
     expect(TENANCY).toContain(
-      "foreign key (organization_id, clinic_id) references public.clinics (organization_id, id)",
+      "foreign key (organization_id, clinic_id) references public.clinics (organization_id, id) on delete cascade",
     );
     expect(TENANCY.match(/foreign key \(organization_id,/g)).toHaveLength(2);
   });
@@ -81,10 +81,11 @@ describe("tenancy schema migration", () => {
     expect(TENANCY).not.toMatch(/guard_platform_admin before insert/);
   });
 
-  it("declares current_org_ids as a stable security-definer with an empty search_path and closed grants", () => {
+  it("scopes current_org_ids to the caller's active memberships with a stable definer and closed grants", () => {
     expect(TENANCY).toContain(
       "create or replace function private.current_org_ids() returns setof uuid language sql security definer stable set search_path = ''",
     );
+    expect(TENANCY).toContain("where user_id = (select auth.uid()) and status = 'active';");
     expect(TENANCY).toContain("revoke execute on function private.current_org_ids() from public;");
     expect(TENANCY).toContain(
       "grant execute on function private.current_org_ids() to authenticated;",

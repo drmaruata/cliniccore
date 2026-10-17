@@ -92,7 +92,7 @@ docs/*.md                            15 artefacts
 - Where an assertion can be made against the **migration text**, it becomes a runnable `tests/unit/*.test.ts` (precedent: `tests/unit/migration-manifest.test.ts`, `tests/unit/tenancy-schema-sql.test.ts`).
 - Where it needs the **live database**, it is discharged as a **controller-run catalogue rehearsal**, recorded in the SDD ledger; no placeholder vitest file is committed in its place (a test that cannot reach its subject proves nothing).
 
-This supersedes the "write the failing test / run it to fail / run it to pass" steps of **Tasks 5, 6, 7, 9** wherever they refer to a live-DB `tests/integration/*.test.ts` — execute the rehearsal, not those steps. **Revisit at Task 18**, whose mutation-verified tenant-isolation harness is the plan's centrepiece and cannot run without a connection: it is re-scoped to a controller-run harness with recorded runs, or a connection is configured first.
+This supersedes the "write the failing test / run it to fail / run it to pass" steps of **any task** wherever they refer to a live-DB `tests/integration/*.test.ts` or `tests/security/*.test.ts` — Tasks 5, 6, 7, 8, 9, 10, 11 and 18 all do: execute the rehearsal (or write a text-level unit test), not those steps. **Revisit at Task 18**, whose mutation-verified tenant-isolation harness is the plan's centrepiece and cannot run without a connection: it is re-scoped to a controller-run harness with recorded runs, or a connection is configured first.
 
 ### Migrations (applied in this order)
 
@@ -433,7 +433,7 @@ This supersedes the "write the failing test / run it to fail / run it to pass" s
 
   **Add the deferred foreign key from Task 6:** `alter table public.invitations add constraint invitations_role_id_fkey foreign key (role_id) references public.roles (id);` — `invitations.role_id` was created without it because `roles` did not exist yet. Guard it so a re-run is a no-op (`if not exists` in `pg_constraint`, or `drop constraint if exists` first).
 
-  **Close the cross-tenant role reference (Task 6 review I4).** The FK above only proves the role *exists* — it does not prove it belongs to the row's organization. An admin of org A could invite with a role owned by org B (or a platform role) and grant org-A permissions drawn from another tenant's role. A composite FK cannot express this because platform roles have `organization_id IS NULL` and a composite key never matches a NULL. Add a `security definer`, `set search_path = ''` guard trigger on `invitations` (and on `user_role_assignments`) that raises unless `role.organization_id IS NULL OR role.organization_id = NEW.organization_id`; revoke execute from `public`.
+  **Close the cross-tenant role reference (Task 6 review I4).** The FK above only proves the role *exists* — it does not prove it belongs to the row's organization. An admin of org A could invite with a role owned by org B (or a platform role) and grant org-A permissions drawn from another tenant's role. A composite FK cannot express this because platform roles have `organization_id IS NULL` and a composite key never matches a NULL. Add a `security definer`, `set search_path = ''` guard trigger on `invitations` (and on `user_role_assignments`) that raises unless `role.organization_id IS NULL OR role.organization_id = NEW.organization_id`; revoke execute from `public`. The `IS NULL` allowance is deliberate and must not be tightened: platform roles carry no organisation-scoped authority, and `private.is_platform_admin()` reads the `profiles` boolean rather than any role, so allowing a platform role here grants nothing platform-level — whereas a strict org match would block platform-role assignment and signup seeding.
 
 - [ ] **Step 4: Write `20261014000500_authorization_functions.sql`**
 
@@ -804,6 +804,8 @@ This supersedes the "write the failing test / run it to fail / run it to pass" s
   ```
 
 ### Task 18: Tenant isolation suite
+
+> **Read the layout note on `tests/integration/`/`tests/security/` before starting this task** (it sits above the migration table). This suite and its mutation harness need a live database that vitest cannot reach in this project, so as written here the steps below cannot run. Until a connection is configured, this task is discharged as a **controller-run harness with recorded runs** against the live project, not a committed vitest file. Decide which at the start of the task, and record the ruling.
 
 **Files:**
 - Create: `tests/security/tenant-isolation.test.ts`, `tests/security/fixtures.ts`, `tests/security/mutation-harness.ts`

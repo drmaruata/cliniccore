@@ -576,10 +576,24 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
 
 - The `.opencode` graphify plugin writes `graphify-out/` (untracked) and
   `.opencode/plugins/graphify.js` at the start of a test run. `prettier --check
-  .` walks the filesystem and honours no git exclusion, so after any
+.` walks the filesystem and honours no git exclusion, so after any
   `npm run test` the formatting gate went red with no source change behind it
   - and `graphify-out/` was not gitignored, so the plan's `git add -A`
-  commit steps would have staged it.
+    commit steps would have staged it.
 - `graphify-out` and `.opencode` are added to `.prettierignore` (generated
   output, same rationale as `components/ui`) and `/graphify-out/` to
   `.gitignore`. This is why `lint` was briefly red during Task 6 fix round 1.
+
+## Task 6 fix round 2 - re-review findings
+
+- N1: the fix-round-1 commit left format:check red on docs/IMPLEMENTATION_STATUS.md
+  (a note appended after the gates ran), so its "lint 0" was stale. Fixed; the
+  gate run is now the last step. This is the AGENTS.md rule made concrete: when a
+  change invalidates a measurement, re-run it rather than restate it.
+- N2/N3: tests/unit/tenancy-schema-sql.test.ts now asserts current_org_ids()'s
+  predicate (user_id = (select auth.uid()) AND status = 'active') and the FKs'
+  on delete cascade, so dropping either fails CI.
+- N4/N5: the plan's supersede note applies to any task naming a live-DB suite
+  (Tasks 5-11, 18); Task 18's own section now carries the re-scope pointer.
+- N6: Task 7's role_id guard text states why platform roles (organization_id IS
+  NULL) are permitted and that the rule must not be tightened to a strict match.
