@@ -812,3 +812,50 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   re-apply, with substance proven identical by sorted-set md5s. RUN THIS AFTER
   EVERY APPLY - a file-only drift guard structurally cannot see a bad apply,
   which is how two of this task's own errors reached the database unnoticed.
+
+## Integration tests: catalogue assertions are real tests again
+
+- The standing ruling that every DB-state assertion be discharged as a
+  controller-run rehearsal is SUPERSEDED for CATALOGUE assertions.
+  `tests/integration/helpers/database.ts` opens a direct Postgres connection from
+  TEST_DATABASE_URL, which is the only way to read pg_proc, pg_policies,
+  pg_constraint and pg_index - PostgREST returns none of them.
+- tests/integration/tenancy-schema.test.ts is the first real integration file: six
+  tables with RLS enabled, both clinic_memberships foreign keys composite and
+  spanning organization_id, citext unique slug, both nulls-not-distinct uniques,
+  the UPDATE-only guard trigger, the four updated_at triggers, current_org_ids as a
+  stable definer with search_path="" that anon cannot execute or even reach the
+  schema for, TRUNCATE/REFERENCES/TRIGGER revoked, and migration history 1:1 with
+  the files on disk.
+- The suite SKIPS when TEST_DATABASE_URL is absent so a contributor without the
+  database password still gets a green npm run test - but CI=true or
+  REQUIRE_TEST_DATABASE_URL=true makes a missing URL FAIL instead, because a
+  suite that skips silently in CI is how coverage rots unnoticed. Both paths print
+  one line saying which happened.
+- The secret never enters code: TEST_DATABASE_URL is read from the environment or
+  .env.local (both gitignored) and no connection string is ever built by
+  concatenation, so check-no-secrets has nothing to flag. .env.example carries an
+  inert placeholder documenting the pooler form.
+- BEHAVIOURAL assertions still cannot run and stay controller rehearsals: every
+  table is RLS deny-all until Task 9, and the helpers live in private, whose
+  PostgREST exposure is still unresolved. Task 18's isolation harness now has a
+  path - direct connection for the catalogue half, PostgREST with real user JWTs
+  for the isolation half.
+- These tests connect as the database owner and therefore bypass RLS. They can
+  inspect the catalogue; they cannot prove tenant isolation, and must never be
+  cited as if they did.
+
+### Measured: use the pooler, not the direct host
+
+- TEST_DATABASE_URL pointed at db.<project-ref>.supabase.co:5432 with user
+  postgres, and every test failed with `getaddrinfo ENOTFOUND`. Measured from
+  this machine: that hostname does NOT resolve, while
+  aws-0-ap-south-1.pooler.supabase.com resolves and accepts TCP on both 5432 and 6543. The pooler username is postgres.<project-ref>, not plain postgres. With
+  the pooler form the suite runs: 11/11 pass against the live catalogue.
+- Two of those 11 failed on first run because MY expectations were stale, not
+  because the database was wrong - the table list was compared in declaration
+  order against a name-ordered query, and the updated_at trigger list was missing
+  `patients`, which Task 8 added. Both fixed. This is the value of the suite
+  working: it disagrees with you loudly.
+- The suite connects as the database owner and bypasses RLS. It can inspect the
+  catalogue; it cannot prove tenant isolation.
