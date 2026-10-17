@@ -539,3 +539,47 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
 - tests/integration/tenancy-schema.test.ts is discharged as a controller-run
   catalogue rehearsal: no DB connection string or PAT exists, so vitest cannot
   reach Postgres. A shared note in the plan records this for later tasks.
+
+## Task 6 fix round 1 - review findings closed
+
+- Four Important findings from the Task 6 review, all closed. I1: the
+  substitution ruling was too broad - migration-TEXT assertions are runnable, so
+  tests/unit/tenancy-schema-sql.test.ts now guards (11 tests) the composite-FK
+  arity, the six RLS enables, the UPDATE-only guard, current_org_ids' shape, and
+  the hardening indexes/revokes; only live-DB assertions remain controller
+  rehearsals. I2: Task 9 must create profiles (select/update self, NO insert
+  policy, with check forbidding an is_platform_admin flip) and invitations
+  (private.can(org,'staff.manage')) policies, or they stay deny-all forever.
+  I3: new migration 20261014000310 adds organization_memberships_user_id_idx -
+  current_org_ids filters user_id and Task 9 calls it in every tenant policy.
+  I4: invitations.role_id and user_role_assignments.role_id are not org-scoped by
+  the FK; Task 7 must add a definer guard trigger requiring
+  role.organization_id IS NULL OR = the row's organization_id (a composite FK
+  cannot express it - platform roles have NULL organization_id).
+- 00310 also revokes TRUNCATE/REFERENCES/TRIGGER from anon/authenticated on the
+  six tables (RLS does not cover table-wide operations) and closes
+  create_profile_for_new_user's PUBLIC execute grant. Verified: all three
+  privileges false for anon+authenticated, row SELECT retained, history 4 rows.
+- Standing rule recorded: every migration creating a public table enables RLS on
+  it in the same file (Supabase default-grants anon/authenticated on new public
+  tables). Applies to Tasks 7 and 8.
+- Ruling: profiles.full_name is app-authoritative and signup-seeded from
+  raw_user_meta_data; auth metadata updates do not propagate and no sync trigger
+  is added (no metadata-update path exists). A future profile-edit flow writes
+  profiles.full_name directly.
+- Systemic: the plan's live-DB suites (Tasks 5-9) are converted to text-level
+  unit tests where possible and controller rehearsals otherwise; Task 18's
+  mutation-verified tenant-isolation harness cannot run without a connection and
+  is flagged for re-scope or connection configuration before Task 18.
+
+### Tooling: graphify output is now ignored (gate integrity)
+
+- The `.opencode` graphify plugin writes `graphify-out/` (untracked) and
+  `.opencode/plugins/graphify.js` at the start of a test run. `prettier --check
+  .` walks the filesystem and honours no git exclusion, so after any
+  `npm run test` the formatting gate went red with no source change behind it
+  - and `graphify-out/` was not gitignored, so the plan's `git add -A`
+  commit steps would have staged it.
+- `graphify-out` and `.opencode` are added to `.prettierignore` (generated
+  output, same rationale as `components/ui`) and `/graphify-out/` to
+  `.gitignore`. This is why `lint` was briefly red during Task 6 fix round 1.

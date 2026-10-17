@@ -87,7 +87,12 @@ scripts/
 docs/*.md                            15 artefacts
 ```
 
-**Note on `tests/integration/` and `tests/security/`.** The plan describes these suites as asserting against the real database. No database connection string or Supabase PAT exists in this project — migrations are applied agent-side through the Composio MCP, and vitest has no route to Postgres. The DB-state assertions these suites specify are therefore discharged as **controller-run catalogue rehearsals**, recorded in the SDD ledger, and no placeholder vitest file is committed in their place (a test that cannot reach its subject proves nothing). This is revisited if a direct database connection is ever configured.
+**Note on `tests/integration/` and `tests/security/` — and on the per-task test steps.** The plan describes these suites as asserting against the real database. No database connection string or Supabase PAT exists in this project — migrations are applied agent-side through the Composio MCP, and vitest has no route to Postgres. So:
+
+- Where an assertion can be made against the **migration text**, it becomes a runnable `tests/unit/*.test.ts` (precedent: `tests/unit/migration-manifest.test.ts`, `tests/unit/tenancy-schema-sql.test.ts`).
+- Where it needs the **live database**, it is discharged as a **controller-run catalogue rehearsal**, recorded in the SDD ledger; no placeholder vitest file is committed in its place (a test that cannot reach its subject proves nothing).
+
+This supersedes the "write the failing test / run it to fail / run it to pass" steps of **Tasks 5, 6, 7, 9** wherever they refer to a live-DB `tests/integration/*.test.ts` — execute the rehearsal, not those steps. **Revisit at Task 18**, whose mutation-verified tenant-isolation harness is the plan's centrepiece and cannot run without a connection: it is re-scoped to a controller-run harness with recorded runs, or a connection is configured first.
 
 ### Migrations (applied in this order)
 
@@ -286,7 +291,7 @@ docs/*.md                            15 artefacts
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `applyMigration(name: string, sql: string): Promise<void>` in `scripts/apply-migration.ts`; migration tracking in `supabase_migrations.schema_migrations`.
+- Produces: `buildMigrationManifest(dir)` and `validateMigrations(dir)` in `scripts/apply-migration.ts` — the script validates the files and emits a JSON manifest; the **agent** applies each entry through the Composio MCP (a Node script cannot call the MCP itself, and there is no Supabase PAT).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -298,7 +303,7 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 3: Implement `scripts/apply-migration.ts`**
 
-  Reads `.env.local`, validates `SUPABASE_PROJECT_REF`, and applies each `supabase/migrations/*.sql` in filename order via the Composio applier with `idempotency_key` derived from the filename. Refuses to apply a file whose key is already recorded. Prints the filename and outcome per file.
+  Validates `SUPABASE_PROJECT_REF` presence, then **emits a manifest** (`[{name, idempotencyKey, sql}]`) instead of applying: a Node script cannot reach the Composio MCP. The controller reads the manifest, checks `supabase_migrations.schema_migrations` for each `name` (the applier does **not** dedupe by `idempotency_key` — it re-executes), and applies only the unrecorded files through the MCP. `npm run migrations:check` runs the validator in `lint`.
 
 - [ ] **Step 4: Commit `supabase/config.toml`**
 
@@ -347,7 +352,7 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 5: Apply both migrations, then verify via catalogue**
 
-  Run: `npm run migrate`, then query `pg_proc` for the functions and `prosecdef`/`proconfig`.
+  Run: `npm run migrations:check`, then apply the two files through the Composio MCP (history check first) and query `pg_proc` for the functions and `prosecdef`/`proconfig`.
   Expected: `set_updated_at` and `guard_platform_admin` present; `set_updated_at` `prosecdef = true`, `guard_platform_admin` `prosecdef = false` (the invoker exception); both with empty `search_path`; `anon` has neither schema usage nor function execute. `current_org_ids` is verified with Task 6.
 
 - [ ] **Step 6: Run the test to verify it passes** → PASS.
@@ -382,11 +387,11 @@ docs/*.md                            15 artefacts
 
   **Attach the Task 5 triggers.** `private.guard_platform_admin()` on `profiles` **`before update … for each row` ONLY** — never `before insert`: OLD is null there, so the predicate would raise on every signup. The INSERT side of `is_platform_admin` is closed through `profiles` RLS (Task 9), not the trigger. `private.set_updated_at()` on every table carrying an `updated_at` column.
 
-  **Create `private.current_org_ids()` here** (moved from Task 5 - it reads `public.organization_memberships`, which this migration creates): `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`; revoke execute from `public`, grant to `authenticated`.
+  **Create `private.current_org_ids()` here** (moved from Task 5 — it reads `public.organization_memberships`, which this migration creates): `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`; revoke execute from `public`, grant to `authenticated`.
 
-  **Enable RLS (deny-all) on all six tables now.** Supabase grants `anon`/`authenticated` access to new public tables by default, so a table created here and left without RLS is reachable through PostgREST until Task 9 adds policies. `enable row level security` with no policies denies everyone except the owner/service role; Task 9's policies layer on top.
+  **Enable RLS (deny-all) on all six tables now.** Supabase grants `anon`/`authenticated` access to new public tables by default, so a table created here and left without RLS is reachable through PostgREST until Task 9 adds policies. `enable row level security` with no policies denies everyone except the owner/service role; Task 9's policies layer on top. **This is a standing rule, not a Task 6 one-off:** every migration that creates a public table enables RLS on it in the same file (Tasks 7 and 8 create `roles`, `role_permissions`, `user_role_assignments`, `patients`, `patient_identifiers`, `audit_logs`, `platform_settings` — each needs its own enable).
 
-  **`invitations.role_id` is a plain `uuid` here, not a foreign key** - `roles` does not exist until Task 7's `00400`. Task 7 adds the foreign key once the table exists; a forward reference would fail at apply time.
+  **`invitations.role_id` is a plain `uuid` here, not a foreign key** — `roles` does not exist until Task 7's `00400`. Task 7 adds the foreign key once the table exists; a forward reference would fail at apply time.
 
 - [ ] **Step 4: Apply, then verify the composite FKs actually span organizations**
 
@@ -427,6 +432,8 @@ docs/*.md                            15 artefacts
   Four tables per the column list. `roles.is_system` marks seeded roles.
 
   **Add the deferred foreign key from Task 6:** `alter table public.invitations add constraint invitations_role_id_fkey foreign key (role_id) references public.roles (id);` — `invitations.role_id` was created without it because `roles` did not exist yet. Guard it so a re-run is a no-op (`if not exists` in `pg_constraint`, or `drop constraint if exists` first).
+
+  **Close the cross-tenant role reference (Task 6 review I4).** The FK above only proves the role *exists* — it does not prove it belongs to the row's organization. An admin of org A could invite with a role owned by org B (or a platform role) and grant org-A permissions drawn from another tenant's role. A composite FK cannot express this because platform roles have `organization_id IS NULL` and a composite key never matches a NULL. Add a `security definer`, `set search_path = ''` guard trigger on `invitations` (and on `user_role_assignments`) that raises unless `role.organization_id IS NULL OR role.organization_id = NEW.organization_id`; revoke execute from `public`.
 
 - [ ] **Step 4: Write `20261014000500_authorization_functions.sql`**
 
@@ -517,7 +524,7 @@ docs/*.md                            15 artefacts
   - Clinic-scoped read: `clinic_id in (select private.clinic_ids(organization_id))`.
   - Write: same predicate in both `using` and `with check`.
 
-  Special cases: `organizations` uses `private.is_member(id)`; `organization_memberships` uses `private.is_member(organization_id)`; `audit_logs` gets **select only** — authenticated users get no update or delete policy, making it append-only; `platform_settings` is readable only when `private.is_platform_admin()`, never by tenant members.
+  Special cases: `organizations` uses `private.is_member(id)`; `organization_memberships` uses `private.is_member(organization_id)`; `audit_logs` gets **select only** — authenticated users get no update or delete policy, making it append-only; `platform_settings` is readable only when `private.is_platform_admin()`, never by tenant members. **`profiles` and `invitations` are not org-scoped and need explicit policies or they stay deny-all forever:** `profiles` gets `select` and `update` where `id = (select auth.uid())`, and **no INSERT policy at all** (rows are created by the `auth.users` definer trigger; a client INSERT would be the INSERT-side route to `is_platform_admin`, so the update `with check` must also forbid flipping it — the UPDATE-only guard trigger does not cover this path); `invitations` read/write is gated by `private.can(organization_id, 'staff.manage')`.
 
   Use `DO $$ … IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE …) THEN … $$` guards, not bare `IF NOT EXISTS` policy DDL (SQLSTATE 42601).
 

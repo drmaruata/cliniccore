@@ -19,3 +19,9 @@ components/ui
 # Authored planning documents are prose, not source — do not reflow them.
 docs/superpowers
 .superpowers
+
+# Agent tooling output — generated per session, never authored. `prettier --check .`
+# walks the filesystem and ignores nothing on its own, so without this entry a
+# graphify run turns the formatting gate red with no source change behind it.
+graphify-out
+.opencode
