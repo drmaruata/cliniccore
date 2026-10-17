@@ -677,3 +677,24 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   role, and must refuse platform.* keys. can's caller predicate is pinned too -
   without it the function degenerates to "does any member of this org hold this
   permission".
+
+## Task 7 fix round 3 - case-insensitive platform keys, and an inaccurate claim removed
+
+- private.can lower-cases before the platform-key refusal
+  (lower(p_permission) not like 'platform.%'), in
+  20261014000520_platform_key_case.sql. The refusal was case-sensitive while the
+  grant match is exact text, so a key spelled Platform.tenants.manage would both
+  insert and match; authenticated holds table-level INSERT on permissions by
+  default, so Task 9 must also leave that reference table deny-all or read-only.
+  Staged and measured: the case variant is refused, and with a positive control
+  added a legitimate patients.read still returns true.
+- Corrected an inaccurate claim rather than leaving it: only THREE of the four
+  helpers honour organizations.status - current_org_ids, is_member and
+  clinic_ids. private.is_platform_admin deliberately does not, because a platform
+  operator must keep seeing suspended tenants in order to restore them. The wrong
+  claim was in AGENTS.md, the file later agents are told not to re-litigate,
+  where it invited an implementer to "fix" it into a tenant lockout. Task 9's
+  organizations policy therefore needs an is_platform_admin branch, or an
+  operator sees zero tenants.
+- Task 7's review loop is declared CONVERGED by an independent reviewer (no
+  Critical, no Important) after three rounds.

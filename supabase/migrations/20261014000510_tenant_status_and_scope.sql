@@ -17,6 +17,15 @@
 --    tenants through a separate function - so making the code enforce it beats
 --    relying on the seed never emitting such a grant.
 --
+--    Correcting Task 7's earlier reasoning, since 00500's header points here for
+--    it: guard_role_org_scope deliberately permits a platform role in any
+--    organization (role.organization_id IS NULL), and its original justification
+--    - "allowing a platform role here grants nothing platform-level" - was
+--    FALSE. The allowance was never what made that safe; the two clauses above
+--    are. Nothing now depends on the allowance for correctness, so do not read it
+--    as load-bearing: Task 10 must keep roles out of tenant hands, since a tenant
+--    able to mint a platform role is the thing the allowance would then carry.
+--
 -- 2. organizations.status existed and was read by nothing. Suspending or
 --    archiving a tenant therefore left can() and clinic_ids() returning exactly
 --    what they returned before, which undercuts platform.tenants.manage's own
@@ -24,7 +33,10 @@
 --    status was already honoured; organization-level was not. All four helpers
 --    now require organizations.status = 'active', which closes is_member,
 --    clinic_ids and current_org_ids together - and can(), because it already
---    requires is_member.
+--    requires is_member. Note that private.is_platform_admin is NOT redefined
+--    here and must not be: a platform operator has to keep seeing suspended and
+--    archived tenants in order to restore them, so platform visibility is
+--    deliberately independent of organizations.status.
 
 create or replace function private.current_org_ids()
 returns setof uuid

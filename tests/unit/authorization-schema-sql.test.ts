@@ -151,10 +151,12 @@ describe("private.can scope", () => {
     expect(latestDefinition("can")).not.toContain("is_platform_admin");
   });
 
-  it("refuses platform.* keys, whoever attached them", () => {
+  it("refuses platform.* keys, whoever attached them and whatever the case", () => {
     // permissions is one global table with no scope column, so a tenant could
     // attach platform.tenants.manage to its OWN role and satisfy the org check.
-    expect(latestDefinition("can")).toContain("p_permission not like 'platform.%'");
+    // lower() because the grant match is exact text: without it a key spelled
+    // `Platform.tenants.manage` would both insert and match.
+    expect(latestDefinition("can")).toContain("lower(p_permission) not like 'platform.%'");
   });
 
   it("admits only the organization's own roles, never a platform role", () => {

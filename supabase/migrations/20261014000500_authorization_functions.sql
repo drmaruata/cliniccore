@@ -1,10 +1,14 @@
 -- Task 7: the authorization functions every RLS policy calls.
 --
 -- PARTIALLY SUPERSEDED by 20261014000510_tenant_status_and_scope.sql, which
--- redefines all four: `can` is org-strict AND refuses `platform.*` keys, and all
--- four honour `organizations.status`. The rationale below that describes the
--- org-strict clause describes the shipped behaviour; the reasoning about the
--- guard's IS NULL allowance is kept for history and is corrected in 00510.
+-- redefines all four: `can` is org-strict AND refuses `platform.*` keys, and
+-- THREE of the four — current_org_ids, is_member and clinic_ids — honour
+-- organizations.status. private.is_platform_admin deliberately does NOT: a
+-- platform operator has to keep seeing suspended and archived tenants in order to
+-- suspend, support and restore them. Do not "fix" that into a lockout.
+-- The rationale below that describes the org-strict clause describes the shipped
+-- behaviour; the reasoning about the guard's IS NULL allowance is kept for
+-- history and is corrected in 00510.
 --
 -- Four helpers in the private schema, all SECURITY DEFINER because each reads
 -- tables the calling role cannot see - that is what breaks the RLS recursion a
