@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { describe } from "vitest";
 import { Pool } from "pg";
 
 /**
@@ -67,6 +68,42 @@ export function envValue(name: string): string | undefined {
     }),
   ));
   return loaded[name];
+}
+
+/**
+ * `describe` for a database-backed suite, with the skip policy in one place.
+ *
+ * SKIPPING IS FAILURE-SHAPED ON PURPOSE. With no TEST_DATABASE_URL the suite
+ * skips, so a fork or a contributor without the database password still gets a
+ * green `npm run test`. But when CI=true - or REQUIRE_TEST_DATABASE_URL=true, so
+ * it can be demanded locally - a missing URL FAILS instead, because a suite that
+ * skips silently in CI is how test coverage rots unnoticed.
+ *
+ * Only ABSENCE skips. A URL that is present but wrong - the common one being
+ * Supabase's direct host, which is IPv6-only and does not resolve from an IPv4
+ * machine - fails loudly with ENOTFOUND. A silently skipping suite pointed at
+ * the wrong database would report coverage it does not have.
+ *
+ * This lived inline in tenancy-schema.test.ts and four later files forgot it,
+ * which is how 34 tests came to fail on a bare `npm run test`. It is a helper
+ * now so that cannot recur.
+ */
+const url = envValue("TEST_DATABASE_URL");
+const missing = url === undefined || url === "";
+const mustRun = envValue("CI") === "true" || envValue("REQUIRE_TEST_DATABASE_URL") === "true";
+let warned = false;
+
+export function dbDescribe(name: string, suite: () => void): void {
+  if (missing && !warned) {
+    warned = true;
+    console.warn(
+      mustRun
+        ? "[integration] TEST_DATABASE_URL is required here but absent - failing."
+        : "[integration] TEST_DATABASE_URL is not set - skipping the catalogue suite. " +
+            "Set it in .env.local to run these against the database.",
+    );
+  }
+  (missing ? (mustRun ? describe : describe.skip) : describe)(name, suite);
 }
 
 /** Throws naming the variable, rather than letting `pg` fail with a socket error. */

@@ -1,7 +1,7 @@
-// @vitest-environment node
-import { describe, expect, it } from "vitest";
+﻿// @vitest-environment node
+import { expect, it } from "vitest";
 
-import { query } from "./helpers/database";
+import { dbDescribe, query } from "./helpers/database";
 
 /*
  * Task 5 - the private schema and its core functions, asserted against the live
@@ -18,7 +18,7 @@ import { query } from "./helpers/database";
  * design. See docs/IMPLEMENTATION_STATUS.md, Task 5.
  */
 
-describe("extensions", () => {
+dbDescribe("extensions", () => {
   it("installs citext into public, pinned rather than left to the applier's search_path", async () => {
     const rows = await query<{ extname: string; schema: string }>(
       `select e.extname, n.nspname as schema
@@ -34,7 +34,7 @@ describe("extensions", () => {
   });
 });
 
-describe("the private schema", () => {
+dbDescribe("the private schema", () => {
   it("exists and is closed to anon at the schema level", async () => {
     const rows = await query<{ exists: boolean; anon_usage: boolean }>(
       `select exists (select 1 from pg_catalog.pg_namespace where nspname = 'private') as exists,
@@ -45,7 +45,7 @@ describe("the private schema", () => {
   });
 });
 
-describe("core trigger functions", () => {
+dbDescribe("core trigger functions", () => {
   it("makes set_updated_at a definer with an empty search_path", async () => {
     const rows = await query<{ prosecdef: boolean; proconfig: string }>(
       `select p.prosecdef, coalesce(array_to_string(p.proconfig, ','), '') as proconfig

@@ -1,9 +1,9 @@
-// @vitest-environment node
-import { afterAll, describe, expect, it } from "vitest";
+﻿// @vitest-environment node
+import { afterAll, expect, it } from "vitest";
 
 import { ROLES } from "@/lib/permissions/registry";
 
-import { beginSession, closePool } from "./helpers/database";
+import { dbDescribe, beginSession, closePool } from "./helpers/database";
 
 /*
  * Task 8 - the onboarding RPC, exercised as a real tenant session.
@@ -43,7 +43,7 @@ async function actAsFreshUser(): Promise<{ session: Awaited<ReturnType<typeof be
   return { session };
 }
 
-describe("create_organization_with_owner", () => {
+dbDescribe("create_organization_with_owner", () => {
   it("bootstraps one organization, one active membership, one clinic and the full role matrix", async () => {
     const { session } = await actAsFreshUser();
     try {

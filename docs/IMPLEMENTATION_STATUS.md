@@ -932,3 +932,39 @@ derivation) are covered by `tests/unit/migration-manifest.test.ts`. The
 database's real state is covered per-task by the `md5(prosrc)` comparison plus
 the catalogue assertions in `tests/integration/`. The plan and this log now say
 so, so the next agent does not go looking for a missing file.
+
+### Task 9 correction: the skip guard was missing from four suites
+
+Measured, after a commit whose message implied these tests would skip without a
+URL: a bare `npm run test` **failed all 34** with `ENOTFOUND`, it did not skip.
+
+Cause: the skip policy lived inline in `tenancy-schema.test.ts` as 14 lines of
+`missing` / `mustRun` / `dbDescribe` boilerplate, and the four later files never
+copied it. It is now `dbDescribe` in `tests/integration/helpers/database.ts`,
+used by all five - boilerplate that can be forgotten is boilerplate in the wrong
+place.
+
+Measured, all three branches:
+
+| Condition                                  | Result                                         |
+| ------------------------------------------ | ---------------------------------------------- |
+| bad URL present (`.env.local` direct host) | **34 fail**, `ENOTFOUND` - loud                |
+| no URL at all                              | **34 skipped**, suite green                    |
+| no URL + `CI=true`                         | **34 fail**, prints "required here but absent" |
+
+Only ABSENCE skips. A present-but-wrong URL fails on purpose: a suite that
+silently skipped while pointed at the wrong database would report coverage it
+does not have. That distinction is the whole point of the guard and is now
+written down next to it.
+
+**The repository is currently RED on a bare `npm run test` and stays that way
+until `TEST_DATABASE_URL` in `.env.local` is changed to the pooler form.** The
+agent does not edit `.env.local`; it is operator-owned and gitignored. The fix:
+
+    TEST_DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-ap-south-1.pooler.supabase.com:6543/postgres
+
+Two things make the direct host wrong here, and both are easy to miss: it is
+**IPv6-only** (so DNS fails from an IPv4-only machine, which is why the failure
+mode is ENOTFOUND rather than a timeout), and the pooler requires the username
+`postgres.<project-ref>`, not plain `postgres`. Supabase's dashboard shows the
+direct connection string first, which is how the wrong value got pasted in.

@@ -1,7 +1,7 @@
-// @vitest-environment node
-import { afterAll, describe, expect, it } from "vitest";
+﻿// @vitest-environment node
+import { afterAll, expect, it } from "vitest";
 
-import { beginSession, closePool, expectRejection } from "./helpers/database";
+import { dbDescribe, beginSession, closePool, expectRejection } from "./helpers/database";
 
 /*
  * Task 8 - private.write_audit, exercised as real sessions.
@@ -90,7 +90,7 @@ const write = (
     metadata,
   ]);
 
-describe("write_audit", () => {
+dbDescribe("write_audit", () => {
   it("records the calling user and the metadata verbatim for an active organization", async () => {
     const session = await stage();
     try {

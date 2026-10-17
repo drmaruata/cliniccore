@@ -1,7 +1,7 @@
-// @vitest-environment node
-import { describe, expect, it } from "vitest";
+﻿// @vitest-environment node
+import { expect, it } from "vitest";
 
-import { query } from "./helpers/database";
+import { dbDescribe, query } from "./helpers/database";
 
 /*
  * Task 8 - tenant data, audit and platform schema, asserted against the live
@@ -24,7 +24,7 @@ const NEW_TABLES = [
   "platform_settings",
 ];
 
-describe("tenant data tables", () => {
+dbDescribe("tenant data tables", () => {
   it("creates all five with row-level security enabled", async () => {
     const rows = await query<{ relname: string; rls: boolean }>(
       `select c.relname, c.relrowsecurity as rls
@@ -127,7 +127,7 @@ describe("tenant data tables", () => {
   });
 });
 
-describe("audit log and platform settings", () => {
+dbDescribe("audit log and platform settings", () => {
   it("gives both tables zero foreign keys, so the trail outlives tenant and actor", async () => {
     const rows = await query<{ tablename: string; fks: string }>(
       `select c.relname as tablename, count(k.oid)::text as fks

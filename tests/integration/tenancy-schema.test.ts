@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, expect, it } from "vitest";
 
-import { closePool, envValue, query } from "./helpers/database";
+import { dbDescribe, closePool, query } from "./helpers/database";
 
 /*
  * Task 6 - identity and tenancy schema, asserted against the live catalogue.
@@ -17,28 +17,8 @@ import { closePool, envValue, query } from "./helpers/database";
  * read another tenant's rows. Behaviour belongs to a PostgREST suite signing in
  * as a real user.
  *
- * SKIPPING IS FAILURE-SHAPED ON PURPOSE. With no TEST_DATABASE_URL the suite
- * skips, so a fork or a contributor without the database password still gets a
- * green `npm run test`. But when CI=true - or REQUIRE_TEST_DATABASE_URL=true, so
- * it can be demanded locally - a missing URL FAILS instead, because a suite that
- * skips silently in CI is how test coverage rots unnoticed. Either way one line
- * is printed saying which happened.
+ * The skip policy lives in `dbDescribe` - see the comment there.
  */
-
-const url = envValue("TEST_DATABASE_URL");
-const missing = url === undefined || url === "";
-const mustRun = envValue("CI") === "true" || envValue("REQUIRE_TEST_DATABASE_URL") === "true";
-
-if (missing) {
-  console.warn(
-    mustRun
-      ? "[integration] TEST_DATABASE_URL is required here but absent - failing."
-      : "[integration] TEST_DATABASE_URL is not set - skipping the catalogue suite. " +
-          "Set it in .env.local to run these against the database.",
-  );
-}
-
-const dbDescribe = missing ? (mustRun ? describe : describe.skip) : describe;
 
 const TENANCY_TABLES = [
   "profiles",
@@ -53,7 +33,9 @@ const TENANCY_TABLES = [
 const TENANCY_TABLES_BY_NAME = [...TENANCY_TABLES].sort();
 
 afterAll(async () => {
-  if (!missing) await closePool();
+  // Safe when the suite skipped: the pool is created lazily, so a never-created
+  // pool means `closePool` is a no-op.
+  await closePool();
 });
 
 dbDescribe("tenancy tables", () => {
