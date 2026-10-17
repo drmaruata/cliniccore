@@ -21,17 +21,25 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - Branch `feature/foundation` (master is the untouched base). Do not implement on master.
-- **Task 1 of 20 complete. Task 2 (design system) is in its review-fix loop.** Run
-  `git log --oneline` and `git status` before you start: the review fixes may be sitting
-  uncommitted on your machine. The briefs are in
-  `.superpowers/sdd/cliniccore-foundation/`.
+- **Tasks 1–6 of 20 are complete and diffed** (Task 6 = identity/tenancy schema, three commits). Task 7 is next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review packages are in `.superpowers/sdd/cliniccore-foundation/`.
 - **A clean tree on this branch should be green on all six gates.** If you are not sure,
   run them rather than trusting a summary — including this one:
   `npm run typecheck && npm run lint && npm run check:secrets && npm run test &&
 npm run build && npm run format:check`.
-- Nothing exists yet for `supabase/`, `lib/supabase/`, `proxy.ts`, or the route
-  groups. Task 3 onward creates them.
-- `README.md` does not exist yet — it is Task 19's deliverable.
+- **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
+  green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
+  has. This happened twice on Task 6. `npm run format` after any markdown edit.
+- `supabase/migrations/` now holds `00100`–`00310` (extensions, core functions, identity and
+  tenancy schema, tenancy indexes/hardening), all applied. RLS is **enabled deny-all** on the
+  six tenancy tables; the policies are Task 9. `lib/supabase/`, `proxy.ts`, the route groups,
+  `README.md` and the rest of `supabase/` do not exist yet.
+- **Two rulings from Tasks 5–6 that later tasks must not re-litigate.** (1) No database-layer
+  check can unforgeably identify the service role under PostgREST (`authenticator` holds SET
+  on `service_role` by design), so role checks such as `guard_platform_admin` are
+  defence-in-depth, not boundaries — see `docs/IMPLEMENTATION_STATUS.md`, Task 5. (2) The
+  plan's live-DB test suites are discharged as controller-run catalogue rehearsals plus
+  runnable `tests/unit/*.test.ts` text assertions; there is no DB connection vitest can reach.
+  Read the layout note in the plan before writing any test.
 
 ## Commands
 
