@@ -92,7 +92,7 @@ docs/*.md                            15 artefacts
 | File | Contents |
 |---|---|
 | `20261014000100_extensions_and_schemas.sql` | `citext`, `pgcrypto`; `private` schema |
-| `20261014000200_core_functions.sql` | `set_updated_at()`, `guard_platform_admin()`, `current_org_ids()` |
+| `20261014000200_core_functions.sql` | `set_updated_at()`, `guard_platform_admin()` (invoker; see Task 5 Step 4); `current_org_ids()` moved to the end of `00300` |
 | `20261014000300_identity_and_tenancy.sql` | `profiles`, `organizations`, `organization_memberships`, `clinics`, `clinic_memberships`, `invitations` |
 | `20261014000400_authorization.sql` | `permissions`, `roles`, `role_permissions`, `user_role_assignments` + seed |
 | `20261014000500_authorization_functions.sql` | `private.is_member`, `private.is_platform_admin`, `private.clinic_ids`, `private.can` |
@@ -322,7 +322,7 @@ docs/*.md                            15 artefacts
 
 **Interfaces:**
 - Consumes: `applyMigration` from Task 4
-- Produces: schema `private`; `private.set_updated_at()` trigger function; `private.guard_platform_admin()` trigger function; `private.current_org_ids()` returning `setof uuid`.
+- Produces: schema `private`; `private.set_updated_at()` trigger function; `private.guard_platform_admin()` trigger function. (`private.current_org_ids()` moved to the end of `00300` — Task 6 produces it; it reads a table that does not exist until that migration.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -340,13 +340,13 @@ docs/*.md                            15 artefacts
 - [ ] **Step 4: Write `20261014000200_core_functions.sql`**
 
   - `private.set_updated_at() returns trigger` — `security definer`, `set search_path = ''`, sets `new.updated_at = now()`. Attached to every table carrying `updated_at`.
-  - `private.guard_platform_admin() returns trigger` — `security definer`, `set search_path = ''`, raises exception `'is_platform_admin is not user-writable'` when `new.is_platform_admin is distinct from old.is_platform_admin`, unless the statement came from the service role. Attached to `profiles`.
-  - `private.current_org_ids() returns setof uuid` — `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`.
+  - `private.guard_platform_admin() returns trigger` — **`security invoker`** (the sanctioned exception to the definer constraint: a definer function cannot read the caller's real role, and the GUC alternative `request.jwt.claim.role` is forgeable via `set_config`, which is PUBLIC-executable), `set search_path = ''`, raises exception `'is_platform_admin is not user-writable'` when `new.is_platform_admin is distinct from old.is_platform_admin`, unless `current_user::text = 'service_role'` — the platform's own storage triggers use this pattern. **UPDATE-only trigger**: attach `before update … for each row`; OLD is null on INSERT so the predicate would fire on every signup. The INSERT side is closed through `profiles` RLS in Task 9.
+  - `private.current_org_ids() returns setof uuid` — `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`. **Created at the end of `20261014000300_identity_and_tenancy.sql`, not here** — it reads `public.organization_memberships`, which does not exist until that migration; a forward reference would leave a function that cannot run.
 
 - [ ] **Step 5: Apply both migrations, then verify via catalogue**
 
-  Run: `npm run migrate`, then query `pg_proc` for the three functions and `prosecdef`/`proconfig`.
-  Expected: three functions present, all `prosecdef = true`, all with empty `search_path`.
+  Run: `npm run migrate`, then query `pg_proc` for the functions and `prosecdef`/`proconfig`.
+  Expected: `set_updated_at` and `guard_platform_admin` present; `set_updated_at` `prosecdef = true`, `guard_platform_admin` `prosecdef = false` (the invoker exception); both with empty `search_path`; `anon` has neither schema usage nor function execute. `current_org_ids` is verified with Task 6.
 
 - [ ] **Step 6: Run the test to verify it passes** → PASS.
 
