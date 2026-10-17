@@ -29,26 +29,16 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`00500` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`00510` (extensions, core functions, identity/tenancy
   schema, tenancy indexes/hardening, authorization schema + platform seed, authorization
-  functions), all applied. RLS is **enabled deny-all** on all ten tables so far; the policies
-  are Task 9. `lib/supabase/`, `proxy.ts`, the route groups, `README.md` and the rest of
-  `supabase/` do not exist yet.
-- **Three rulings from Tasks 5–7 that later tasks must not re-litigate.** (1) No database-layer
+  functions, and the Task 7 status/scope correction), all applied. RLS is **enabled deny-all** on
+  all ten tables so far; the policies are Task 9. `lib/supabase/`, `proxy.ts`, the route groups,
+  `README.md` and the rest of `supabase/` do not exist yet.
+- **Four rulings from Tasks 5–7 that later tasks must not re-litigate.** (1) No database-layer
   check can unforgeably identify the service role under PostgREST (`authenticator` holds SET
   on `service_role` by design), so role checks such as `guard_platform_admin` are
   defence-in-depth, not boundaries — see `docs/IMPLEMENTATION_STATUS.md`, Task 5. (2)
-  `private.can` is **org-strict**: it admits only roles of the organization being asked about,
-  so a platform role is unreachable through it and `guard_role_org_scope`'s
-  `organization_id IS NULL` allowance is inert. Do not "simplify" it back to admitting
-  platform roles. (3) `private.clinic_ids` returns the **empty set** to a non-member and does
-  **not** filter `clinics.is_active` — a deactivation must not erase access to retained
-  records. Task 9 must write clinic-scoped policies as a three-clause **conjunction**
-  (`current_org_ids`, `can(org, perm, row_clinic_id)`, `clinic_ids`): the two-argument
-  `can()` returns no rows, and that silent failure is what invites loosening `can` into a
-  cross-clinic leak. The plan's live-DB test suites are discharged as controller-run catalogue
-  rehearsals plus runnable `tests/unit/*.test.ts` text assertions; there is no DB connection
-  vitest can reach — read the layout note in the plan before writing any test.
+  `private.can` is **org-strict and platform-key-refusing**: it admits only roles of the organization being asked about _and_ starts `p_permission not like 'platform.%'`. Both clauses are load-bearing — org-strict alone left a tenant able to attach `platform.tenants.manage` to its own role, because `permissions` is one global table with no scope column. So a platform role is unreachable through `can` however it is attached, and `guard_role_org_scope`'s `organization_id IS NULL` allowance is inert. Do not "simplify" either clause away. Task 9 must still keep `roles` INSERT/UPDATE policies at `organization_id is not null`, and must give `role_permissions` a policy that reaches the organization through `roles` (it has no `organization_id` column) and refuses `platform.%` keys. (3) `private.clinic_ids` returns the **empty set** to a non-member and never filters `clinics.is_active` — a deactivation must not erase access to retained records. (4) **All four helpers require `organizations.status = 'active'`** (via a join on `organizations` in `current_org_ids`, `is_member` and `clinic_ids`; `can` inherits it through `is_member`), so suspending or archiving a tenant actually cuts PHI access. Task 9 must write clinic-scoped policies as a three-clause **conjunction** (`current_org_ids`, `can(org, perm, row_clinic_id)`, `clinic_ids`): the two-argument `can()` returns no rows, and that silent failure is what invites loosening `can` into a cross-clinic leak. The plan's live-DB test suites are discharged as controller-run catalogue rehearsals plus runnable `tests/unit/*.test.ts` text assertions; there is no DB connection vitest can reach — read the layout note in the plan before writing any test. Function-body assertions must go through the test's `latestDefinition` helper, which reads every migration in filename order — an assertion that reads one file directly will silently miss a later correction migration.
 - **Rehearsal trap:** `set_config('request.jwt.claim.sub', …, true)` is transaction-local, so
   two identity probes batched into one Composio MCP call share a transaction and the **last
   identity wins**. Probe one identity per call or you will measure your own batching (this
