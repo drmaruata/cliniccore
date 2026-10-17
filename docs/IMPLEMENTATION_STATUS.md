@@ -968,3 +968,70 @@ Two things make the direct host wrong here, and both are easy to miss: it is
 mode is ENOTFOUND rather than a timeout), and the pooler requires the username
 `postgres.<project-ref>`, not plain `postgres`. Supabase's dashboard shows the
 direct connection string first, which is how the wrong value got pasted in.
+
+### Task 9: RLS applied. 39 policies across 14 of 15 tables.
+
+Baseline before this task: 15 tables, RLS enabled, **zero policies**, `authenticated`
+holding INSERT/UPDATE/DELETE on every one of them. Deny-all was the only thing
+containing that.
+
+After: 39 policies. `tenant_sequences` has none by design - its only writer is the
+`next_sequence_value` definer, and its writes are revoked.
+
+Verified in `tests/security/rls-policies.test.ts`, 17 tests. The catalogue half
+asserts the exact policy set - name, command, non-null qual/with_check, and the
+**total**, so an unlisted policy fails the test. The behavioural half is the security
+argument: it impersonates principals and asserts what each can see.
+
+#### The clinic-scope conjunction is tested from both sides
+
+`private.can` and `private.clinic_ids` are independent authorities, and the suite
+pins each one separately:
+
+- **alice** holds a clinic-scoped assignment in clinic 1, and no clinic_memberships,
+  so `clinic_ids` returns every active clinic. Only `can` stops her. Drop that clause
+  and she reads another clinic's patients.
+- **bob** holds an org-wide assignment but a `clinic_memberships` row limiting him to
+  clinic 1, so `can` permits every clinic. Only `clinic_ids` stops him. Drop that
+  clause and he reads another clinic's patients.
+
+One test would not have found either defect.
+
+#### Correction 01210: patient_identifiers was wrong, and wrong quietly
+
+The original policy carried its own two-argument `can(organization_id,
+'patients.read')` beside the EXISTS on the parent patient. Redundant - the patients
+policy already decides - and wrong, because the two-argument form passes only an
+ORG-WIDE assignment: its predicate is `a.clinic_id is null or a.clinic_id = NULL`.
+
+MEASURED consequence: a clinic-scoped doctor could read their patients and then found
+none of their identifiers. An MRN present on one screen and absent from the next, with
+no error anywhere in the stack. This is the same fail-closed-for-the-wrong-reason
+shape the plan warns about for the two-argument `can`, reached from a different
+direction. The identifiers policies now delegate both permission and clinic to the
+patients policies.
+
+#### Three measurement traps this task added
+
+1. **The applier derives `schema_migrations.version` from a second-resolution
+   timestamp.** Two applies batched into one Composio call collide on
+   `schema_migrations_pkey` (23505), and `idempotency_key` does not prevent it. One
+   apply per call, always.
+2. **`resetRole()` returns to the SESSION USER**, which is postgres - the table owner,
+   which bypasses RLS. A test that calls it before asserting is measuring postgres, not
+   the principal. One assertion here did exactly that and passed while counting a row
+   the principal cannot see.
+3. **RLS filters a non-permitted UPDATE/DELETE out of the row set rather than raising.**
+   The statement succeeds and affects zero rows. "It threw" is therefore the wrong
+   assertion for a filtered write; assert on the RETURNING rows and on the unchanged
+   value. Asserting a throw would also pass against a policy set that filtered nothing
+   and failed for an unrelated reason.
+
+#### Carried forward
+
+- A platform administrator cannot edit their own `profiles` row through the client
+  (`is_platform_admin is not true` in the WITH CHECK, which also avoids an RLS
+  self-reference). Service role only. Cosmetic, safe direction.
+- `organization_memberships` INSERT and DELETE are closed. The invitation-acceptance
+  RPC must write memberships as a definer.
+- Whether PostgREST exposes `private` is still unresolved and still matters for Task 12.
