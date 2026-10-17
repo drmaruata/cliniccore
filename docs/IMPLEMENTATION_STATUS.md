@@ -515,3 +515,27 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   corrected pair. History was reset 1:1 with the files. This exception closes
   once `00300` lands or a second environment exists - from then on
   corrections are new migration files, per the README rule.
+
+## Task 6 - identity and tenancy schema
+
+- Six tables: profiles, organizations, organization_memberships, clinics,
+  clinic_memberships, invitations. Tenant isolation is structural - every
+  tenant table carries organization_id and unique (organization_id, id); child
+  tables reference parents through COMPOSITE FKs that both include
+  organization_id, so a row cannot point across organizations even if app code
+  is wrong. Verified at the catalogue: both clinic_memberships FKs are arity 2
+  with organization_id in the key.
+- RLS is enabled DENY-ALL on all six tables in Task 6, not deferred to Task 9.
+  Supabase grants anon/authenticated access to new public tables by default, so
+  without this the tables are PostgREST-reachable in the window before Task 9.
+  Task 9's policies layer on top; enable row level security is idempotent.
+- invitations.role_id is a plain uuid in Task 6 - roles does not exist until
+  Task 7's 00400. Task 7 adds the FK. A forward reference would fail at apply.
+- Behavioural rehearsal (then cleaned up): an auth.users insert creates the
+  profiles row via the AFTER INSERT trigger; a postgres session is blocked from
+  flipping is_platform_admin; a service_role session succeeds. The service-role
+  leg requires SET ROLE service_role - a plain postgres tool session is
+  fail-closed, as the Task 5 N4 note warned.
+- tests/integration/tenancy-schema.test.ts is discharged as a controller-run
+  catalogue rehearsal: no DB connection string or PAT exists, so vitest cannot
+  reach Postgres. A shared note in the plan records this for later tasks.

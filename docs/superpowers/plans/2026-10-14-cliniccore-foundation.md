@@ -78,14 +78,16 @@ lib/
 types/database.types.ts              generated — never hand-edited
 supabase/migrations/*.sql            source of truth, applied via Composio
 tests/
-  integration/                       RLS, constraints, auth (real DB)
+  integration/                       schema/constraint assertions — see the note below
   security/                          tenant isolation, mutation harness
   e2e/                               Playwright
 scripts/
-  apply-migration.ts                 reads .env.local, calls MCP applier
+  apply-migration.ts                 validates migrations, emits a manifest; the agent applies via the MCP
   gen-types.ts                       calls MCP type generator
 docs/*.md                            15 artefacts
 ```
+
+**Note on `tests/integration/` and `tests/security/`.** The plan describes these suites as asserting against the real database. No database connection string or Supabase PAT exists in this project — migrations are applied agent-side through the Composio MCP, and vitest has no route to Postgres. The DB-state assertions these suites specify are therefore discharged as **controller-run catalogue rehearsals**, recorded in the SDD ledger, and no placeholder vitest file is committed in their place (a test that cannot reach its subject proves nothing). This is revisited if a direct database connection is ever configured.
 
 ### Migrations (applied in this order)
 
@@ -368,7 +370,7 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 1: Write the failing test**
 
-  Assert all six tables exist; every tenant-owned table has `organization_id`; `organization_memberships` has unique `(organization_id, user_id)` **and** unique `(organization_id, id)`; `clinics` and `organization_memberships` each expose unique `(organization_id, id)`; `clinic_memberships`' two foreign keys are composite and both include `organization_id`; `organizations.slug` is `citext` and unique; `audit` trigger exists on `updated_at`; the `guard_platform_admin` trigger exists on `profiles` for **UPDATE only** (not INSERT); `private.current_org_ids` exists with `prosecdef = true` and empty `search_path`.
+  Assert all six tables exist; **RLS is enabled on all six** (`relrowsecurity`, deny-all at this stage); every tenant-owned table has `organization_id`; `organization_memberships` has unique `(organization_id, user_id)` **and** unique `(organization_id, id)`; `clinics` and `organization_memberships` each expose unique `(organization_id, id)`; `clinic_memberships`' two foreign keys are composite and both include `organization_id`; `organizations.slug` is `citext` and unique; the `set_updated_at` trigger maintains `updated_at` on every table that has one; the `guard_platform_admin` trigger exists on `profiles` for **UPDATE only** (not INSERT); `private.current_org_ids` exists with `prosecdef = true` and empty `search_path`.
 
 - [ ] **Step 2: Run it to verify it fails** → FAIL (tables absent).
 
@@ -380,7 +382,11 @@ docs/*.md                            15 artefacts
 
   **Attach the Task 5 triggers.** `private.guard_platform_admin()` on `profiles` **`before update … for each row` ONLY** — never `before insert`: OLD is null there, so the predicate would raise on every signup. The INSERT side of `is_platform_admin` is closed through `profiles` RLS (Task 9), not the trigger. `private.set_updated_at()` on every table carrying an `updated_at` column.
 
-  **Create `private.current_org_ids()` here** (moved from Task 5 — it reads `public.organization_memberships`, which this migration creates): `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`; revoke execute from `public`, grant to `authenticated`.
+  **Create `private.current_org_ids()` here** (moved from Task 5 - it reads `public.organization_memberships`, which this migration creates): `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`; revoke execute from `public`, grant to `authenticated`.
+
+  **Enable RLS (deny-all) on all six tables now.** Supabase grants `anon`/`authenticated` access to new public tables by default, so a table created here and left without RLS is reachable through PostgREST until Task 9 adds policies. `enable row level security` with no policies denies everyone except the owner/service role; Task 9's policies layer on top.
+
+  **`invitations.role_id` is a plain `uuid` here, not a foreign key** - `roles` does not exist until Task 7's `00400`. Task 7 adds the foreign key once the table exists; a forward reference would fail at apply time.
 
 - [ ] **Step 4: Apply, then verify the composite FKs actually span organizations**
 
@@ -419,6 +425,8 @@ docs/*.md                            15 artefacts
 - [ ] **Step 3: Write `20261014000400_authorization.sql`**
 
   Four tables per the column list. `roles.is_system` marks seeded roles.
+
+  **Add the deferred foreign key from Task 6:** `alter table public.invitations add constraint invitations_role_id_fkey foreign key (role_id) references public.roles (id);` — `invitations.role_id` was created without it because `roles` did not exist yet. Guard it so a re-run is a no-op (`if not exists` in `pg_constraint`, or `drop constraint if exists` first).
 
 - [ ] **Step 4: Write `20261014000500_authorization_functions.sql`**
 
