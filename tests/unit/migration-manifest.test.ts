@@ -72,6 +72,15 @@ describe("buildMigrationManifest", () => {
     expect(buildMigrationManifest(dir)).toEqual([]);
   });
 
+  it("rejects a directory entry named like a migration, naming the entry", () => {
+    const dir = makeFixtureDir();
+    mkdirSync(join(dir, "20261014000100_directory.sql"), { recursive: true });
+
+    expect(() => buildMigrationManifest(dir)).toThrow(
+      /20261014000100_directory\.sql.*is a directory/,
+    );
+  });
+
   it("rejects a filename that breaks the timestamp_name convention, naming the file", () => {
     const dir = makeFixtureDir();
     writeMigration(dir, "not-a-migration.sql", VALID_SQL);

@@ -49,7 +49,7 @@ export function validateMigrations(dir: string = MIGRATIONS_DIR): string[] {
 
   for (const fileName of fileNames) {
     const fullPath = join(dir, fileName);
-    if (!statSync(fullPath).isFile()) continue;
+    const isFile = statSync(fullPath).isFile();
 
     if (!fileName.endsWith(".sql")) {
       if (TIMESTAMP_PREFIX_PATTERN.test(fileName)) {
@@ -60,6 +60,11 @@ export function validateMigrations(dir: string = MIGRATIONS_DIR): string[] {
 
     if (!MIGRATION_FILENAME_PATTERN.test(fileName)) {
       problems.push(problem(fileName, `migration filenames must match \\d{14}_name.sql`));
+      continue;
+    }
+
+    if (!isFile) {
+      problems.push(problem(fileName, "is a directory, not a migration file"));
       continue;
     }
 
@@ -86,11 +91,17 @@ export function buildMigrationManifest(dir: string = MIGRATIONS_DIR): MigrationM
   return readdirSync(dir)
     .filter((fileName) => MIGRATION_FILENAME_PATTERN.test(fileName))
     .sort()
-    .map((fileName) => ({
-      name: fileName,
-      idempotencyKey: fileName.replace(/\.sql$/, ""),
-      sql: readFileSync(join(dir, fileName), "utf8"),
-    }));
+    .map((fileName) => {
+      const fullPath = join(dir, fileName);
+      if (!statSync(fullPath).isFile()) {
+        throw new Error(problem(fileName, "is a directory, not a migration file"));
+      }
+      return {
+        name: fileName,
+        idempotencyKey: fileName.replace(/\.sql$/, ""),
+        sql: readFileSync(fullPath, "utf8"),
+      };
+    });
 }
 
 function isDirectRun(): boolean {
