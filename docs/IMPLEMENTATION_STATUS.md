@@ -734,3 +734,40 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
 - tests/helpers/migration-text.ts holds readMigration and latestDefinition for all
   three invariant suites, so a correction migration cannot hide behind the file an
   older suite was written against.
+
+## Task 8 fix round 1 - the audit trail was falsifiable by any tenant
+
+- CRITICAL, closed: private.write_audit accepted ANY organization_id. It is
+  SECURITY DEFINER owned by postgres with relforcerowsecurity = false on every
+  table, so it bypasses RLS entirely and Task 9's policies were no backstop. Any
+  authenticated user of the SaaS could plant fabricated rows in another tenant's
+  audit trail, with unconstrained action/resource_type text, carrying clinical
+  free text through those columns instead of the screened metadata. It now
+  requires private.is_member(p_org_id), which also refuses writes for a suspended
+  tenant. private.next_sequence_value had the identical hole and the identical
+  guard - cross-tenant counter bumping is what RLS on tenant_sequences exists to
+  prevent. Both measured 42501.
+- The audit screen's depth bound was defeatable (a key nested 33 levels passed)
+  while the header claimed the walk descended "at any depth". jsonb is a tree and
+  cannot be cyclic, so the recursion terminates on its own - the predicate was
+  only a hole, and it is gone. Measured: depth-33 note blocked, same payload with
+  a clean key accepted.
+- Added an 8 KiB metadata cap: each node in the walk becomes two CTE rows carrying
+  a jsonb copy, so an unbounded array was reachable by any authenticated user as a
+  denial-of-service vector, and a large string value would have been stored as one
+  enormous row. Measured 23514 on a 9 KB payload.
+- Append-only no longer depends on a promise about a future file: authenticated
+  held INSERT/UPDATE/DELETE on audit_logs from Supabase's default grants (00400's
+  default-ACL revoke covers only truncate/references/trigger), so the property
+  rested entirely on Task 9 writing no update policy. Now revoked at the table;
+  SELECT retained so Task 9's select-only policy is unaffected and write_audit
+  still writes as the owner.
+- The free-text screen remains a key-name blocklist: summary, narrative, a
+  misspelling, or a key with surrounding whitespace all pass it. Recorded as a
+  speed bump, not a guarantee.
+- Forward risks recorded: organization creation is uncapped (app-layer rate limit,
+  and each call row-locks 21 global permissions rows so concurrent onboardings
+  serialize); a platform-scoped audit event is unreachable from service_role
+  because auth.uid() is NULL, so Task 13 needs a sanctioned path; and whether the
+  private schema is reachable from PostgREST at all is UNRESOLVED
+  (pgrst.db_schemas is not readable from SQL) - settle it before Task 12.

@@ -17,9 +17,15 @@
 -- metadata carrying a key named note, notes or content. Audit metadata records
 -- WHICH patient and WHEN; a note field is how clinical free text ends up in a
 -- table with a different access and retention story from the chart. The walk
--- descends into objects AND arrays at any depth, because a jsonpath wildcard
--- silently skips array elements - a `{"items":[{"note":...}]}` payload would have
--- passed a jsonpath check.
+-- descends into objects AND arrays, because a jsonpath wildcard silently skips
+-- array elements - a `{"items":[{"note":...}]}` payload would have passed a
+-- jsonpath check.
+--
+-- PARTIALLY SUPERSEDED by 20261014000810_task8_hardening.sql, which adds the
+-- membership guard this version was missing (it accepted any p_org_id), removes
+-- the depth bound that let a key nested 33 levels deep through, adds an 8 KiB
+-- payload cap, and revokes INSERT/UPDATE/DELETE on audit_logs from anon and
+-- authenticated. Read this header with that file in hand.
 --
 -- It is a KEY-NAME blocklist, so it is a speed bump against accidental or casual
 -- smuggling, not a guarantee: `summary`, `narrative` or a misspelling passes it,

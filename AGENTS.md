@@ -21,7 +21,7 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - Branch `feature/foundation` (master is the untouched base). Do not implement on master.
-- **Tasks 1–7 of 20 are complete and diffed** (Task 7 = authorization schema, permission helpers and the platform seed, plus two review-fix rounds). Task 8 is next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review packages are in `.superpowers/sdd/cliniccore-foundation/`.
+- **Tasks 1–8 of 20 are complete and diffed** (Task 8 = onboarding RPC, tenant data, audit and platform schema, plus a review-fix round). Task 9 is next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review packages are in `.superpowers/sdd/cliniccore-foundation/`.
 - **A clean tree on this branch should be green on all six gates.** If you are not sure,
   run them rather than trusting a summary — including this one:
   `npm run typecheck && npm run lint && npm run check:secrets && npm run test &&
@@ -29,11 +29,22 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`00510` (extensions, core functions, identity/tenancy
-  schema, tenancy indexes/hardening, authorization schema + platform seed, authorization
-  functions, and the Task 7 status/scope correction), all applied. RLS is **enabled deny-all** on
-  all ten tables so far; the policies are Task 9. `lib/supabase/`, `proxy.ts`, the route groups,
-  `README.md` and the rest of `supabase/` do not exist yet.
+- `supabase/migrations/` now holds `00100`–`00810` (extensions, core functions, identity/tenancy
+  schema, tenancy hardening, authorization schema + platform seed, authorization functions and
+  their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening),
+  all applied. RLS is **enabled deny-all** on all fifteen tables and there are **zero policies** —
+  the policies are Task 9. `lib/supabase/`, `proxy.ts`, the route groups, `README.md` and the
+  rest of `supabase/` do not exist yet.
+- **SECURITY DEFINER means RLS is bypassed, so every helper must check membership itself.**
+  `private.*` functions are owned by `postgres` and all tables have `relforcerowsecurity = false`,
+  so Task 9's policies are **not** a backstop for them. `write_audit` and `next_sequence_value`
+  shipped without an `is_member` check and any tenant could falsify another tenant's audit trail
+  or bump its MRN counter; the check is now mandatory in every definer helper that takes an
+  organization id. `audit_logs` and `platform_settings` deliberately carry **no foreign keys** —
+  a cascade would erase the trail when the tenant or the actor is deleted — and `authenticated`'s
+  INSERT/UPDATE/DELETE on `audit_logs` is revoked so append-only does not depend on Task 9
+  writing no policy. **Whether PostgREST exposes the `private` schema at all is UNRESOLVED**
+  (`pgrst.db_schemas` is unreadable from SQL); if it does not, Task 12 needs `public` wrappers.
 - **Four rulings from Tasks 5–7 that later tasks must not re-litigate.** (1) No database-layer
   check can unforgeably identify the service role under PostgREST (`authenticator` holds SET
   on `service_role` by design), so role checks such as `guard_platform_admin` are

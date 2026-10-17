@@ -85,11 +85,22 @@ describe("audit log and platform settings", () => {
     expect(AUDIT).toContain("create table if not exists public.platform_settings (");
     expect(AUDIT).toContain("alter table public.audit_logs enable row level security;");
     expect(AUDIT).toContain("alter table public.platform_settings enable row level security;");
-    // An audit trail must outlive the tenant and the actor. Any cascade here would
-    // erase it exactly when it matters.
+    // Deliberate, and a whole-file prohibition on purpose: an audit trail must
+    // outlive the tenant and the actor, so any cascade here would erase it exactly
+    // when it matters. A future foreign key on these tables needs the ruling
+    // revisited, not a test edit.
     expect(AUDIT).not.toContain("foreign key");
     expect(AUDIT).not.toContain("references public.");
     expect(AUDIT).not.toContain("references auth.");
+  });
+
+  it("revokes direct mutation of audit_logs, so append-only survives a bad policy", () => {
+    // Supabase's default grants give authenticated INSERT/UPDATE/DELETE, and the
+    // 00400 default-ACL revoke covers only truncate/references/trigger. Append-only
+    // would otherwise rest entirely on Task 9 mistyping no update policy.
+    expect(ALL).toContain(
+      "revoke insert, update, delete on table public.audit_logs from anon, authenticated;",
+    );
   });
 
   it("makes write_audit the only guarded writer of audit rows", () => {
@@ -106,12 +117,33 @@ describe("audit log and platform settings", () => {
     );
   });
 
+  it("refuses to write another tenant's trail", () => {
+    // SECURITY DEFINER owned by postgres with relforcerowsecurity = false, so
+    // this function bypasses RLS entirely: Task 9's policies are no backstop.
+    // Without the guard any authenticated user could falsify another tenant's
+    // audit history, with unconstrained action text.
+    expect(latestDefinition("write_audit")).toContain(
+      "if p_org_id is not null and not (select private.is_member(p_org_id)) then",
+    );
+    expect(latestDefinition("next_sequence_value")).toContain(
+      "if not (select private.is_member(p_org_id)) then",
+    );
+  });
+
+  it("bounds the metadata walk by size, not by depth", () => {
+    const body = latestDefinition("write_audit");
+    expect(body).toContain("octet_length(coalesce(p_metadata, '{}'::jsonb)::text) > 8192");
+    // jsonb is a tree and cannot be cyclic, so the recursion terminates on its
+    // own. The old `depth < 32` was not a safety net, only a hole.
+    expect(body).not.toContain("w.depth");
+  });
+
   it("walks objects AND arrays when screening metadata for free text", () => {
     const body = latestDefinition("write_audit");
     // A jsonpath wildcard silently skips array elements, so a
     // {"items":[{"note":...}]} payload passed a jsonpath check. The recursive
     // walk is why both accessors are present.
-    expect(body).toContain("with recursive walk(obj, depth) as (");
+    expect(body).toContain("with recursive walk(obj) as (");
     expect(body).toContain("from jsonb_each(");
     expect(body).toContain("from jsonb_array_elements(");
     expect(body).toContain("lower(k) in ('note', 'notes', 'content')");
