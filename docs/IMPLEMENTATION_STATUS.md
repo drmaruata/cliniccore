@@ -471,3 +471,45 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   measured).
 - 'npm run migrations:check' is part of the lint gate: a misnamed migration
   file fails the standard gates rather than waiting for apply time.
+
+## Task 5 - extensions, private schema, core trigger functions
+
+- Extensions: citext and pgcrypto, each created `with schema public` inside a
+  `DO ` block guarded against `pg_catalog.pg_extension`. The pin is not
+  cosmetic: without it, placement follows the applier's search_path (citext
+  landed in public only by luck; pgcrypto was preinstalled in `extensions` and
+  skipped as already present). `gen_random_uuid()` is core since PG13;
+  pgcrypto is retained for future crypt/digest use, not for UUIDs.
+- The private schema is the RLS recursion-break: `revoke all from public`,
+  `grant usage to authenticated`. Verified: `anon` has no schema usage and
+  no function execute; `public` cannot execute either function.
+- `set_updated_at()` is security definer with `search_path = ''`.
+  `guard_platform_admin()` is SECURITY INVOKER gating on
+  `current_user::text = 'service_role'`.
+
+### Measured constraint - no database-layer check can identify the service role
+
+- Under PostgREST every request runs in a session whose `session_user` is
+  `authenticator`. Measured on this project: `authenticator` holds SET on
+  `service_role` (`pg_auth_members.set_option = true`) - required for the
+  service key to work at all - while `authenticated` holds neither MEMBER nor
+  SET.
+- `SET ROLE` checks `session_user`, not `current_user`. Measured: after
+  `SET LOCAL ROLE authenticated` (a role with no SET option on
+  `service_role`), `SET ROLE service_role` still succeeded because
+  `session_user` was privileged.
+- Therefore any SQL-executing session can `SET ROLE service_role` and forge a
+  `current_user`-based check, exactly as it can forge the
+  `request.jwt.claim.role` GUC via `set_config` (PUBLIC-executable).
+- Consequence: `guard_platform_admin` is DEFENCE-IN-DEPTH, not an unforgeable
+  boundary. Its real value is the PostgREST table-endpoint path, where a client
+  cannot inject `SET ROLE`. The hard barriers are the absence of a
+  SQL-execution surface reachable by anon/authenticated and the `profiles` RLS
+  policies (Task 9). Tasks 9/12/13 must not treat a role check as a security
+  boundary.
+- The two migrations were edited and re-applied once, in fix round 1, after the
+  forgeable-GUC finding: they had been applied minutes earlier inside the same
+  task loop, nothing depended on them, and a fresh replay must receive the
+  corrected pair. History was reset 1:1 with the files. This exception closes
+  once `00300` lands or a second environment exists - from then on
+  corrections are new migration files, per the README rule.

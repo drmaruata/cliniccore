@@ -326,7 +326,7 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 1: Write the failing test**
 
-  Assert schema `private` exists and is not in PostgREST's exposed schema list; `private.set_updated_at` and `private.guard_platform_admin` exist; for each, `prosecdef = true` and `proconfig` contains `search_path=` (empty).
+  Assert schema `private` exists and is not in PostgREST's exposed schema list; `private.set_updated_at` and `private.guard_platform_admin` exist; `set_updated_at` has `prosecdef = true`, `guard_platform_admin` has `prosecdef = false` (the invoker exception); both have `proconfig` containing `search_path=` (empty); `anon` has neither schema usage nor function execute.
 
 - [ ] **Step 2: Run it to verify it fails**
 
@@ -334,13 +334,13 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 3: Write `20261014000100_extensions_and_schemas.sql`**
 
-  `create extension if not exists citext;`, `create extension if not exists pgcrypto;`, `create schema if not exists private;`.
-  Then `revoke all on schema private from public; grant usage on schema private to authenticated;` — the schema holds authorisation primitives and must not be reachable through PostgREST.
+  `create extension citext with schema public;`, `create extension pgcrypto with schema public;`, guarded in a `DO $$ … $$` block against `pg_catalog.pg_extension` (the applier can reject `IF NOT EXISTS` DDL with SQLSTATE 42601), then `create schema if not exists private;`.
+  Pin `with schema public` on every `create extension`: without it, placement follows the applier's `search_path` and is environment-dependent. Then `revoke all on schema private from public; grant usage on schema private to authenticated;` — the schema holds authorisation primitives and must not be reachable through PostgREST.
 
 - [ ] **Step 4: Write `20261014000200_core_functions.sql`**
 
   - `private.set_updated_at() returns trigger` — `security definer`, `set search_path = ''`, sets `new.updated_at = now()`. Attached to every table carrying `updated_at`.
-  - `private.guard_platform_admin() returns trigger` — **`security invoker`** (the sanctioned exception to the definer constraint: a definer function cannot read the caller's real role, and the GUC alternative `request.jwt.claim.role` is forgeable via `set_config`, which is PUBLIC-executable), `set search_path = ''`, raises exception `'is_platform_admin is not user-writable'` when `new.is_platform_admin is distinct from old.is_platform_admin`, unless `current_user::text = 'service_role'` — the platform's own storage triggers use this pattern. **UPDATE-only trigger**: attach `before update … for each row`; OLD is null on INSERT so the predicate would fire on every signup. The INSERT side is closed through `profiles` RLS in Task 9.
+  - `private.guard_platform_admin() returns trigger` — **`security invoker`**, `set search_path = ''`, raises `'is_platform_admin is not user-writable'` when `new.is_platform_admin is distinct from old.is_platform_admin`, unless `current_user::text = 'service_role'`. This is **defence-in-depth, not an unforgeable boundary.** Under PostgREST every request runs in a session whose `session_user` is `authenticator`, which holds `SET` on `service_role` by design (the service key requires it), so any SQL-executing session can `SET ROLE service_role` and forge the check — just as it can forge the `request.jwt.claim.role` GUC via `set_config`. No database-layer check can distinguish the service key from an escalated session. The guard's real value is the PostgREST **table-endpoint** path, where a client cannot inject `SET ROLE`. The hard barriers are the absence of any SQL-execution surface reachable by `anon`/`authenticated`, and `profiles` RLS (Task 9). Invoker is preferred over definer because it additionally holds inside a definer-hosted SQL surface, where `SET ROLE` is forbidden. **UPDATE-only trigger**: attach `before update … for each row`; OLD is null on INSERT so the predicate would fire on every signup — the INSERT side is closed through `profiles` RLS in Task 9.
   - `private.current_org_ids() returns setof uuid` — `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`. **Created at the end of `20261014000300_identity_and_tenancy.sql`, not here** — it reads `public.organization_memberships`, which does not exist until that migration; a forward reference would leave a function that cannot run.
 
 - [ ] **Step 5: Apply both migrations, then verify via catalogue**
@@ -353,7 +353,7 @@ docs/*.md                            15 artefacts
 - [ ] **Step 7: Commit**
 
   ```bash
-  git add -A && git commit -m "feat: add private schema and core security-definer functions"
+  git add -A && git commit -m "feat: add private schema and core trigger functions"
   ```
 
 ### Task 6: Identity and tenancy schema
@@ -363,7 +363,7 @@ docs/*.md                            15 artefacts
 - Test: `tests/integration/tenancy-schema.test.ts`
 
 **Interfaces:**
-- Consumes: `private.set_updated_at()`, `private.current_org_ids()`, `private.guard_platform_admin()` from Task 5
+- Consumes: `private.set_updated_at()` and `private.guard_platform_admin()` from Task 5; produces `private.current_org_ids()` itself (moved here from Task 5; it reads `organization_memberships`, created in this migration)
 - Produces: tables `profiles`, `organizations`, `organization_memberships`, `clinics`, `clinic_memberships`, `invitations` per the column list above; trigger on `auth.users` creating a `profiles` row on insert.
 
 - [ ] **Step 1: Write the failing test**
