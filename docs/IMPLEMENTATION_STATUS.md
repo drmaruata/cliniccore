@@ -597,3 +597,41 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   (Tasks 5-11, 18); Task 18's own section now carries the re-scope pointer.
 - N6: Task 7's role_id guard text states why platform roles (organization_id IS
   NULL) are permitted and that the rule must not be tightened to a strict match.
+
+## Task 7 - authorization schema, helpers and platform seed
+
+- Four tables plus the four helpers every Task 9/10 policy calls. Tenant
+  integrity is again structural: user_role_assignments carries organization_id,
+  a composite FK scoping clinic_id to its own organization (MATCH SIMPLE leaves
+  the org-wide NULL row unconstrained), and the role reference is guarded by
+  private.guard_role_org_scope on both invitations and user_role_assignments.
+- nulls not distinct is load-bearing on BOTH nullable uniques. On roles it makes
+  the platform row conflict so the seed does not duplicate it; on
+  user_role_assignments it makes an org-wide assignment conflict so a re-grant
+  cannot duplicate it. Measured: indnullsnotdistinct = true on both indexes.
+- The table-wide privilege revoke is now on the DEFAULT ACL
+  (alter default privileges in schema public revoke truncate, references,
+  trigger from anon, authenticated), so every table created from 00400 onward
+  inherits it and no later migration repeats per-table revokes. Measured: the
+  default ACL reads anon=arwdm/authenticated=arwdm.
+- clinic_ids returns the EMPTY set to a non-member. The plan's "all clinics when
+  the membership has no clinic_memberships rows" rule would otherwise hand the
+  whole organization to anyone who asked, since a non-member has no scoping rows
+  either. It also skips inactive clinics.
+- private.can never consults private.is_platform_admin (pinned by a test, not just
+  by review): platform operators reach tenants through a separate function, and
+  granting them can() would expose every tenant's patient records.
+- The platform seed is INLINED in 00400 between sentinel comments rather than
+  applied by scripts/apply-permissions-seed.ts, which cannot be built here: a
+  Node script cannot reach the Composio MCP applier, and under ESM without
+  allowImportingTsExtensions it cannot import the generator (extensionless fails
+  in Node, .ts fails tsc). Re-running 00400 refreshes the seed;
+  tests/unit/permissions-seed.test.ts fails if the inlined block drifts from
+  lib/permissions/registry.ts.
+- Rehearsed live and cleaned: clinic-scoped vs org-wide permission scope, the
+  non-member leak, cross-org role and cross-org clinic rejection, the
+  nulls-not-distinct dedupe, and the platform-role allowance.
+- Measurement trap: set_config(..., true) is transaction-local, so batching
+  several identity probes into one MCP call makes them share a transaction and
+  the last identity wins. The first rehearsal run therefore reported an active
+  member as a non-member. Rehearse one identity per call.

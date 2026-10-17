@@ -101,7 +101,7 @@ This supersedes the "write the failing test / run it to fail / run it to pass" s
 | `20261014000100_extensions_and_schemas.sql` | `citext`, `pgcrypto`; `private` schema |
 | `20261014000200_core_functions.sql` | `set_updated_at()`, `guard_platform_admin()` (invoker; see Task 5 Step 4); `current_org_ids()` moved to the end of `00300` |
 | `20261014000300_identity_and_tenancy.sql` | `profiles`, `organizations`, `organization_memberships`, `clinics`, `clinic_memberships`, `invitations` |
-| `20261014000400_authorization.sql` | `permissions`, `roles`, `role_permissions`, `user_role_assignments` + seed |
+| `20261014000400_authorization.sql` | `permissions`, `roles`, `role_permissions`, `user_role_assignments` + seed; also the default-ACL revoke of `TRUNCATE`/`REFERENCES`/`TRIGGER` that covers every later table |
 | `20261014000500_authorization_functions.sql` | `private.is_member`, `private.is_platform_admin`, `private.clinic_ids`, `private.can` |
 | `20261014000600_onboarding_rpc.sql` | `private.create_organization_with_owner` |
 | `20261014000700_tenant_data.sql` | `patients`, `patient_identifiers`, `tenant_sequences` |
@@ -389,7 +389,7 @@ This supersedes the "write the failing test / run it to fail / run it to pass" s
 
   **Create `private.current_org_ids()` here** (moved from Task 5 — it reads `public.organization_memberships`, which this migration creates): `security definer`, `stable`, `set search_path = ''`, returns organization ids from `public.organization_memberships` where `user_id = (select auth.uid())` and `status = 'active'`; revoke execute from `public`, grant to `authenticated`.
 
-  **Enable RLS (deny-all) on all six tables now.** Supabase grants `anon`/`authenticated` access to new public tables by default, so a table created here and left without RLS is reachable through PostgREST until Task 9 adds policies. `enable row level security` with no policies denies everyone except the owner/service role; Task 9's policies layer on top. **This is a standing rule, not a Task 6 one-off:** every migration that creates a public table enables RLS on it in the same file (Tasks 7 and 8 create `roles`, `role_permissions`, `user_role_assignments`, `patients`, `patient_identifiers`, `audit_logs`, `platform_settings` — each needs its own enable).
+  **Enable RLS (deny-all) on all six tables now.** Supabase grants `anon`/`authenticated` access to new public tables by default, so a table created here and left without RLS is reachable through PostgREST until Task 9 adds policies. `enable row level security` with no policies denies everyone except the owner/service role; Task 9's policies layer on top. **This is a standing rule, not a Task 6 one-off:** every migration that creates a public table enables RLS on it in the same file (Tasks 7 and 8 create `roles`, `role_permissions`, `user_role_assignments`, `patients`, `patient_identifiers`, `audit_logs`, `platform_settings` — each needs its own enable). The table-wide privileges RLS does *not* cover — `TRUNCATE`, `REFERENCES`, `TRIGGER` — are handled once for everything downstream by the `alter default privileges in schema public revoke … from anon, authenticated` at the top of Task 7's `00400`; later migrations inherit it and must not repeat the per-table revokes.
 
   **`invitations.role_id` is a plain `uuid` here, not a foreign key** — `roles` does not exist until Task 7's `00400`. Task 7 adds the foreign key once the table exists; a forward reference would fail at apply time.
 
@@ -410,8 +410,7 @@ This supersedes the "write the failing test / run it to fail / run it to pass" s
 **Files:**
 - Create: `supabase/migrations/20261014000400_authorization.sql`
 - Create: `supabase/migrations/20261014000500_authorization_functions.sql`
-- Create: `scripts/apply-permissions-seed.ts`
-- Test: `tests/integration/authorization-schema.test.ts`
+- Test: `tests/unit/authorization-schema-sql.test.ts` (migration-text invariants) and `tests/unit/permissions-seed.test.ts` (the registry/inline drift guard, which replaces the `scripts/apply-permissions-seed.ts` this task originally specified — see Step 5)
 
 **Interfaces:**
 - Consumes: Task 3's `ROLES`/`PERMISSIONS`; Task 6's tables
@@ -446,7 +445,9 @@ This supersedes the "write the failing test / run it to fail / run it to pass" s
 
 - [ ] **Step 5: Write and run the seed script**
 
-  `scripts/apply-permissions-seed.ts` calls Task 3's generator and applies the output idempotently: all permissions, all platform roles, all platform `role_permissions`. Organization roles are seeded per organization inside Task 9's RPC.
+  **Inline the platform seed here, between sentinel comments.** Run `generatePlatformScopeSql()` and paste its output between `-- BEGIN GENERATED PLATFORM SEED` and `-- END GENERATED PLATFORM SEED`: all permissions, the platform role at `organization_id NULL`, and its `role_permissions` grants, every statement carrying an on-conflict clause. **Re-running this migration is how the seed is refreshed.** `tests/unit/permissions-seed.test.ts` regenerates the block and fails if the inlined copy differs, so a registry edit without a re-inline cannot pass CI.
+
+  This step originally specified `scripts/apply-permissions-seed.ts` to "call the generator and apply the output". That is not achievable here, for two independent reasons: a Node script cannot reach the Composio MCP applier (and there is no database connection or PAT), and under ESM without `allowImportingTsExtensions` it cannot even *import* the generator — an extensionless relative specifier fails in Node and a `.ts` specifier fails `tsc`. A script that cannot emit is a worse drift guard than a test that can. Organization roles are seeded per organization inside Task 8's onboarding RPC (`00600`), which inlines `generateOrganizationScopedRoleSeedTemplate()`.
 
 - [ ] **Step 6: Apply, verify, then run the test** → PASS.
 
