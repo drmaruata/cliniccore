@@ -37,13 +37,18 @@ npm run build && npm run format:check`.
   rest of `supabase/` do not exist yet.
 - **SECURITY DEFINER means RLS is bypassed, so every helper must check membership itself.**
   `private.*` functions are owned by `postgres` and all tables have `relforcerowsecurity = false`,
-  so Task 9's policies are **not** a backstop for them. `write_audit` and `next_sequence_value`
-  shipped without an `is_member` check and any tenant could falsify another tenant's audit trail
-  or bump its MRN counter; the check is now mandatory in every definer helper that takes an
-  organization id. `audit_logs` and `platform_settings` deliberately carry **no foreign keys** —
-  a cascade would erase the trail when the tenant or the actor is deleted — and `authenticated`'s
-  INSERT/UPDATE/DELETE on `audit_logs` is revoked so append-only does not depend on Task 9
-  writing no policy. **Whether PostgREST exposes the `private` schema at all is UNRESOLVED**
+  so Task 9's policies are **not** a backstop for them. Every definer function that **writes** rows
+  for an organization must check `private.is_member` itself — `write_audit` and
+  `next_sequence_value` shipped without it, and any tenant could falsify another tenant's audit
+  trail or bump its MRN counter. (The rule is about _writers_, not every helper taking an
+  organization id: `can`, `clinic_ids` and `is_member` must not check membership, because
+  `is_member` **is** that predicate.) Task 9 is the first thing to touch grants on these tables —
+  a stray `grant insert on audit_logs to authenticated`, or a `drop function` (which would drop the
+  grants `create or replace` silently preserves), reopens the hole silently. `audit_logs` and
+  `platform_settings` deliberately carry **no foreign keys** — a cascade would erase the trail
+  when the tenant or the actor is deleted — and `authenticated`'s INSERT/UPDATE/DELETE on
+  `audit_logs` is revoked so append-only does not depend on Task 9 writing no policy.
+  **Whether PostgREST exposes the `private` schema at all is UNRESOLVED**
   (`pgrst.db_schemas` is unreadable from SQL); if it does not, Task 12 needs `public` wrappers.
 - **Four rulings from Tasks 5–7 that later tasks must not re-litigate.** (1) No database-layer
   check can unforgeably identify the service role under PostgREST (`authenticator` holds SET

@@ -771,3 +771,23 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   because auth.uid() is NULL, so Task 13 needs a sanctioned path; and whether the
   private schema is reachable from PostgREST at all is UNRESOLVED
   (pgrst.db_schemas is not readable from SQL) - settle it before Task 12.
+
+## Task 8 convergence
+
+- Task 8's review loop is CONVERGED: an independent re-review found 0 Critical and
+  0 Important outstanding after one fix round. C1/I1/I2/I3/I5 are closed in the
+  deployed database, not merely narrowed.
+- Evidence worth keeping: the reviewer mutation-tested the invariant suite against
+  six realistic regressions (deleting either is_member guard, re-adding the depth
+  bound, deleting the size cap, deleting the audit_logs revoke, swapping is_member
+  for the weaker is_platform_admin) and all six were killed.
+- Carried forward: a platform operator cannot write an org-scoped audit row for a
+  tenant they are not an active member of, so the SUSPENSION audit event has no
+  writer - a completeness gap for Task 13's sanctioned path, not a hole. The 8 KiB
+  cap bounds metadata only; action and resource_type remain unconstrained text. The
+  deployed write_audit body equals the committed file minus its inline comments (zero
+  behavioural delta) - the drift class the reviewer raised, recurring in the round
+  that promised an md5 check.
+- AGENTS.md wording corrected: the membership check binds definer functions that
+  WRITE rows for an organization, not every helper that takes an organization id -
+  is_member is that predicate and must not check itself.
