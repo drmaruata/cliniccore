@@ -21,7 +21,7 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - Branch `feature/foundation` (master is the untouched base). Do not implement on master.
-- **Tasks 1–6 of 20 are complete and diffed** (Task 6 = identity/tenancy schema, three commits). Task 7 is next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review packages are in `.superpowers/sdd/cliniccore-foundation/`.
+- **Tasks 1–7 of 20 are complete and diffed** (Task 7 = authorization schema, permission helpers and the platform seed, three commits). Task 8 is next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review packages are in `.superpowers/sdd/cliniccore-foundation/`.
 - **A clean tree on this branch should be green on all six gates.** If you are not sure,
   run them rather than trusting a summary — including this one:
   `npm run typecheck && npm run lint && npm run check:secrets && npm run test &&
@@ -29,17 +29,30 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`00310` (extensions, core functions, identity and
-  tenancy schema, tenancy indexes/hardening), all applied. RLS is **enabled deny-all** on the
-  six tenancy tables; the policies are Task 9. `lib/supabase/`, `proxy.ts`, the route groups,
-  `README.md` and the rest of `supabase/` do not exist yet.
-- **Two rulings from Tasks 5–6 that later tasks must not re-litigate.** (1) No database-layer
+- `supabase/migrations/` now holds `00100`–`00500` (extensions, core functions, identity/tenancy
+  schema, tenancy indexes/hardening, authorization schema + platform seed, authorization
+  functions), all applied. RLS is **enabled deny-all** on all ten tables so far; the policies
+  are Task 9. `lib/supabase/`, `proxy.ts`, the route groups, `README.md` and the rest of
+  `supabase/` do not exist yet.
+- **Three rulings from Tasks 5–7 that later tasks must not re-litigate.** (1) No database-layer
   check can unforgeably identify the service role under PostgREST (`authenticator` holds SET
   on `service_role` by design), so role checks such as `guard_platform_admin` are
-  defence-in-depth, not boundaries — see `docs/IMPLEMENTATION_STATUS.md`, Task 5. (2) The
-  plan's live-DB test suites are discharged as controller-run catalogue rehearsals plus
-  runnable `tests/unit/*.test.ts` text assertions; there is no DB connection vitest can reach.
-  Read the layout note in the plan before writing any test.
+  defence-in-depth, not boundaries — see `docs/IMPLEMENTATION_STATUS.md`, Task 5. (2)
+  `private.can` is **org-strict**: it admits only roles of the organization being asked about,
+  so a platform role is unreachable through it and `guard_role_org_scope`'s
+  `organization_id IS NULL` allowance is inert. Do not "simplify" it back to admitting
+  platform roles. (3) `private.clinic_ids` returns the **empty set** to a non-member and does
+  **not** filter `clinics.is_active` — a deactivation must not erase access to retained
+  records. Task 9 must write clinic-scoped policies as a three-clause **conjunction**
+  (`current_org_ids`, `can(org, perm, row_clinic_id)`, `clinic_ids`): the two-argument
+  `can()` returns no rows, and that silent failure is what invites loosening `can` into a
+  cross-clinic leak. The plan's live-DB test suites are discharged as controller-run catalogue
+  rehearsals plus runnable `tests/unit/*.test.ts` text assertions; there is no DB connection
+  vitest can reach — read the layout note in the plan before writing any test.
+- **Rehearsal trap:** `set_config('request.jwt.claim.sub', …, true)` is transaction-local, so
+  two identity probes batched into one Composio MCP call share a transaction and the **last
+  identity wins**. Probe one identity per call or you will measure your own batching (this
+  reported an active member as a non-member).
 
 ## Commands
 
