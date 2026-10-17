@@ -33,6 +33,11 @@
 --    a mistyped policy. Task 9's SELECT policy is unaffected, and
 --    private.write_audit still writes because it runs as the owner.
 --
+-- PARTIALLY SUPERSEDED by 20261014000820_audit_writer_and_caps.sql, which widens
+-- the writer predicate to admit a platform administrator (so a suspension event
+-- has a writer) and bounds p_action and p_resource_type as well as metadata.
+-- Read this header with that file in hand.
+--
 -- The free-text screen remains a key-name blocklist and the header says so:
 -- `summary`, `narrative`, a misspelling, or a key with surrounding whitespace all
 -- pass it. It catches casual smuggling, not a determined one.

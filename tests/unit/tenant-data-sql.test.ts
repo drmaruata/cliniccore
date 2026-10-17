@@ -117,17 +117,28 @@ describe("audit log and platform settings", () => {
     );
   });
 
-  it("refuses to write another tenant's trail", () => {
+  it("refuses to write another tenant's trail, but admits a platform administrator", () => {
     // SECURITY DEFINER owned by postgres with relforcerowsecurity = false, so
     // this function bypasses RLS entirely: Task 9's policies are no backstop.
     // Without the guard any authenticated user could falsify another tenant's
-    // audit history, with unconstrained action text.
+    // audit history, with unconstrained action text. The is_platform_admin
+    // alternative exists because otherwise a platform operator could not record
+    // the suspension they just performed - and a tenant can never satisfy it,
+    // since profiles.is_platform_admin is not tenant-settable.
     expect(latestDefinition("write_audit")).toContain(
-      "if p_org_id is not null and not (select private.is_member(p_org_id)) then",
+      "if not ((select private.is_member(p_org_id)) or (select private.is_platform_admin())) then",
     );
     expect(latestDefinition("next_sequence_value")).toContain(
       "if not (select private.is_member(p_org_id)) then",
     );
+  });
+
+  it("bounds every caller-supplied text, not just metadata", () => {
+    const body = latestDefinition("write_audit");
+    // action and resource_type are the columns the metadata screen cannot
+    // police, so an unbounded value there is an unbounded row here.
+    expect(body).toContain("octet_length(p_action) > 128 or octet_length(p_resource_type) > 64");
+    expect(body).toContain("octet_length(coalesce(p_metadata, '{}'::jsonb)::text) > 8192");
   });
 
   it("bounds the metadata walk by size, not by depth", () => {

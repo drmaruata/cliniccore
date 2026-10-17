@@ -791,3 +791,24 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
 - AGENTS.md wording corrected: the membership check binds definer functions that
   WRITE rows for an organization, not every helper that takes an organization id -
   is_member is that predicate and must not check itself.
+
+## Task 8 fix round 2 - all five convergence Minors closed
+
+- The writer predicate on private.write_audit is now is_member OR
+  is_platform_admin. The org-strict version had left the suspension audit event
+  with no writer: recording it means writing an org-scoped row for an
+  organization the operator is not, and must not be, an active member of. A
+  platform administrator's authority is the profiles boolean, not a role, and a
+  tenant can never satisfy that alternative. Measured with the organization
+  suspended: the administrator's organization.suspended row written, the tenant in
+  that organization 42501, a cross-tenant tenant write 42501.
+- p_action (128 bytes) and p_resource_type (64 bytes) are now bounded alongside
+  the 8 KiB metadata cap. Those two columns are exactly what the metadata screen
+  concedes it cannot police, so an unbounded value there was an unbounded row.
+- Measured and recorded for the first time: md5(pg_proc.prosrc) against the last
+  create or replace in the migration files, comments stripped, because Postgres
+  does not store them. Seven of eight private functions match byte-for-byte;
+  create_organization_with_owner drifts 9055 vs 8297 purely from whitespace in my
+  re-apply, with substance proven identical by sorted-set md5s. RUN THIS AFTER
+  EVERY APPLY - a file-only drift guard structurally cannot see a bad apply,
+  which is how two of this task's own errors reached the database unnoticed.
