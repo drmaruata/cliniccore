@@ -297,7 +297,9 @@ docs/*.md                            15 artefacts
 
 **Files:**
 - Create: `scripts/apply-migration.ts`, `supabase/config.toml`, `.env.local` (gitignored, operator-populated)
-- Test: `tests/integration/migration-applier.test.ts`
+- Test: `tests/unit/migration-manifest.test.ts`
+
+> **Ruling (Task 9): the planned `tests/integration/migration-applier.test.ts` is CLOSED as obsolete and will not be written.** Its premise was that a Node script applies migrations. It does not — a Node script cannot reach the Composio MCP, and there is no Supabase PAT, so the agent applies through the MCP and the script only emits a manifest. A test cannot assert a migration reached the database by calling a script that does not apply anything. What the script actually owns — name validity, ordering, idempotency-key derivation — is covered by `tests/unit/migration-manifest.test.ts`, and what the *database* actually received is covered per-task by the `md5(prosrc)` comparison against the committed file plus the catalogue assertions in `tests/integration/`.
 
 **Interfaces:**
 - Consumes: nothing
@@ -305,11 +307,11 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 1: Write the failing test**
 
-  `tests/integration/migration-applier.test.ts`: create a throwaway table via a temporary migration file, assert it exists in `information_schema.tables`, assert the migration appears in `SUPABASE_LIST_MIGRATION_HISTORY`, then drop the table and assert absence. The test must fail when `.env.local` is missing with a message naming the missing variables — not a stack trace.
+  SUPERSEDED by the ruling above: the delivered test is `tests/unit/migration-manifest.test.ts`, asserting the manifest and validator the script actually exposes.
 
 - [ ] **Step 2: Run it to verify it fails**
 
-  Run: `npx vitest run tests/integration/migration-applier.test.ts` → FAIL (script absent).
+  Superseded; recorded in `.superpowers/sdd/cliniccore-foundation/progress.md`.
 
 - [ ] **Step 3: Implement `scripts/apply-migration.ts`**
 
@@ -321,7 +323,7 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 5: Run the test to verify it passes (BLOCKED if no credentials)**
 
-  Run: `npx vitest run tests/integration/migration-applier.test.ts`
+  Run: `npx vitest run tests/unit/migration-manifest.test.ts`
   Expected: PASS. If `.env.local` is absent, record the item as **BLOCKED** in `docs/IMPLEMENTATION_STATUS.md` — do not report it as passing.
 
 - [ ] **Step 6: Commit**
@@ -344,6 +346,8 @@ docs/*.md                            15 artefacts
 - [ ] **Step 1: Write the failing test**
 
   Assert schema `private` exists and is not in PostgREST's exposed schema list; `private.set_updated_at` and `private.guard_platform_admin` exist; `set_updated_at` has `prosecdef = true`, `guard_platform_admin` has `prosecdef = false` (the invoker exception); both have `proconfig` containing `search_path=` (empty); `anon` has neither schema usage nor function execute.
+
+  **Delivered as** `tests/integration/core-functions.test.ts`, with one obligation dropped: `pgrst.db_schemas` is unreadable from SQL, so the test asserts what is checkable — the schema exists and `anon`/`public` hold neither usage nor execute — and the PostgREST exposure question stays explicitly unresolved rather than asserted on faith.
 
 - [ ] **Step 2: Run it to verify it fails**
 

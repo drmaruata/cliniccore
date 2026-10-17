@@ -112,3 +112,89 @@ export async function closePool(): Promise<void> {
     pool = null;
   }
 }
+
+/**
+ * A transaction the caller rolls back.
+ *
+ * THIS IS HOW BEHAVIOURAL ASSERTIONS WORK WITHOUT POSTGREST. Two statements are
+ * enough to be any principal: `set local role authenticated` changes the role the
+ * rest of the transaction runs as, and
+ * `select set_config('request.jwt.claim.sub', …, true)` is exactly what PostgREST
+ * does with a JWT. Both are transaction-local, so a rollback restores both.
+ *
+ * That means a test can assert what a tenant's session sees - a refused audit
+ * write, a scoped MRN counter - without any HTTP layer, and can create its
+ * fixtures as the owner first, then act as the tenant. Rolling back also means
+ * the suite leaves no rows behind, which matters more than usual here: the
+ * project's rehearsal rows are PHI-shaped.
+ *
+ * It does NOT test PostgREST itself - schema exposure, JWT verification, HTTP
+ * behaviour - which stays a separate concern.
+ */
+export interface DbSession {
+  query<T extends Record<string, unknown>>(text: string, params?: readonly unknown[]): Promise<T[]>;
+  /** Run as the owner again (undo `set local role`) inside the same transaction. */
+  resetRole(): Promise<void>;
+  rollback(): Promise<void>;
+}
+
+export async function beginSession(): Promise<DbSession> {
+  const client = await getPool().connect();
+  await client.query("begin");
+  let finished = false;
+
+  const run = async <T extends Record<string, unknown>>(
+    text: string,
+    params: readonly unknown[] = [],
+  ): Promise<T[]> => {
+    const result = await client.query(text, params as unknown[]);
+    return result.rows as T[];
+  };
+
+  const rollback = async (): Promise<void> => {
+    if (finished) return;
+    finished = true;
+    await client.query("rollback");
+    client.release();
+  };
+
+  return {
+    query: run,
+    resetRole: async () => {
+      await client.query("reset role");
+    },
+    rollback,
+  };
+}
+
+/**
+ * Assert a statement fails, then leave the transaction usable.
+ *
+ * WITHOUT THIS A TEST CANNOT ASSERT TWO FAILURES IN A ROW. Postgres aborts the
+ * transaction on the first error, so every statement after it fails with "current
+ * transaction is aborted" instead of the error under test - which reads as a
+ * broken guard when the guard is fine. Each expected failure therefore gets its
+ * own savepoint, rolled back before the next assertion.
+ */
+export async function expectRejection(
+  session: DbSession,
+  text: string,
+  params: readonly unknown[],
+  matcher: RegExp,
+): Promise<void> {
+  await session.query("savepoint expected_rejection");
+  let message = "";
+  try {
+    await session.query(text, params);
+  } catch (error) {
+    message = error instanceof Error ? error.message : String(error);
+  }
+  await session.query("rollback to savepoint expected_rejection");
+
+  if (message === "") {
+    throw new Error(`expected a failure matching ${matcher} but the statement succeeded`);
+  }
+  if (!matcher.test(message)) {
+    throw new Error(`expected a failure matching ${matcher}, got: ${message}`);
+  }
+}

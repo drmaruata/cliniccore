@@ -859,3 +859,76 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   working: it disagrees with you loudly.
 - The suite connects as the database owner and bypasses RLS. It can inspect the
   catalogue; it cannot prove tenant isolation.
+
+### Task 9: behavioural assertions DO run over a direct connection
+
+The Task 8 note above - "BEHAVIOURAL assertions still cannot run" - is
+**SUPERSEDED**, and it was wrong to write. It reasoned from PostgREST, but the
+blocker was never PostgREST.
+
+Measured: `set local role authenticated` plus
+`select set_config('request.jwt.claim.sub', $1, true)` reproduces, inside a plain
+`pg` transaction, exactly the principal PostgREST builds from a user's JWT. Both
+statements are transaction-local, so `rollback` restores both. That makes real
+behaviour testable with no HTTP layer and no JWT signing:
+
+- `tests/integration/onboarding-rpc.test.ts` - calls the RPC as a tenant and
+  counts what it created.
+- `tests/integration/audit-log.test.ts` - the refusals in `write_audit`, which
+  are the assertions that matter most because Task 9's policies are NOT a
+  backstop for it (SECURITY DEFINER, owner `postgres`, `relforcerowsecurity =
+false`).
+- Both roll back, so the suite leaves no tenant-shaped rows behind. That matters
+  more than usual here.
+
+What this still does NOT cover: PostgREST itself - schema exposure, JWT
+verification, HTTP behaviour - and therefore tenant isolation through the real
+API. That stays Task 18's job. The direct connection is the wrong tool for
+isolation testing regardless, because the owner bypasses RLS.
+
+#### Asserting the DATABASE matches the registry, not just the file
+
+`onboarding-rpc.test.ts` computes its expected grant count from
+`lib/permissions/registry.ts` rather than hard-coding a literal. This is
+deliberate and it is a different assertion from the existing drift tests:
+`onboarding-seed.test.ts` proves the MIGRATION FILE matches the registry, and
+this proves the DATABASE does. Those failed separately, twice, in this project -
+the file was regenerated while the database kept the old matrix.
+
+#### Two traps the suite hit on its first run
+
+1. **A rejected statement aborts its whole transaction.** Asserting two failures
+   in a row reports "current transaction is aborted" for the second one, which
+   reads as a broken guard when the guard is fine - the exact false negative the
+   earlier rehearsals produced. `expectRejection` in
+   `tests/integration/helpers/database.ts` wraps each expected failure in its own
+   savepoint. Without it, five tests lied at once.
+2. **`has_table_privilege(...) as delete` is a syntax error.** DELETE and SELECT
+   are reserved; the aliases must be `can_delete` / `can_select`. Caught by
+   running, not by reading.
+
+Also worth recording: my own first draft asserted both that `public` holds no
+sequences and that `audit_logs.id` is bigint from a `bigserial`. Those
+contradict. `patients.mrn` is the thing that must not be sequence-backed
+(enumerable across tenants, and a format baked into the schema); `audit_logs`
+deliberately has one. Narrowed to `no sequence is owned by patients`, plus the
+exact expected set `['audit_logs_id_seq']` so a new sequence cannot appear
+unnoticed.
+
+Every refusal test carries a positive control. A guard that refused everything
+would satisfy each failure case on its own.
+
+### Task 9: `migration-applier.test.ts` closed as obsolete
+
+The plan named `tests/integration/migration-applier.test.ts`, which would have
+"applied a migration" and asserted it landed. That test cannot exist: the
+premise was that a Node script applies migrations, and it does not - a Node
+script cannot reach the Composio MCP and there is no Supabase PAT. The script
+emits a manifest; the agent applies. A test cannot assert a database effect by
+calling a thing that has none.
+
+The script's real obligations (name validity, ordering, idempotency-key
+derivation) are covered by `tests/unit/migration-manifest.test.ts`. The
+database's real state is covered per-task by the `md5(prosrc)` comparison plus
+the catalogue assertions in `tests/integration/`. The plan and this log now say
+so, so the next agent does not go looking for a missing file.
