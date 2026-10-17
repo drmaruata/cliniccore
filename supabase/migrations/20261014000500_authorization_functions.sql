@@ -1,5 +1,11 @@
 -- Task 7: the authorization functions every RLS policy calls.
 --
+-- PARTIALLY SUPERSEDED by 20261014000510_tenant_status_and_scope.sql, which
+-- redefines all four: `can` is org-strict AND refuses `platform.*` keys, and all
+-- four honour `organizations.status`. The rationale below that describes the
+-- org-strict clause describes the shipped behaviour; the reasoning about the
+-- guard's IS NULL allowance is kept for history and is corrected in 00510.
+--
 -- Four helpers in the private schema, all SECURITY DEFINER because each reads
 -- tables the calling role cannot see - that is what breaks the RLS recursion a
 -- policy would otherwise hit when it asks "may this user see this row" - and all

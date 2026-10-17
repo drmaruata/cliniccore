@@ -25,3 +25,5 @@ docs/superpowers
 # graphify run turns the formatting gate red with no source change behind it.
 graphify-out
 .opencode
+# vitest reporter output - generated per run, same reasoning as graphify-out.
+.vitest

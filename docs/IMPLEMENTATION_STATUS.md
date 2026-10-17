@@ -650,3 +650,30 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   several identity probes into one MCP call makes them share a transaction and
   the last identity wins. The first rehearsal run therefore reported an active
   member as a non-member. Rehearse one identity per call.
+
+## Task 7 fix round 2 - the second escalation route, and suspension that did nothing
+
+- private.can now refuses platform.* keys: `p_permission not like 'platform.%' and
+...`. Fix round 1 made can org-strict, which closed the platform-ROLE route but
+  not the platform-KEY one - permissions is a single global table with no scope
+  column, so a tenant attaching platform.tenants.manage to one of its OWN roles
+  satisfied the org check and got a platform permission. Enforced in code rather
+  than trusted to the seed, because the registry test only proves the generator
+  emits no such grant, not that the database refuses one.
+- organizations.status is now enforced. It existed and was read by NOTHING, so
+  suspending or archiving a tenant cut no access at all - which undercuts
+  platform.tenants.manage's own description. current_org_ids, is_member and
+  clinic_ids join organizations and require status = 'active'; can inherits it
+  through is_member. Measured across active/suspended/archived/reactivated:
+  suspension is now effective AND reversible.
+- Both fixes live in 20261014000510_tenant_status_and_scope.sql rather than an
+  edit to 00500: the migration-edit exception closed once 00300 landed, so from
+  here on corrections are new files. History is 7 rows, 1:1 with the files.
+- tests/unit/authorization-schema-sql.test.ts now reads every migration in order
+  and asserts on the LAST definition of each helper, modelling create or replace,
+  so a later correction file cannot hide behind an earlier one. Three assertions
+  are prohibitions, because each of those mistakes leaves a working function:
+  can must not mention is_platform_admin, must not admit a NULL-organization
+  role, and must refuse platform.* keys. can's caller predicate is pinned too -
+  without it the function degenerates to "does any member of this org hold this
+  permission".

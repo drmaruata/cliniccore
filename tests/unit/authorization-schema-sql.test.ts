@@ -1,22 +1,27 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /*
- * Task 7 - authorization migration invariants.
+ * Task 7 - authorization invariants.
  *
  * The migrations are the source of truth and vitest cannot reach the database,
  * so these assertions guard the SQL text for the properties the live catalogue
- * was measured against: the nulls-not-distinct uniques that make the seed and
- * the assignment dedupe work, the composite clinic foreign key, RLS enabled per
- * table, the role org-scope guard on both referencing tables, and the four
- * helpers' security properties.
+ * was measured against: the nulls-not-distinct uniques, the composite clinic
+ * foreign key, RLS per table, the role org-scope guard, and the four helpers'
+ * security properties.
  *
- * The one assertion here is a prohibition rather than a shape: private.can must
- * never mention private.is_platform_admin. Letting platform operators pass the
- * permission check would expose every tenant's patient records, which the spec
- * calls excessive privilege - and that mistake is invisible in review because
- * the function would still work.
+ * Function bodies are read through `latestDefinition`, which models what
+ * Postgres actually does with `create or replace`: the LAST definition in
+ * filename order wins. A later correction migration therefore supersedes the
+ * earlier file rather than being missed by it - the mistake that would happen if
+ * these tests read 00500 directly once a correction file exists.
+ *
+ * Two assertions here are prohibitions rather than shapes, because both mistakes
+ * leave a function that still works: private.can must never mention
+ * private.is_platform_admin, and must never admit a NULL-organization role or a
+ * platform.* permission key. Either would hand a tenant principal platform
+ * authority while profiles.is_platform_admin stayed false.
  */
 
 const MIGRATIONS = join(process.cwd(), "supabase", "migrations");
@@ -29,15 +34,22 @@ function read(name: string): string {
 }
 
 const SCHEMA = read("20261014000400_authorization.sql");
-const FUNCTIONS = read("20261014000500_authorization_functions.sql");
+const ALL = readdirSync(MIGRATIONS)
+  .filter((name) => name.endsWith(".sql"))
+  .sort()
+  .map(read)
+  .join("\n");
 
-const TABLES = ["permissions", "roles", "role_permissions", "user_role_assignments"];
-
-/** private.can's body alone: the revoke/grant block after it names other functions. */
-function canBody(): string {
-  const tail = FUNCTIONS.split("create or replace function private.can(")[1] ?? "";
-  return tail.slice(tail.indexOf("as $fn$"), tail.indexOf("$fn$;"));
+/** The effective definition of a function, i.e. the last `create or replace` for it. */
+function latestDefinition(name: string): string {
+  const start = ALL.lastIndexOf(`create or replace function private.${name}(`);
+  expect(start, `no definition of private.${name} in any migration`).toBeGreaterThanOrEqual(0);
+  const end = ALL.indexOf("$fn$;", start);
+  return ALL.slice(start, end === -1 ? undefined : end);
 }
+
+const HELPERS = ["is_member", "is_platform_admin", "clinic_ids", "can"];
+const TABLES = ["permissions", "roles", "role_permissions", "user_role_assignments"];
 
 describe("authorization schema migration", () => {
   it("declares all four tables", () => {
@@ -105,46 +117,75 @@ describe("authorization schema migration", () => {
   });
 });
 
-describe("authorization function migration", () => {
-  it("makes all four helpers stable security-definers with an empty search_path", () => {
-    expect(FUNCTIONS.match(/security definer/g)).toHaveLength(4);
-    expect(FUNCTIONS.match(/stable/g)).toHaveLength(4);
-    expect(FUNCTIONS.match(/set search_path = ''/g)).toHaveLength(4);
+describe("authorization helper functions", () => {
+  it("makes every helper a stable security-definer with an empty search_path", () => {
+    for (const name of HELPERS) {
+      const body = latestDefinition(name);
+      expect(body, `${name} must be SECURITY DEFINER`).toContain("security definer");
+      expect(body, `${name} must be STABLE`).toContain("stable");
+      expect(body, `${name} must pin search_path`).toContain("set search_path = ''");
+    }
   });
 
-  it("closes the helpers' grants to authenticated only", () => {
-    expect(FUNCTIONS.match(/revoke execute on function private\./g)).toHaveLength(4);
-    expect(FUNCTIONS.match(/grant execute on function private\./g)).toHaveLength(4);
+  it("closes each helper's grants to authenticated only", () => {
+    for (const name of HELPERS) {
+      expect(ALL).toContain(`revoke execute on function private.${name}(`);
+      expect(ALL).toContain(`grant execute on function private.${name}(`);
+    }
   });
 
-  it("never lets private.can consult platform administration", () => {
-    expect(canBody()).not.toContain("is_platform_admin");
+  it("requires the organization to be active before granting anything", () => {
+    // organizations.status existed but was read by nothing, so suspending a
+    // tenant left can() and clinic_ids() returning exactly what they returned
+    // before - which undercuts platform.tenants.manage's own description.
+    for (const name of ["current_org_ids", "is_member", "clinic_ids"]) {
+      expect(latestDefinition(name), `${name} must honour organizations.status`).toContain(
+        "o.status = 'active'",
+      );
+    }
+  });
+});
+
+describe("private.can scope", () => {
+  it("never consults platform administration", () => {
+    expect(latestDefinition("can")).not.toContain("is_platform_admin");
+  });
+
+  it("refuses platform.* keys, whoever attached them", () => {
+    // permissions is one global table with no scope column, so a tenant could
+    // attach platform.tenants.manage to its OWN role and satisfy the org check.
+    expect(latestDefinition("can")).toContain("p_permission not like 'platform.%'");
   });
 
   it("admits only the organization's own roles, never a platform role", () => {
-    // staff.manage holders may invite a platform role and the accept flow turns
-    // that into an assignment; if can() admitted platform roles, a tenant
-    // principal would gain platform.tenants.manage while is_platform_admin
-    // stayed false. Platform roles are reachable only through the separate
-    // platform function.
-    expect(canBody()).toContain("and r.organization_id = p_org_id");
-    expect(canBody()).not.toContain("r.organization_id is null");
+    const body = latestDefinition("can");
+    expect(body).toContain("and r.organization_id = p_org_id");
+    expect(body).not.toContain("r.organization_id is null");
   });
 
-  it("requires an active membership and honours clinic scope in private.can", () => {
-    expect(FUNCTIONS).toContain("select (select private.is_member(p_org_id)) and exists (");
+  it("is bound to the calling user", () => {
+    // Without this the function degenerates into "does any member of this org
+    // hold this permission", handing patients.read to everyone in an org that
+    // has a doctor role.
+    expect(latestDefinition("can")).toContain("and a.user_id = (select auth.uid())");
+  });
+
+  it("requires an active membership and honours clinic scope", () => {
+    const body = latestDefinition("can");
+    expect(body).toContain("(select private.is_member(p_org_id))");
     // When p_clinic_id is NULL only an org-wide assignment can satisfy it.
-    expect(FUNCTIONS).toContain("and (a.clinic_id is null or a.clinic_id = p_clinic_id)");
+    expect(body).toContain("and (a.clinic_id is null or a.clinic_id = p_clinic_id)");
+  });
+});
+
+describe("private.clinic_ids reach", () => {
+  it("returns no clinics to a non-member", () => {
+    expect(latestDefinition("clinic_ids")).toContain("and exists (select 1 from mine)");
   });
 
-  it("returns no clinics to a non-member, and never hides a deactivated clinic", () => {
-    expect(FUNCTIONS).toContain("and exists (select 1 from mine)");
+  it("never hides a deactivated clinic's retained records", () => {
     // Deactivating a clinic is a scheduling concern; its records carry retention
-    // obligations, so filtering them out here would erase access to history.
-    const clinicIds =
-      (FUNCTIONS.split("create or replace function private.clinic_ids(")[1] ?? "").split(
-        "$fn$;",
-      )[0] ?? "";
-    expect(clinicIds).not.toContain("is_active");
+    // obligations, so filtering them here would erase access to history.
+    expect(latestDefinition("clinic_ids")).not.toContain("is_active");
   });
 });
