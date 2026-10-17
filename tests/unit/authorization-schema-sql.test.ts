@@ -1,6 +1,10 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+
+import {
+  ALL_MIGRATION_SQL as ALL,
+  latestDefinition,
+  readMigration as read,
+} from "../helpers/migration-text";
 
 /*
  * Task 7 - authorization invariants.
@@ -24,29 +28,7 @@ import { describe, expect, it } from "vitest";
  * authority while profiles.is_platform_admin stayed false.
  */
 
-const MIGRATIONS = join(process.cwd(), "supabase", "migrations");
-
-function read(name: string): string {
-  return readFileSync(join(MIGRATIONS, name), "utf8")
-    .replace(/^\s*--.*$/gm, "")
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-}
-
 const SCHEMA = read("20261014000400_authorization.sql");
-const ALL = readdirSync(MIGRATIONS)
-  .filter((name) => name.endsWith(".sql"))
-  .sort()
-  .map(read)
-  .join("\n");
-
-/** The effective definition of a function, i.e. the last `create or replace` for it. */
-function latestDefinition(name: string): string {
-  const start = ALL.lastIndexOf(`create or replace function private.${name}(`);
-  expect(start, `no definition of private.${name} in any migration`).toBeGreaterThanOrEqual(0);
-  const end = ALL.indexOf("$fn$;", start);
-  return ALL.slice(start, end === -1 ? undefined : end);
-}
 
 const HELPERS = ["is_member", "is_platform_admin", "clinic_ids", "can"];
 const TABLES = ["permissions", "roles", "role_permissions", "user_role_assignments"];

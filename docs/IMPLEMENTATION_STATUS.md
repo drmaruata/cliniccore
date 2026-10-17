@@ -698,3 +698,39 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
   operator sees zero tenants.
 - Task 7's review loop is declared CONVERGED by an independent reviewer (no
   Critical, no Important) after three rounds.
+
+## Task 8 - onboarding RPC, tenant data, audit and platform schema
+
+- private.create_organization_with_owner is the ONLY path that bootstraps an
+  organization, because no RLS policy could ever let a newcomer insert the first
+  membership. The org-scoped role seed is GENERATED from the registry and inlined
+  in the function body with the organization id left as the plpgsql variable
+  v_org_id; tests/unit/onboarding-seed.test.ts fails if it drifts. Organization
+  roles are seeded here and nowhere else. The owner assignment is org-wide.
+- audit_logs and platform_settings deliberately have NO foreign keys. An audit
+  trail must outlive the row it describes: a cascade from organizations would
+  erase a tenant's history when the tenant is deleted, and one from auth.users
+  when the actor's account is closed. The test suite pins the absence as a
+  prohibition, since it reads as an oversight otherwise.
+- private.write_audit screens metadata with a RECURSIVE walk over objects AND
+  arrays. Measured first: a jsonpath wildcard ($.**.keyvalue()) silently skips
+  array elements, so {"items":[{"note":...}]} passed it - the type-filtered
+  variant failed too. It is a key-name blocklist (note/notes/content, case-
+  insensitive, depth 32) and therefore a speed bump, not a guarantee: summary or
+  narrative passes it. Platform-scoped events (organization_id NULL) are refused
+  unless private.is_platform_admin, matching the rule that platform authority is
+  the profiles boolean.
+- patients is the first PHI table: composite FK (organization_id, clinic_id) ->
+  clinics closes cross-tenant attachment, and mrn is TEXT with no sequence
+  anywhere - a global sequence would make identifiers enumerable across tenants.
+  private.next_sequence_value is a single per-tenant upsert, so it is atomic by
+  row lock; verified single-session (1, 2, 3) but NOT under concurrency.
+- patient_identifiers references its patient ON DELETE RESTRICT with an explicit
+  index on the referencing columns (its own unique on (organization_id, kind,
+  value) cannot serve that FK).
+- tenant_sequences is the documented exception to the standing updated_at rule:
+  only the security-definer function writes it, so it maintains updated_at inline
+  instead of carrying a trigger.
+- tests/helpers/migration-text.ts holds readMigration and latestDefinition for all
+  three invariant suites, so a correction migration cannot hide behind the file an
+  older suite was written against.
