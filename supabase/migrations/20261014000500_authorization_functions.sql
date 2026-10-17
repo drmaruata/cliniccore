@@ -12,6 +12,16 @@
 -- records, which the spec forbids as excessive privilege. Platform authority is
 -- the profiles.is_platform_admin boolean and nothing else.
 --
+-- private.can admits ONLY roles of the organization being asked about
+-- (r.organization_id = p_org_id), so a platform role is unreachable through it.
+-- That is deliberate and load-bearing, not a simplification: staff.manage holders
+-- may insert an invitation naming a platform role, and the accept flow turns that
+-- into an assignment. Admitting platform roles here would hand a tenant
+-- principal platform.tenants.manage and the rest of the platform matrix, which
+-- is an escalation even though profiles.is_platform_admin stays false. Platform
+-- operators therefore hold their role for the separate platform function, not
+-- for can().
+--
 -- Clinic scope: an assignment with clinic_id NULL covers the whole organization
 -- and one with a clinic_id covers only that clinic, so can()'s predicate reduces
 -- to (assignment.clinic_id IS NULL OR assignment.clinic_id = p_clinic_id). When
@@ -21,6 +31,11 @@
 -- caller reach at all", and it returns the whole organization only when the
 -- caller is an active member with no clinic scoping; a non-member gets the empty
 -- set rather than every clinic.
+--
+-- clinic_ids() deliberately does NOT filter on clinics.is_active. A deactivated
+-- clinic's records carry retention obligations, and hiding them would make a
+-- deactivation erase access to history; deactivation is a scheduling concern and
+-- visibility is a record-retention concern, so they stay separate.
 
 create or replace function private.is_member(p_org_id uuid)
 returns boolean
@@ -73,7 +88,6 @@ as $fn$
   select c.id
   from public.clinics c
   where c.organization_id = p_org_id
-    and c.is_active
     and exists (select 1 from mine)
     and (
       (select count(*) from scoped) = 0
@@ -97,7 +111,7 @@ as $fn$
        where a.organization_id = p_org_id
          and a.user_id = (select auth.uid())
          and rp.permission_key = p_permission
-         and (r.organization_id is null or r.organization_id = p_org_id)
+         and r.organization_id = p_org_id
          and (a.clinic_id is null or a.clinic_id = p_clinic_id)
      );
 $fn$;

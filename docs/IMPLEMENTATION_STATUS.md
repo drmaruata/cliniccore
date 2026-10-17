@@ -617,17 +617,32 @@ amended accordingly. Task 7 must not "fix" it back to a plain unique.
 - clinic_ids returns the EMPTY set to a non-member. The plan's "all clinics when
   the membership has no clinic_memberships rows" rule would otherwise hand the
   whole organization to anyone who asked, since a non-member has no scoping rows
-  either. It also skips inactive clinics.
+  either. It does NOT filter on clinics.is_active: a deactivated clinic's records
+  carry retention obligations, and filtering them would make a deactivation
+  erase access to history. Deactivation is a scheduling concern; visibility is a
+  record-retention concern.
+- private.can admits ONLY roles of the organization being asked about
+  (`r.organization_id = p_org_id`). This is load-bearing, not a simplification:
+  staff.manage holders may invite a platform role and the accept flow turns that
+  into an assignment, so admitting platform roles here would hand a tenant
+  principal platform.tenants.manage and the rest of the platform matrix while
+  profiles.is_platform_admin stayed false. Platform roles are reachable only
+  through the separate platform function. Task 9 must additionally keep `roles`
+  INSERT/UPDATE policies carrying `organization_id is not null`, so no tenant can
+  mint a platform role in the first place.
 - private.can never consults private.is_platform_admin (pinned by a test, not just
   by review): platform operators reach tenants through a separate function, and
   granting them can() would expose every tenant's patient records.
 - The platform seed is INLINED in 00400 between sentinel comments rather than
-  applied by scripts/apply-permissions-seed.ts, which cannot be built here: a
-  Node script cannot reach the Composio MCP applier, and under ESM without
-  allowImportingTsExtensions it cannot import the generator (extensionless fails
-  in Node, .ts fails tsc). Re-running 00400 refreshes the seed;
-  tests/unit/permissions-seed.test.ts fails if the inlined block drifts from
-  lib/permissions/registry.ts.
+  applied by scripts/apply-permissions-seed.ts, which cannot be built here:
+  nothing in a Node process can apply SQL (the Composio MCP is agent-side, and
+  there is no database connection or PAT), and nothing in a Node process can even
+  import the generator, because gen-permissions-sql.ts imports a `@/` tsconfig
+  path alias that plain Node does not resolve - vitest is its only working
+  consumer. Re-running 00400 refreshes the seed; tests/unit/permissions-seed.test.ts
+  fails if the inlined block drifts from lib/permissions/registry.ts. The rehearsal
+  must ALSO compare the live permissions table against the registry, since only the
+  file-level guard is automated.
 - Rehearsed live and cleaned: clinic-scoped vs org-wide permission scope, the
   non-member leak, cross-org role and cross-org clinic rejection, the
   nulls-not-distinct dedupe, and the platform-role allowance.

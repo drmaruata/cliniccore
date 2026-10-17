@@ -33,6 +33,12 @@ const FUNCTIONS = read("20261014000500_authorization_functions.sql");
 
 const TABLES = ["permissions", "roles", "role_permissions", "user_role_assignments"];
 
+/** private.can's body alone: the revoke/grant block after it names other functions. */
+function canBody(): string {
+  const tail = FUNCTIONS.split("create or replace function private.can(")[1] ?? "";
+  return tail.slice(tail.indexOf("as $fn$"), tail.indexOf("$fn$;"));
+}
+
 describe("authorization schema migration", () => {
   it("declares all four tables", () => {
     for (const table of TABLES) {
@@ -112,11 +118,17 @@ describe("authorization function migration", () => {
   });
 
   it("never lets private.can consult platform administration", () => {
-    const tail = FUNCTIONS.split("create or replace function private.can(")[1] ?? "";
-    // Isolate the body: everything after the function is the revoke/grant block,
-    // which legitimately names private.is_platform_admin.
-    const body = tail.slice(tail.indexOf("as $fn$"), tail.indexOf("$fn$;"));
-    expect(body).not.toContain("is_platform_admin");
+    expect(canBody()).not.toContain("is_platform_admin");
+  });
+
+  it("admits only the organization's own roles, never a platform role", () => {
+    // staff.manage holders may invite a platform role and the accept flow turns
+    // that into an assignment; if can() admitted platform roles, a tenant
+    // principal would gain platform.tenants.manage while is_platform_admin
+    // stayed false. Platform roles are reachable only through the separate
+    // platform function.
+    expect(canBody()).toContain("and r.organization_id = p_org_id");
+    expect(canBody()).not.toContain("r.organization_id is null");
   });
 
   it("requires an active membership and honours clinic scope in private.can", () => {
@@ -125,8 +137,14 @@ describe("authorization function migration", () => {
     expect(FUNCTIONS).toContain("and (a.clinic_id is null or a.clinic_id = p_clinic_id)");
   });
 
-  it("returns no clinics to a non-member, and skips inactive clinics", () => {
+  it("returns no clinics to a non-member, and never hides a deactivated clinic", () => {
     expect(FUNCTIONS).toContain("and exists (select 1 from mine)");
-    expect(FUNCTIONS).toContain("and c.is_active");
+    // Deactivating a clinic is a scheduling concern; its records carry retention
+    // obligations, so filtering them out here would erase access to history.
+    const clinicIds =
+      (FUNCTIONS.split("create or replace function private.clinic_ids(")[1] ?? "").split(
+        "$fn$;",
+      )[0] ?? "";
+    expect(clinicIds).not.toContain("is_active");
   });
 });

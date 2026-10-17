@@ -40,8 +40,20 @@
 -- same reason as Task 6: Supabase grants anon/authenticated access to new public
 -- tables by default, so a table created here without RLS is reachable through
 -- PostgREST in the meantime. The table-wide privileges RLS does not cover are
--- revoked from the default ACL instead of per table, so every table created from
--- now on inherits the restriction.
+-- revoked from the default ACL instead of per table, so later migrations need no
+-- per-table revokes. Note that a default ACL binds only objects created by the
+-- role that issued the statement - here postgres, which is what the MCP applier
+-- uses. A table created by any other role would not inherit it.
+--
+-- Two referential decisions worth stating rather than leaving to be discovered:
+--   * invitations_role_id_fkey is ON DELETE CASCADE. Without it, deleting an
+--     organization cascades to its roles and then fails, because the invitations
+--     being deleted in the same cascade may still reference them. The cost is
+--     that deleting a role voids its pending invitations.
+--   * user_role_assignments_clinic_fkey is ON DELETE NO ACTION, so deleting a
+--     clinic raises once any assignment names it. Clinics are deactivated
+--     (clinics.is_active), not deleted; a hard delete must clear assignments
+--     first. This is deliberately the fail-safe direction.
 
 alter default privileges in schema public
   revoke truncate, references, trigger on tables from anon, authenticated;
