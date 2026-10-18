@@ -1347,3 +1347,112 @@ _policies_. Nobody asked what invariant each table's write path has to preserve 
 stayed inside the `roles` table while the same lockout and the same escalation both
 remained reachable from `role_permissions`. Three of the four escalations in this task
 were closed by ONE idea: a definer permission predicate, ~10 lines, no hierarchy.
+
+### RESOLVED: PostgREST does NOT expose the `private` schema
+
+Question open since Task 5. Answered by asking the API rather than the database, because
+`pgrst.db_schemas` is unreadable from SQL — and the API turns out to state the answer in
+its own error messages.
+
+    GET /rest/v1/  (service_role)  ->  200, info.title = "standard public schema"
+    exposed tables  = the 15 public tables, nothing else
+    exposed RPCs    = exactly one: rls_auto_enable, a Supabase management helper, not ours
+    components.schemas = empty
+
+And the decisive evidence, because PostgREST names the schema it searched:
+
+    POST /rest/v1/rpc/create_organization_with_owner
+      -> 404 PGRST202 "Searched for the function public.create_organization_with_owner ..."
+    POST /rest/v1/rpc/is_platform_admin
+      -> 404 PGRST202 "Searched for the function public.is_platform_admin ..."
+
+So `private` is not exposed, and **the search path is `public` only** - not public-first,
+not public-plus-private. Every `private.*` function is unreachable from the client.
+
+#### CONSEQUENCE, and it is a hard Task 12 dependency rather than a contingency
+
+**`private.create_organization_with_owner` - the onboarding RPC - is not callable from
+the browser.** So are all eleven other helpers. Most of them do not need to be: RLS
+enforces everything, and the client has no business asking "can I read this?" directly.
+But onboarding does need to be callable, and today it is not.
+
+Task 12 therefore needs EITHER `public` wrappers that check their arguments and delegate
+to the `private` originals, OR the two client-reachable functions moved to `public`. The
+wrapper route is the smaller change and keeps the authorization primitives in one place,
+which is where they have stayed since Task 5. Recording this as a DECISION FOR TASK 12,
+not as something to discover there.
+
+#### The BOM nearly gave me the wrong answer
+
+The first three probes all returned **PGRST102 "Empty or invalid json"** - a body-parse
+error, which is indistinguishable at a glance from "the function does not exist". It was
+`Set-Content -Encoding utf8` in Windows PowerShell prepending a UTF-8 BOM to the JSON
+body. With `[System.IO.File]::WriteAllText(..., UTF8Encoding($false))` the same three
+calls returned PGRST202 naming `public`.
+
+This is the same BOM trap already recorded in this project, in a new place, and the
+failure mode is unusually nasty: **a tooling artifact produces exactly the answer you
+were looking for.** Anyone repeating this check with `Set-Content` will conclude the
+private functions ARE exposed. It is now in `tests/security/rls-policies.test.ts`'s
+sibling documentation and here for that reason.
+
+#### What this does NOT resolve
+
+Still unverified: JWT verification and the HTTP layer in general. What is now proven is
+the schema exposure, which was the specific question. Tenant isolation through the real
+API remains Task 18's harness.
+
+### RESOLVED: JWT verification and the HTTP layer, tested with real tokens and real HTTP
+
+Every RLS assertion in Task 9 impersonated principals over a direct `pg` connection
+running as the table OWNER, which BYPASSES RLS. That is a reasonable proxy and it is not
+the product. So: three real auth users created through the Auth admin API, three real
+signed JWTs obtained via the password grant, and every check issued over HTTPS to
+PostgREST. 14/14 passed.
+
+**Tenant isolation, over HTTP, with real JWTs**
+
+    alice (org 1, holds patients.read)  -> [{"mrn":"P-1"}]     only her own org
+    bob   (org 2 member, NO permission) -> []                    membership is not permission
+    carol (no membership at all)        -> []                    correct
+    alice reads her own profile         -> 1 row
+    alice reads bob's profile           -> 0 rows
+    alice PATCHes her own org's patient -> 1 row, value changed
+    alice PATCHes org 2's patient       -> 0 rows, no error, DB unchanged
+
+The write result matters as much as the refusals: it proves the write path works
+end-to-end through the real API and not merely that writes are blocked. And "0 rows, no
+error" is the same silent-filter shape the direct-connection tests showed, now
+confirmed through PostgREST rather than assumed from it.
+
+**JWT verification is real**
+
+    signature flipped one character                          -> 401
+    forged signature                                         -> 401
+    payload rewritten to role:service_role, valid signature  -> 401
+    garbage token                                            -> 401
+    empty token                                              -> 401
+
+The third is the one worth having. Rewriting the payload to claim
+`role: service_role` while keeping alice's genuine signature is rejected with PGRST301,
+which means PostgREST validates the signature across the whole token - the role claim
+cannot be tampered with. This is the HTTP-layer half of the Task 5 ruling that no
+database-layer check can identify the service role: the signature is what does it, and
+it does it before the request ever reaches a policy.
+
+**Still not covered by this, deliberately**
+
+Point-in-time verification of THIS project's configuration. Not tested: rate limiting,
+CORS, error-message leakage, connection pooling behaviour under load, or what a
+PostgREST upgrade would do to schema exposure. And a `db_schemas` change would silently
+reopen the `private`-exposure question - the measurement is cheap to repeat and now
+documented well enough to do so.
+
+**Cleanup ordering, learned the hard way**
+
+`delete from organizations` alone does NOT clean up a probe tenant: `patients` and
+`clinics` block it. The first run's cleanup used `.catch(() => {})`, so the failure was
+invisible and it left 2 organizations behind - caught only because the script reported
+its own residual row counts. Delete children first, and never swallow the error.
+Residual after this run: orgs 0, users 0, profiles 0, patients 0, roles 1 (the `00400`
+platform seed, expected).
