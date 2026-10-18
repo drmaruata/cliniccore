@@ -1035,3 +1035,112 @@ patients policies.
 - `organization_memberships` INSERT and DELETE are closed. The invitation-acceptance
   RPC must write memberships as a definer.
 - Whether PostgREST exposes `private` is still unresolved and still matters for Task 12.
+
+### Task 9 review and fix pass
+
+An independent review on a fresh context was dispatched against commit a9d83b3 with
+an explicit instruction not to modify any file. It EXECUTED every finding against the
+live database rather than reasoning about it. Twelve findings. I had independently
+found the Critical one myself by probe before its report arrived; the two paths
+agreed.
+
+Four fixes applied in `20261014001220_privilege_gates.sql`, corrections as a new file
+so 00900-01210 stand as applied. Each had a test written first and watched fail.
+
+#### Critical, fixed: `organization_memberships` UPDATE was a tenant-enrolment primitive
+
+Gated on bare `is_member`, in both USING and WITH CHECK. This table IS the tenant
+boundary - `current_org_ids`, `is_member` and `clinic_ids` all read it.
+
+MEASURED, as a member holding **no role at all**: rewriting another member's row's
+`user_id` to an arbitrary `auth.users` id changed 1 row. The outsider then read the
+tenant's organizations, its clinics and its whole staff roster. The same principal
+could restore a deliberately revoked employee, or suspend the administrator who
+locked them out. No `audit_logs` row either - tenant writes to it were revoked in
+Task 8, so there was no trace.
+
+INSERT was already closed, and closing it was the policy's stated intent - "stops a
+tenant from manufacturing a membership". UPDATE defeated exactly that intent. Now
+gated on `staff.manage`, the permission that means "manages staff".
+
+No PHI was reachable: `can()` separately requires a role assignment, so this was
+directory-level disclosure and tenancy tampering, not clinical exposure.
+
+#### Important, fixed: three more loose USING clauses
+
+- **`roles` DELETE had no `is_system` floor.** MEASURED: an org_admin deleting the
+  org_admin role cascaded away six role_permissions and its assignments, dropping the
+  deleter's own `settings.manage` and `staff.manage`. Re-creating the role then
+  failed, because creating one REQUIRES `settings.manage` - the delete had just taken
+  it. The tenant had no administrators and **no client path to repair that**. This was
+  also an addition the plan did not ask for: it specified only INSERT/UPDATE on roles.
+- **`organizations` UPDATE was also bare `is_member`.** MEASURED: a clinician with no
+  permissions set `currency='XXX'`. Not cosmetic - money is bigint minor units OF the
+  tenant's currency, so flipping it relabels every stored amount; `timezone` feeds the
+  `clinicDayBounds` report windows; `slug` is the tenant's public identifier. Now
+  `settings.manage`, with the platform branch left unconditional so an operator can
+  still restore a tenant.
+- **`roles` UPDATE carried `settings.manage` in its WITH CHECK but not its USING** -
+  the only asymmetric policy in the set. Not a hole, but it made an unprivileged
+  UPDATE raise 42501 where every other policy filters silently, so a caller could not
+  distinguish "not permitted" from "no such row".
+
+#### Important, fixed: the suite could not tell a refusal from an absence
+
+The reviewer's mutation test is the finding worth keeping: replacing
+`patients_write`, `patient_identifiers_write` and `role_permissions_write` with
+`with check (false)` left the policy count at 39 and the qual/with_check assertions
+passing, because `false` is non-null - and **every test in the file still passed**
+with three tenant tables made permanently unwritable. One table of twelve had a
+positive control.
+
+Five new tests now prove an authorised write succeeds on patients (create, edit,
+delete), patient_identifiers, role_permissions, clinics and clinic_memberships. They
+passed BEFORE the fix, which is itself the answer: those policies were correct, and the
+gap was only ever coverage.
+
+A second, subtler half: for INSERT refusals, a _deleted_ policy and a _refusing_ one
+raise the identical message, so `it("refuses...")` cannot tell them apart. Only the
+positive control can. My own new tests got this wrong first - they asserted `[]` on a
+refused INSERT, which cannot happen, because a failed WITH CHECK raises rather than
+filtering. That asymmetry is now written into the tests.
+
+#### Minor, fixed here
+
+- An assignment or invitation could name a **platform role** (organization_id NULL).
+  Inert - `can()` refuses platform keys - and the only real barriers were that
+  `roles_select` hides the id and UUIDs are unguessable. Neither is a control, and the
+  acceptance RPC that would resolve it is Task 12. Now refused at the policy layer.
+- `invitations.clinic_ids` is a bare `uuid[]`, which cannot carry the composite foreign
+  key every other tenant reference in this schema uses, so a cross-tenant clinic id
+  could be stored. Latent - the composite FK would reject it at accept time - but it
+  reintroduced exactly the reference the design otherwise eliminates. Now checked.
+- Documented that `clinics` has no INSERT policy, the only client-side closure with
+  nothing recording it.
+
+#### Minor, ledgered not fixed
+
+- **A platform operator cannot read the audit trail of the tenant they are restoring.**
+  DECLINED, deliberately: `audit_logs.metadata` is PHI-shaped and tenant-scoped, and
+  granting an operator blanket read of it is a larger disclosure than the restoration
+  workflow needs. The suspension reason belongs on the organizations row. If a
+  restoration ever needs "why", that is a product decision, not a policy default.
+- **A `staff.manage` holder can self-grant `organization_owner`.** Owned by Task 12:
+  the registry carries an explicit GRANT-CEILING OBLIGATION saying the permission model
+  cannot express hierarchy. The database has no backstop and the suite tests none of
+  it. Recorded so it is not lost, not fixed here.
+- **`patients.read` versus `patients.export`.** RLS is row-level and grants no column
+  or aggregate control; `patient_identifiers_select` hands a read-only holder every
+  identifier value, one row at a time. Belongs to whichever task builds the export
+  flow.
+
+#### What the review confirmed as correct
+
+The three-clause clinic conjunction holds from both sides; platform-permission
+escalation is closed on both spellings including the case variant; `profiles` is
+airtight; append-only and the closed tables rest on revoked grants rather than on
+policy absence; TRUNCATE/REFERENCES/TRIGGER are revoked on all 15 tables; no `to anon`
+policy and no `force row level security` anywhere; and the `patient_identifiers`
+delegation does NOT rest on an ordering assumption - the EXISTS is evaluated as the
+querying user so `patients_select` applies, and the composite FK pins the
+organization.

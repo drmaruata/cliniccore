@@ -38,6 +38,21 @@ npm run build && npm run format:check`.
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/`,
   `proxy.ts`, the route groups and the rest of `supabase/` do not exist yet.
+- **Task 9 was reviewed and fixed (`01220`). Four lessons bind later tasks.**
+  (1) **A permissive `USING` is a hole even when the `WITH CHECK` is tight** — a review probe
+  showed a member holding _no role at all_ rewriting `organization_memberships.user_id` and
+  enrolling an arbitrary account into the tenant. Gate **writes** on a _permission_; bare
+  `is_member` is only ever right for reading a tenant's own directory. (2) **Ask what a
+  cascade removes, not just what the statement touches** — deleting a seeded role cascaded away
+  the deleter's own `settings.manage`, and re-creating a role _requires_ it, leaving the tenant
+  with no administrators and no client repair path. (3) **A refusal-only suite cannot tell a
+  working policy from a missing one.** Replacing three write policies with `with check (false)`
+  left the policy count and the non-null assertions intact and every test green, with three
+  tables permanently unwritable. **Every refusal needs an authorised-write positive control
+  beside it** — and for INSERT that control is the _only_ thing distinguishing a refusing policy
+  from a deleted one, since both raise the identical message. (4) **A refused INSERT raises; a
+  filtered UPDATE/DELETE returns zero rows.** Use `expectRejection` versus `expect([])`
+  accordingly.
 - **Three traps Task 9 added, each of which produced a wrong measurement before it produced
   a failure.** (1) **The applier derives `schema_migrations.version` from a second-resolution
   timestamp**, so two applies batched into one Composio call collide on `schema_migrations_pkey`
