@@ -434,8 +434,8 @@ async function seed(session: Session): Promise<void> {
 
   await session.query(
     `insert into public.roles (id, organization_id, key, name, is_system) values
-       ('00000000-0000-4000-8000-000000000001', $1, 'clinician',   'Clinician',   true),
-       ('00000000-0000-4000-8000-000000000002', $1, 'org_admin',   'Org Admin',   true)`,
+       ('00000000-0000-4000-8000-000000000001', $1, 'clinician',   'Clinician',   false),
+       ('00000000-0000-4000-8000-000000000002', $1, 'org_admin',   'Org Admin',   false)`,
     [ORG_A],
   );
   await session.query(
@@ -732,31 +732,92 @@ dbDescribe("privilege escalation is closed on every path", () => {
     }
   });
 
-  it("refuses to delete a seeded role, which cascades away every administrator", async () => {
-    // MEASURED before the fix: deleting the org_admin role cascaded away its six
-    // role_permissions and its assignments, dropping the deleter's own
-    // settings.manage and staff.manage. Re-creating the role then failed, because
-    // creating one REQUIRES settings.manage - which the delete had just taken.
-    // The tenant had no administrators left and no client path to repair it.
+  it("refuses to delete a role that is still in use", async () => {
+    // THE LOCKOUT. Deleting an assigned role cascades away its role_permissions and
+    // its assignments. If the deleted role was the one granting settings.manage, the
+    // deleter loses that too - and re-creating a role REQUIRES settings.manage, so the
+    // tenant is left with no administrators and no client repair path.
+    //
+    // My first attempt gated this on `is_system is not true`, which was a NO-OP:
+    // gen-permissions-sql.ts populates that column from role.isPlatform, so every
+    // tenant-seeded role is is_system = false and the clause was equivalent to the
+    // organization_id is not null already present. The fixture then hand-seeded
+    // is_system = true, a state no production path produces, so the test proved
+    // nothing about the product. MEASURED against the real onboarding RPC: all
+    // fourteen seeded roles have is_system = false.
+    //
+    // Both are fixed - the fixture uses what the product creates, and the guard is
+    // the actual invariant rather than a column whose meaning is disputed.
     const session = await stage();
     try {
       await become(session, DAVE);
-      const seeded = await session.query(
-        `delete from public.roles where organization_id = $1 and is_system returning key`,
+      // clinician is assigned to alice, so it is in use.
+      const inUse = await session.query<{ key: string }>(
+        `delete from public.roles where organization_id = $1 and key = 'clinician' returning key`,
         [ORG_A],
       );
-      expect(seeded).toEqual([]);
+      expect(inUse).toEqual([]);
 
-      // Positive control: a role the tenant made itself is theirs to remove.
+      // Positive control: a role nobody holds is the tenant's to remove.
       await session.query(
-        `insert into public.roles (organization_id, key, name, is_system) values ($1, 'temp_role', 'Temp', false)`,
+        `insert into public.roles (organization_id, key, name, is_system)
+         values ($1, 'temp_unused', 'Temp', false)`,
         [ORG_A],
       );
-      const custom = await session.query<{ key: string }>(
-        `delete from public.roles where organization_id = $1 and key = 'temp_role' returning key`,
+      const unused = await session.query<{ key: string }>(
+        `delete from public.roles where organization_id = $1 and key = 'temp_unused' returning key`,
         [ORG_A],
       );
-      expect(custom).toEqual([{ key: "temp_role" }]);
+      expect(unused).toEqual([{ key: "temp_unused" }]);
+
+      // Once it IS assigned it stops being removable. That is the intended workflow:
+      // revoke the assignments first, then drop the role.
+      await session.query(
+        `insert into public.roles (organization_id, key, name, is_system)
+         values ($1, 'temp_used', 'Temp', false)`,
+        [ORG_A],
+      );
+      await session.query(
+        `insert into public.user_role_assignments (organization_id, user_id, role_id)
+         select $1, $2, r.id from public.roles r
+          where r.organization_id = $1 and r.key = 'temp_used'`,
+        [ORG_A, BOB],
+      );
+      const nowUsed = await session.query<{ key: string }>(
+        `delete from public.roles where organization_id = $1 and key = 'temp_used' returning key`,
+        [ORG_A],
+      );
+      expect(nowUsed).toEqual([]);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses to re-key a role or flip it to system", async () => {
+    // key is the identity the registry maps through, so renaming it breaks every
+    // lookup by key. Flipping is_system would make a role undeletable, which is a
+    // self-inflicted denial of service dressed as an admin action.
+    const session = await stage();
+    try {
+      await become(session, DAVE);
+      // A trigger refusal RAISES, like a failed INSERT WITH CHECK and unlike a
+      // filtered UPDATE. Three refusal shapes now in this file, each with its own
+      // assertion shape: RLS USING -> toEqual([]), WITH CHECK -> expectRejection,
+      // trigger -> expectRejection.
+      for (const statement of [
+        `update public.roles set key = 'hijacked' where organization_id = $1 and key = 'clinician'`,
+        `update public.roles set is_system = true where organization_id = $1 and key = 'clinician'`,
+      ]) {
+        await expectRejection(session, statement, [ORG_A], /not user-writable/i);
+      }
+
+      await session.resetRole();
+      const after = await session.query<{ key: string; is_system: boolean }>(
+        `select key, is_system from public.roles where organization_id = $1 order by key`,
+        [ORG_A],
+      );
+      expect(after.map((r) => r.key)).toEqual(["clinician", "org_admin"]);
+      expect(after.every((r) => r.is_system === false)).toBe(true);
     } finally {
       await session.rollback();
     }
@@ -1159,6 +1220,10 @@ dbDescribe("authorised writes actually work", () => {
     // 42501 where every other policy silently filters the row out. That
     // inconsistency was the only asymmetric policy in the set; roles_update now
     // carries its permission in both clauses, so this asserts the filter shape.
+    //
+    // It carries a positive control because without one it is the file's own
+    // anti-pattern: an assertion that alice is refused also passes against a policy
+    // that refuses everybody.
     const session = await stage();
     try {
       await become(session, ALICE);
@@ -1167,6 +1232,78 @@ dbDescribe("authorised writes actually work", () => {
         [ORG_A],
       );
       expect(refused).toEqual([]);
+
+      await session.resetRole();
+      await become(session, DAVE);
+      const permitted = await session.query<{ name: string }>(
+        `update public.roles set name = 'Renamed' where organization_id = $1 returning name`,
+        [ORG_A],
+      );
+      expect(permitted).toHaveLength(2);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  // The seven command policies the re-review proved could each be replaced by
+  // `using (false) with check (false)` - leaving the policy count at 39 and the
+  // non-null qual/with_check assertions intact - with every test in the file still
+  // passing. Each now has an authorised-write positive control, so neutering one
+  // turns this suite red instead of silently disabling that operation.
+  it("lets an administrator exercise every remaining write command", async () => {
+    const session = await stage();
+    try {
+      await become(session, DAVE);
+
+      const regrant = await session.query<{ permission_key: string }>(
+        `update public.role_permissions set permission_key = 'patients.export'
+          where role_id = '00000000-0000-4000-8000-000000000001'
+            and permission_key = 'patients.read'
+        returning permission_key`,
+      );
+      expect(regrant).toEqual([{ permission_key: "patients.export" }]);
+
+      await session.query(
+        `insert into public.patient_identifiers (organization_id, patient_id, kind, value)
+         values ($1, $2, 'mrn_alt', 'Z-1')`,
+        [ORG_A, PATIENT_1],
+      );
+      const reidentified = await session.query<{ value: string }>(
+        `update public.patient_identifiers set value = 'Z-2' where value = 'Z-1' returning value`,
+      );
+      expect(reidentified).toEqual([{ value: "Z-2" }]);
+
+      await session.query(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'w@example.test', $2, 'hash', $3, now() + interval '1 day')`,
+        [ORG_A, "00000000-0000-4000-8000-000000000001", DAVE],
+      );
+      const reissued = await session.query<{ email: string }>(
+        `update public.invitations set email = 'w2@example.test'
+          where organization_id = $1 returning email`,
+        [ORG_A],
+      );
+      expect(reissued).toEqual([{ email: "w2@example.test" }]);
+      const withdrawn = await session.query<{ email: string }>(
+        `delete from public.invitations where organization_id = $1 returning email`,
+        [ORG_A],
+      );
+      expect(withdrawn).toEqual([{ email: "w2@example.test" }]);
+
+      const reassigned = await session.query<{ role_id: string }>(
+        `update public.user_role_assignments set clinic_id = $1
+          where organization_id = $2 and user_id = $3
+        returning role_id::text`,
+        [CLINIC_1, ORG_A, ALICE],
+      );
+      expect(reassigned).toHaveLength(1);
+      const unassigned = await session.query<{ user_id: string }>(
+        `delete from public.user_role_assignments
+          where organization_id = $1 and user_id = $2
+        returning user_id::text`,
+        [ORG_A, ALICE],
+      );
+      expect(unassigned).toHaveLength(1);
     } finally {
       await session.rollback();
     }

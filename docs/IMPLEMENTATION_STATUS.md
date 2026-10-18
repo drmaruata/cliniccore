@@ -1144,3 +1144,104 @@ policy and no `force row level security` anywhere; and the `patient_identifiers`
 delegation does NOT rest on an ordering assumption - the EXISTS is evaluated as the
 querying user so `patients_select` applies, and the composite FK pins the
 organization.
+
+### Task 9 re-review: two of the four fixes did not hold
+
+A second independent review, fresh context, aimed at the fix pass rather than the original
+work. It re-executed every exploit and, more usefully, hunted for what the fixes BROKE. Ten
+findings. Two of my four Important/Critical fixes were inert.
+
+#### The lesson I wrote into AGENTS.md was false
+
+01220 gated `roles` DELETE on `is_system is not true`. `scripts/gen-permissions-sql.ts:158`
+populates that column from `role.isPlatform`, so **every tenant-seeded role is
+`is_system = false`** - measured against a tenant built by the real onboarding RPC, all
+fourteen. The clause was therefore equivalent to the `organization_id is not null` already
+sitting beside it: a no-op.
+
+Worse, the test that "proved" the fix hand-seeded its fixture with `is_system = true`, a
+state no production path produces. It proved the clause works against a fixture the product
+can never reach. The lockout it was written for still reproduces exactly:
+
+```
+DELETE organization_owner        -> rows: 1
+grants cascaded: 0 | assignments left: 0
+re-create the role               -> refused: new row violates row-level security policy
+```
+
+That is a tenant with no assignments and no way to make any, and I had already written the
+false claim into `AGENTS.md` in the same commit.
+
+**There are now three descriptions of `roles.is_system` and no two agree**: the plan says
+"marks seeded roles", the generator emits `isPlatform`, and the generator's own header
+comment repeats the plan's claim. That single disagreement is what made the defect
+invisible to two review passes. `01230` stops relying on the column and uses the real
+invariant - `not private.role_in_use(id)`, a role nobody holds can be deleted - so the guard
+holds whatever `is_system` means. **The disagreement itself is still open** and is recorded
+for whoever owns the seed.
+
+#### Second non-holding fix: `user_role_assignments_update` never got the guard
+
+01220 added the EXISTS to the INSERT. The UPDATE did not get it, and
+`guard_role_org_scope` permits a platform role by design - so re-pointing an assignment at
+the platform role succeeded on UPDATE while the identical move on INSERT was refused. Inert
+today (`can()` is org-strict), but the stated purpose of that fix was to stop saying no now
+rather than leaving it to a later task to remember, and half the statement types still said
+yes.
+
+#### Also fixed
+
+- **`roles` UPDATE freely changed `key` and `is_system`.** `key` is the identity the registry
+  maps through; `is_system` is the delete guard's input. Both are now pinned by a
+  `BEFORE UPDATE` trigger - it has to be, because a policy would need a subquery on `roles`
+  from inside `roles`' own policy, which is the infinite-recursion case, and a subquery sees
+  the row as it is NOW rather than as it was.
+- **Seven more command policies could be neutered to `with check (false)` with all 29 tests
+  green.** `roles_update`, `invitations_update`, `invitations_delete`,
+  `user_role_assignments_update`, `user_role_assignments_delete`,
+  `role_permissions_update`, `patient_identifiers_update`. All seven now have an authorised
+  write exercised. My own test asserting "alice cannot update roles" was the very
+  anti-pattern the file's header warns about - green against a policy refusing everybody -
+  and now carries a positive control.
+
+#### A false comment, corrected rather than papered over
+
+01220 asserted that a member could not suspend their own organization, "by accident",
+because `is_member` requires `status = 'active'` on the new row. That is wrong: `is_member`
+is `STABLE`, so inside a `WITH CHECK` it reads the **statement-start snapshot** - the OLD row.
+Measured: an org_admin suspended their own tenant successfully, after which the row vanished
+from every query and reactivation returned zero rows. Row-level security cannot express
+"only this column may change status"; closing it properly means a definer RPC, which belongs
+with tenant administration. **Left open and recorded, not declared fixed.**
+
+#### Open findings carried forward, with exact repro
+
+- **CRITICAL, unchanged and re-confirmed: a `staff.manage` holder can self-grant
+  `organization_owner` in one statement.** Measured as `medical_director` (staff.manage, no
+  settings.manage): self-assign owner, then add `patients.export`, then re-slug the
+  organization, then delete the admin role. Four statements, no `settings.manage` at any
+  point. I previously declined this as "Task 12's job", which was too generous: Task 12's RPC
+  is an ADDITIONAL route, and the direct table write stays reachable from any client holding
+  the user's JWT. It is genuinely not fixable in RLS without the role hierarchy the registry
+  says it cannot express - a strict subset ceiling would also break the legitimate
+  admin-creates-owner flow. **This is the top open risk.**
+- **Privilege pre-staging:** an assignment can be written for a `user_id` belonging to no
+  organization. Inert until that account gains membership by any route - including the Task 12
+  acceptance RPC this fix pass defers to.
+- `organization_memberships` can move a membership between organizations, dragging an
+  org-wide assignment with it. No privilege carries; the composite FK blocks it when the
+  membership has clinics, and MATCH SIMPLE does not block org-wide rows.
+- The platform branch on `organizations` UPDATE is unconditional over every column, not just
+  `status`. Restoration needs `status`; an operator can also rewrite `slug`/`currency`/`name`.
+- TRUNCATE/REFERENCES/TRIGGER are revoked on all 15 tables (measured), but no test asserts it,
+  and `00400`'s `alter default privileges` binds only objects created after it - the six Task 6
+  tables predate it and rely on `00310`'s explicit revoke.
+- `patients.read` versus `patients.export`: RLS is row-level and grants no column or aggregate
+  control, so a read-only holder can walk every identifier value.
+
+#### New database trap
+
+`pg_catalog.pg_triggers` **does not exist** on this PostgreSQL 17.11 build - `to_regclass`
+returns NULL. The trigger catalogue is `pg_trigger`. A guarded `create trigger` written
+against `pg_triggers` fails with 42P01 and the whole migration rolls back. Measured, not
+assumed.

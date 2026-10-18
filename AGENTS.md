@@ -45,14 +45,25 @@ npm run build && npm run format:check`.
   `is_member` is only ever right for reading a tenant's own directory. (2) **Ask what a
   cascade removes, not just what the statement touches** — deleting a seeded role cascaded away
   the deleter's own `settings.manage`, and re-creating a role _requires_ it, leaving the tenant
-  with no administrators and no client repair path. (3) **A refusal-only suite cannot tell a
-  working policy from a missing one.** Replacing three write policies with `with check (false)`
-  left the policy count and the non-null assertions intact and every test green, with three
-  tables permanently unwritable. **Every refusal needs an authorised-write positive control
-  beside it** — and for INSERT that control is the _only_ thing distinguishing a refusing policy
-  from a deleted one, since both raise the identical message. (4) **A refused INSERT raises; a
-  filtered UPDATE/DELETE returns zero rows.** Use `expectRejection` versus `expect([])`
-  accordingly.
+  with no administrators and no client repair path. **But note how that first fix FAILED:** it
+  gated the delete on `is_system is not true`, and `scripts/gen-permissions-sql.ts` populates that
+  column from `role.isPlatform`, so **every tenant-seeded role is `is_system = false`** and the
+  clause was a no-op. The test that "proved" it hand-seeded `is_system = true` — a state no
+  production path produces. `01230` replaces it with `not private.role_in_use(id)`, the actual
+  invariant. **Before gating on a column, find what populates it and prove the values your
+  fixture asserts are the values the product produces** — a fixture that hand-builds a state no
+  code path can reach will prove anything you like. **This is now a three-way disagreement** about
+  `roles.is_system`: the plan says "marks seeded roles", the generator emits `isPlatform`, and
+  `01230` no longer relies on it. Reconcile before trusting it again. (3) **A refusal-only suite
+  cannot tell a working policy from a missing one.** Replacing three write policies with
+  `with check (false)` left the policy count and the non-null assertions intact and every test
+  green, with three tables permanently unwritable; a re-review later neutered **seven** command
+  policies the same way. **Every refusal needs an authorised-write positive control beside it** —
+  and for INSERT that control is the _only_ thing distinguishing a refusing policy from a deleted
+  one, since both raise the identical message. (4) **Three refusal shapes, three assertion
+  shapes:** an RLS `USING` miss **filters** the row out (`toEqual([])`), while a failed
+  `WITH CHECK` and a trigger both **raise** (`expectRejection`). Getting this wrong produced three
+  false failures in this task alone.
 - **Three traps Task 9 added, each of which produced a wrong measurement before it produced
   a failure.** (1) **The applier derives `schema_migrations.version` from a second-resolution
   timestamp**, so two applies batched into one Composio call collide on `schema_migrations_pkey`
