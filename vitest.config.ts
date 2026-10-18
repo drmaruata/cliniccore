@@ -13,11 +13,13 @@ export default defineConfig({
     exclude: ["tests/e2e/**", "node_modules/**", ".next/**"],
     passWithNoTests: false,
     // The integration and security suites open real transactions against a remote
-    // Postgres pooler and impersonate principals in them. At the 5s default they
-    // flaked under parallel load - MEASURED: 2 failures in 3 full runs, both a single
-    // DB-backed test timing out, and both green in isolation. 15s is still a hard
-    // bound (a hung test still fails) and it stops a loaded CI box from reporting a
-    // security suite as broken when nothing is.
+    // Postgres pooler and impersonate principals in them. MEASURED: one test took
+    // 5005ms against a 5s default and failed, while the other 15 in that file took
+    // 1.3-2.0s. The cost is ROUND TRIPS, not parallel load - a fixture is ~15
+    // sequential statements at ~70ms each - so parallelism does not help and a longer
+    // timeout does not fix it, it only stops the suite misreporting that as broken.
+    // The real defence is statement_timeout in beginSession, which distinguishes a slow
+    // network from a slow predicate. 15s is still a hard bound, so a hung test fails.
     testTimeout: 15_000,
   },
   resolve: {

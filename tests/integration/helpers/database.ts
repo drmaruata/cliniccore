@@ -178,6 +178,12 @@ export interface DbSession {
 export async function beginSession(): Promise<DbSession> {
   const client = await getPool().connect();
   await client.query("begin");
+  // A statement timeout, so a predicate that degrades from 70ms to 10s fails with a
+  // NAMED error instead of being absorbed by a raised test timeout. The DB-backed
+  // suites run ~19 sequential round trips to a remote pooler, so the vitest timeout
+  // is the wrong place to notice a slow query - it cannot tell "slow network" from
+  // "slow predicate", and only the second is a security regression.
+  await client.query("set local statement_timeout = '10s'");
   let finished = false;
 
   const run = async <T extends Record<string, unknown>>(

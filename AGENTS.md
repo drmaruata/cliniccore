@@ -21,7 +21,9 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1–9 of 20 are complete** (Task 9 = RLS policies). Task 10 is next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review packages are in `.superpowers/sdd/cliniccore-foundation/`.
+  **Tasks 1–10 of 20 are complete** (Task 10 = storage buckets and object policies). Task 11 is
+  next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review
+  packages are in `.superpowers/sdd/cliniccore-foundation/`.
 - **A clean tree on this branch should be green on all six gates.** If you are not sure,
   run them rather than trusting a summary — including this one:
   `npm run typecheck && npm run lint && npm run check:secrets && npm run test &&
@@ -33,12 +35,19 @@ npm run build && npm run format:check`.
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
   then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
-  gates, `01230`'s role guard and `01240`'s grant ceiling), all applied —
-  21 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  gates, `01230`'s role guard and `01240`'s grant ceiling, then `01300`'s storage buckets,
+  `01400`/`01410`'s storage hardening and `01420`'s MIME allowlist and path guard), all applied —
+  25 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/`,
-  `proxy.ts`, the route groups and the rest of `supabase/` do not exist yet.
+  `proxy.ts`, the route groups and the rest of `supabase/` do not exist yet. **Storage:** five private
+  buckets (`patient-documents`, `clinical-attachments`, `investigation-reports`, `org-assets`,
+  `prescription-documents`), all `public = false`, 20 policies on `storage.objects` all `to
+authenticated`, and `allowed_mime_types` = PDF/JPEG/PNG/DICOM/text. Object tenancy is the
+  object NAME (`<org>/<clinic>/<file>`, `<org>/<file>` for org-assets) because a text path cannot
+  carry a foreign key ? so the project's composite-tenant-FK rule is satisfied here BY POLICY,
+  not by constraint.
 - **Task 9 was reviewed and fixed (`01220`). Four lessons bind later tasks.**
   (1) **A permissive `USING` is a hole even when the `WITH CHECK` is tight** — a review probe
   showed a member holding _no role at all_ rewriting `organization_memberships.user_id` and
@@ -125,6 +134,33 @@ npm run build && npm run format:check`.
   alone leaves a probe tenant behind (`patients` and `clinics` block it), and a `.catch(() => {})` in the
   cleanup makes that invisible - it happened, and was caught only because the script printed its own
   residual row counts. Always report the residual.
+- **PostgreSQL's `format()` fills `%s` POSITIONALLY and has NO declared parameter names.**
+  Task 10 shipped a CRITICAL because 01300 selected between four policy templates with
+  ONE shared argument list: the one-placeholder INSERT and DELETE branches consumed the
+  first argument, which was the **read** predicate — so a read-only clinician could
+  create and permanently delete PHI on three of five buckets. Named arguments are **not**
+  the fix: `format($t$ %(bucket)L $t$, bucket => x)` fails with _"function format(text,
+  bucket => unknown) does not exist"_ because `format()` is declared `VARIADIC "any"`.
+  **The rule: one template per call site, each carrying exactly the arguments it
+  consumes**, so no shared list exists for a branch to reach into.
+- **A test control whose expected value is identical for a permitted and an unpermitted
+  principal proves NOTHING.** Three times in Task 9/10 this bit: a "positive control" held
+  only read permissions and so passed _because_ of the write bug; a control asserted a
+  bucket was empty when the fixture seeded no rows, so its value matched a principal whose
+  policy had been **deleted**; a control ran after `resetRole()` and so measured the table
+  owner. **For every control, ask what it would return if the policy were DROPPED — not
+  merely that it passes today.** And remember the two refusal shapes: an INSERT/UPDATE
+  WITH CHECK failure and a trigger **raise**, while a policy `USING` miss on
+  UPDATE/DELETE **filters to zero rows**. A refusal-only assertion cannot tell a refusing
+  policy from an absent one.
+- **`postgres` has `rolbypassrls = true`** — it bypasses RLS regardless of ownership, and
+  `storage.objects` is owned by `supabase_storage_admin`, not `postgres`. So `resetRole()`
+  before a measurement is worse than "no longer impersonating": it silently measures a
+  role that bypasses RLS. Two further Task 10 traps: **`ALTER POLICY ... RENAME TO` needs
+  table ownership and fails 42501** on Supabase-managed tables; and
+  `storage.protect_delete()` refuses a direct DELETE on `storage.objects` for **everyone**
+  unless `storage.allow_delete_query` is set, so every DELETE test must set that GUC or it
+  measures the trigger instead of the policy.
 - **Rehearsal trap:** `set_config('request.jwt.claim.sub', …, true)` is transaction-local, so
   two identity probes batched into one Composio MCP call share a transaction and the **last
   identity wins**. Probe one identity per call or you will measure your own batching (this

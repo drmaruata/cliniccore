@@ -186,7 +186,17 @@ async function stage(): Promise<Session> {
     for (const [bucket, name, owner] of [
       ["patient-documents", `${ORG_A}/${CLINIC_A1}/alice-report.pdf`, ALICE],
       ["patient-documents", `${ORG_A}/${CLINIC_A1}/dave-note.pdf`, DAVE],
+      ["patient-documents", `${ORG_A}/${CLINIC_A2}/alice-clinic2.pdf`, ALICE],
       ["patient-documents", `${ORG_B}/${CLINIC_B1}/bob-report.pdf`, CAROL],
+      // clinical-attachments and investigation-reports need their OWN rows. The
+      // re-review found a "positive control" that asserted clinical-attachments was
+      // EMPTY - which is true for every principal, permitted or not, because the
+      // fixture seeded none. A control whose expected value is identical whether the
+      // policy is present or deleted cannot distinguish anything.
+      ["clinical-attachments", `${ORG_A}/${CLINIC_A1}/alice-note.txt`, ALICE],
+      ["clinical-attachments", `${ORG_A}/${CLINIC_A1}/dave-note.txt`, DAVE],
+      ["investigation-reports", `${ORG_A}/${CLINIC_A1}/alice-report.dcm`, ALICE],
+      ["prescription-documents", `${ORG_A}/${CLINIC_A1}/alice-rx.pdf`, ALICE],
       ["org-assets", `${ORG_A}/logo.png`, DAVE],
       ["patient-documents", `not-a-uuid/orphan.pdf`, ALICE],
     ] as const) {
@@ -271,6 +281,7 @@ dbDescribe("storage object isolation", () => {
       expect(rows.map((r) => r.name)).toEqual([
         `${ORG_A}/${CLINIC_A1}/alice-report.pdf`,
         `${ORG_A}/${CLINIC_A1}/dave-note.pdf`,
+        `${ORG_A}/${CLINIC_A2}/alice-clinic2.pdf`,
       ]);
     } finally {
       await session.rollback();
@@ -309,6 +320,16 @@ dbDescribe("storage object isolation", () => {
         [`${ORG_B}/${CLINIC_B1}/stolen.pdf`, DAVE],
         /row-level security/i,
       );
+      // Positive control: the same shape into his OWN organization is accepted. A
+      // refusal and an ABSENT policy raise the identical message, so without this the
+      // assertion above would also pass against a deleted insert policy.
+      const permitted = await insertObject(
+        session,
+        "patient-documents",
+        `${ORG_A}/${CLINIC_A1}/dave-new.pdf`,
+        DAVE,
+      );
+      expect(permitted).toHaveLength(1);
     } finally {
       await session.rollback();
     }
@@ -359,12 +380,27 @@ dbDescribe("a read permission is not a write permission", () => {
           /row-level security/i,
         );
       }
-      // Positive control: he CAN read them, so the refusals are the write policy and
-      // not an empty result set.
+      // Positive control: ALICE holds encounters.read and the fixture seeds real
+      // clinical-attachments rows, so she CAN read them. The previous version of this
+      // control asserted the bucket was EMPTY, which is true for every principal
+      // including one with the policy deleted - and so proved nothing at all.
+      await session.resetRole();
+      await become(session, ALICE);
       const readable = await session.query<{ name: string }>(
-        `select name from storage.objects where bucket_id = 'clinical-attachments'`,
+        `select name from storage.objects where bucket_id = 'clinical-attachments' order by name`,
       );
-      expect(readable).toEqual([]);
+      expect(readable.map((r) => r.name)).toEqual([
+        `${ORG_A}/${CLINIC_A1}/alice-note.txt`,
+        `${ORG_A}/${CLINIC_A1}/dave-note.txt`,
+      ]);
+      // And FRANK, who holds encounters.read too, is refused the same writes - so the
+      // refusals above are the write policy rather than an empty bucket.
+      await session.resetRole();
+      await become(session, FRANK);
+      const frankReads = await session.query<{ n: string }>(
+        `select count(*)::text as n from storage.objects where bucket_id = 'clinical-attachments'`,
+      );
+      expect(Number(frankReads[0]?.n)).toBe(2);
     } finally {
       await session.rollback();
     }
@@ -378,19 +414,58 @@ dbDescribe("a read permission is not a write permission", () => {
     try {
       await become(session, FRANK);
       await session.query(`select set_config('storage.allow_delete_query', 'true', true)`);
-      for (const [bucket, name] of [
-        ["patient-documents", `${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
-        ["clinical-attachments", `${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
-        ["investigation-reports", `${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
-      ] as const) {
+      // Every clinical bucket, keyed on owner_id rather than name so the assertion is
+      // about the PERMISSION and not about whether a particular fixture row happens to
+      // exist - that confound is what made the first version of this test vacuous.
+      for (const bucket of CLINICAL) {
         const removed = await session.query<{ name: string }>(
-          `delete from storage.objects where bucket_id = $1 and name = $2 returning name`,
-          [bucket, name],
+          `delete from storage.objects where bucket_id = $1 and owner_id = $2 returning name`,
+          [bucket, FRANK],
         );
         expect(removed, `FRANK holds no write permission; ${bucket} delete must filter`).toEqual(
           [],
         );
       }
+
+      // Positive control, and the thing that makes the refusals above mean something: a
+      // refusal-only DELETE assertion is indistinguishable from an ABSENT policy, since
+      // both filter to zero rows. ALICE holds patients.update and owns this object, so
+      // she must be able to delete it. Without this, deleting all four clinical DELETE
+      // policies would leave this test green.
+      await session.resetRole();
+      await become(session, ALICE);
+      const permitted = await session.query<{ name: string }>(
+        `delete from storage.objects where bucket_id = 'patient-documents' and name = $1 returning name`,
+        [`${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
+      );
+      expect(permitted).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses a clinical delete across clinics, which the reach clause exists for", async () => {
+    // Task 9's lesson - pin each clause of the conjunction separately - was not applied
+    // to DELETE. Drop the clinic_ids conjunct from all four clinical DELETE predicates
+    // and the suite still passed, because FRANK holds no write permission at all, so
+    // the clause was irrelevant to him. ALICE holds patients.update in clinic A1 only.
+    const session = await stage();
+    try {
+      await become(session, ALICE);
+      await session.query(`select set_config('storage.allow_delete_query', 'true', true)`);
+      const sameClinic = await session.query<{ name: string }>(
+        `delete from storage.objects
+          where bucket_id = 'patient-documents' and name = $1 returning name`,
+        [`${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
+      );
+      expect(sameClinic).toHaveLength(1);
+
+      const otherClinic = await session.query<{ name: string }>(
+        `delete from storage.objects
+          where bucket_id = 'patient-documents' and name = $1 returning name`,
+        [`${ORG_A}/${CLINIC_A2}/alice-clinic2.pdf`],
+      );
+      expect(otherClinic).toEqual([]);
     } finally {
       await session.rollback();
     }
@@ -524,7 +599,7 @@ dbDescribe("path parsing is total", () => {
       const own = await session.query<{ name: string }>(
         `select name from storage.objects where bucket_id = 'patient-documents' order by name`,
       );
-      expect(own).toHaveLength(2);
+      expect(own).toHaveLength(3);
     } finally {
       await session.rollback();
     }
@@ -608,7 +683,9 @@ dbDescribe("suspension and the platform", () => {
         [`${ORG_SUSPENDED}/%`],
       );
       expect(tenant).toEqual([]);
-      // Positive control: carol still sees her own active organization's objects.
+      // Positive control that also pins org_assets_select: carol still sees her own
+      // active organization's objects, so the empty result above is the suspension and
+      // not a policy that shows nobody anything.
       const active = await session.query<{ name: string }>(
         `select name from storage.objects where name like $1`,
         [`${ORG_B}/%`],
@@ -625,6 +702,16 @@ dbDescribe("suspension and the platform", () => {
     // anywhere else in this schema.
     const session = await stage();
     try {
+      // Positive control FIRST, as DAVE, so the deny-all below cannot be satisfied by
+      // an absent policy set - which would make it assert nothing at all.
+      await session.resetRole();
+      await become(session, DAVE);
+      const visible = await session.query<{ name: string }>(
+        `select name from storage.objects where bucket_id = 'patient-documents' order by name`,
+      );
+      expect(visible.length).toBeGreaterThan(0);
+
+      await session.resetRole();
       await become(session, OPERATOR);
       const rows = await session.query<{ name: string }>(`select name from storage.objects`);
       expect(rows).toEqual([]);

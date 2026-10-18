@@ -1456,3 +1456,124 @@ invisible and it left 2 organizations behind - caught only because the script re
 its own residual row counts. Delete children first, and never swallow the error.
 Residual after this run: orgs 0, users 0, profiles 0, patients 0, roles 1 (the `00400`
 platform seed, expected).
+
+### Task 10: storage buckets and tenant-scoped object policies
+
+Review, then re-review, then a hardening pass. 487 tests green across 19 files.
+
+#### What the storage model is, and why it carries the whole security argument
+
+Every table in this schema carries `organization_id` with a composite foreign key, so
+a row physically cannot reference another tenant. `storage.objects` has neither: its
+tenancy is the object NAME, a text path, and a text path cannot carry a foreign key.
+The project's "composite tenant FKs" constraint is satisfied here BY POLICY rather than
+by constraint. Written into the migration header so nobody relaxes a clause without
+knowing.
+
+Path shape and permission mapping, both operator-confirmed. Clinical buckets are
+`<org>/<clinic>/<file>`, org-assets is `<org>/<file>`. `storage.foldername()` returns
+every segment EXCEPT the last, which is what makes that shape unambiguous per bucket
+instead of inferred from whether a segment looks like a UUID.
+
+#### CRITICAL, caught by review: a read permission authorised writes
+
+`format()` fills `%s` POSITIONALLY, and 01300 selected between four templates with ONE
+shared argument list. The one-placeholder INSERT and DELETE branches consumed the first
+argument - the READ predicate. Only UPDATE's three placeholders ever reached
+`write_predicate`. Measured against the applied catalogue before fixing:
+
+    patient-documents_insert      demanded 'patients.read'        should be patients.update
+    patient-documents_delete      demanded 'patients.read'        should be patients.update
+    clinical-attachments_insert   demanded 'encounters.read'      should be encounters.write
+    clinical-attachments_delete   demanded 'encounters.read'      should be encounters.write
+    investigation-reports_insert  demanded 'investigations.order' should be investigations.verify
+    investigation-reports_delete  demanded 'investigations.order' should be investigations.verify
+
+A clinician holding a read-only permission set could create and permanently delete PHI
+on three of the five buckets. Sharpest case: a doctor holding investigations.order but
+NOT investigations.verify could file a result document for an investigation they may not
+verify, indistinguishable in the record from a verified result.
+
+**The fix is structural, not clever: one template per call site**, each carrying exactly
+the arguments it consumes, so no shared list exists for a branch to reach into.
+
+**Named format arguments are NOT AVAILABLE.** PostgreSQL declares `format()` as
+`format(text, VARIADIC "any" format_args)` - it has no declared parameter names, so
+`format($t$ %(bucket)L $t$, bucket => x)` fails with "function format(text, bucket =>
+unknown) does not exist". MEASURED. Do not reach for it again in this codebase.
+
+#### The test suite was part of the bug
+
+The original "positive control" used a principal holding only READ permissions, so it
+passed BECAUSE of the vulnerability - measured, correcting the policy turned that test
+red. The fixture now separates reach, read permission and write permission across three
+principals so each assertion can only fail for its own reason, and a read-only principal
+exists solely to assert the regression.
+
+The re-review then found the SAME class reintroduced in the fix: a "positive control"
+asserting `clinical-attachments` was EMPTY, which is true for every principal because
+the fixture seeded no such rows - so its expected value was identical whether the policy
+was present or deleted, and the test passed verbatim against a completely deleted
+clinical insert policy set. Two more ratchets found and fixed: a refusal-only DELETE
+assertion (both an absent policy and a refusing one filter to zero rows), and a missing
+positive control on the cross-tenant upload refusal.
+
+**The generalisable lesson, now in AGENTS.md: a control whose expected value is
+identical for a permitted and an unpermitted principal proves nothing.** Ask what the
+control would return if the policy were DELETED, not merely that it passes.
+
+#### Pinned columns, and what remains deliberately unpinned
+
+Operator-confirmed: `owner_id` must be the caller's (uploader-only), `owner` accepted
+NULL-or-self because the Storage API may leave it NULL, `archived_at is null` and
+`is_delete_marker is false` on write predicates.
+
+`metadata` is deliberately NOT pinned - the Storage API writes it server-side during
+upload as the request's role, so a pin rejecting it would fail every legitimate upload.
+The constraint therefore belongs on the BUCKET: `allowed_mime_types` is now
+`{application/pdf, image/jpeg, image/png, application/dicom, text/plain}` on all five
+(operator-confirmed). Without it, a write-permission holder could set their object's
+mimetype to `text/html`.
+
+RECORDED TRADE-OFF, operator-confirmed: pinning `archived_at` means that if the SERVICE
+ROLE ever archives a clinical object for retention or legal hold, no authenticated
+principal can rename or delete it again. Same lockout shape as Task 9's
+`private.role_in_use`, and the price of preventing a client archiving PHI out of sight
+while the row and blob remain. service_role SQL is the recovery path.
+
+CONSEQUENCE OF UPLOADER-ONLY, operator-confirmed as acceptable: when a clinician leaves,
+no administrator can delete or rename the documents they uploaded. Only service_role SQL
+or the user themselves. This needs an operator runbook before it bites.
+
+#### Path guard, and the limits of what the database can prove
+
+`private.storage_path_is_safe` now refuses ANY segment made entirely of dots (`^\.\+$`),
+not just the literals `.` and `..`. The first version accepted `...`, `....//`, `.. `,
+`. .`, `..;` and `%2e%2e` as real rows. Traversal through the non-literal forms is not
+provable from the database, but `%2e%2e` is provably SAFE rather than merely unrefuted:
+S3 keys are not URL-decoded, so it is a six-character literal at the storage layer, and
+`foldername()`'s indices are fixed, so extra TRAILING segments can never shift which
+segment is read as the organization.
+
+#### Other measured facts
+
+- `storage.protect_delete()` refuses a direct DELETE on `storage.objects` for EVERYONE,
+  service role included, unless `storage.allow_delete_query` is 'true'. Independent of
+  RLS, so every DELETE test SETS the GUC - otherwise it measures the trigger and passes
+  whatever the policy said.
+- `postgres` has `rolbypassrls = true`, so it bypasses RLS regardless of ownership, and
+  `storage.objects` is owned by `supabase_storage_admin` not postgres. The reason to
+  avoid `resetRole()` before measuring is STRONGER than AGENTS.md previously recorded.
+- `ALTER POLICY ... RENAME TO` requires ownership of the table and fails 42501 here.
+- `path_tokens` on `storage.objects` is GENERATED, so it cannot be forged.
+- There are ZERO SECURITY DEFINER functions in schema `storage`, so the listing path
+  (`storage.list_objects_with_delimiter`, `storage.search_v2`) is RLS-filtered rather
+  than definer-filtered.
+- `storage.allow_delete_query` is not attacker-settable: the `allow_any_operation`
+  helpers only READ `storage.operation()`, and pg_catalog is not in PostgREST's exposed
+  schema list.
+- Open and unverifiable from the database: whether the Storage API normalises `%2e%2e`
+  or a trailing-space segment, and whether a forged mimetype is served inline. Both need
+  an HTTP-level probe against the Storage API, which Task 18's harness is the place for.
+- Open: `storage-api` deletions write nothing to `audit_logs`, so a PHI document removed
+  through the Storage API leaves no trail in the project's audit log.
