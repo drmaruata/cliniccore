@@ -1549,11 +1549,16 @@ or the user themselves. This needs an operator runbook before it bites.
 
 `private.storage_path_is_safe` now refuses ANY segment made entirely of dots (`^\.\+$`),
 not just the literals `.` and `..`. The first version accepted `...`, `....//`, `.. `,
-`. .`, `..;` and `%2e%2e` as real rows. Traversal through the non-literal forms is not
-provable from the database, but `%2e%2e` is provably SAFE rather than merely unrefuted:
-S3 keys are not URL-decoded, so it is a six-character literal at the storage layer, and
-`foldername()`'s indices are fixed, so extra TRAILING segments can never shift which
-segment is read as the organization.
+`. .`, `..;` and `%2e%2e` as real rows.
+
+CORRECTION to how that was first written up here: the new guard closes `...`, `....` and
+`....//`, and it does **NOT** close `.. `, `. .` or `..;` — those are still accepted, by
+design, because the pattern is "a segment made only of dots" and a segment containing a
+space or a semicolon is not that. Only `%2e%2e` is settled rather than merely
+unrefuted: S3 keys are not URL-decoded, so it is a six-character literal at the storage
+layer, and `foldername()`'s indices are fixed, so extra TRAILING segments can never
+shift which segment is read as the organization. Traversal through any of the remaining
+forms is not provable from the database and needs the HTTP harness.
 
 #### Other measured facts
 
@@ -1577,3 +1582,102 @@ segment is read as the organization.
   an HTTP-level probe against the Storage API, which Task 18's harness is the place for.
 - Open: `storage-api` deletions write nothing to `audit_logs`, so a PHI document removed
   through the Storage API leaves no trail in the project's audit log.
+
+## Task 10 third review: the schema was right, the proof was missing
+
+The third review's verdict was "the schema is correct on every property measurable from
+here, but five operator-confirmed decisions were defended by no test". It ran a full
+mutation matrix over all 20 policies and found 17 mutations that passed every test -
+including the removal of a clause the migration header calls load-bearing. This pass
+closes them, and closes them by MEASUREMENT rather than by assertion.
+
+### The fixture gap that made four of the five invisible
+
+Stripping the owner clauses from the INSERT and DELETE policies left the whole suite
+green, and so did re-gating the DELETE on the READ permission. The cause was not the
+tests being weak - it was the FIXTURE: the read-only principal owned nothing. So every
+refusal he met could be attributed to the owner clause, and removing the permission
+clause changed nothing he could observe.
+
+The fix is to give each principal an object of their OWN, so the permission clause is
+the only possible reason a write is refused. This is the AGENTS.md rule ("ask what the
+control would return if the policy were DROPPED") biting for the fourth time, now in the
+fixture rather than in the assertion.
+
+The same shape hid the reach clause. Every reach test used a principal whose role
+ASSIGNMENT was clinic-scoped, so `can()` alone already refused him and no test could tell
+whether `clinic_ids` was doing any work. The new principal GRACE has an ORG-WIDE
+assignment - so `can()` returns true for every clinic - and reach narrowed instead by a
+`clinic_memberships` row. Only the reach clause can refuse her, and the test asserts that
+premise before relying on it.
+
+### One mutation is caught ONLY by a text assertion, and that is recorded rather than hidden
+
+Removing the `clinic_ids` conjunct from `patient_documents_delete` leaves all 23
+behavioural tests green. MEASURED twice, and I could not construct a behavioural
+assertion that distinguishes it - the real suite passes the clause's positive control,
+so the refusal it does observe is attributable to something else in the predicate.
+
+The conjunct is therefore pinned in the catalogue test instead, alongside the permission
+key and the `bucket_id` literal, and asserted ABSENT for org-assets so it cannot be
+satisfied by adding the conjunct everywhere. The behavioural test is kept as well. This
+is a weaker form of proof and it is labelled as such in the test file rather than left to
+look behavioural.
+
+An earlier attempt to seed a literal `..` as the traversal fixture was ALSO wrong and was
+caught by the same method: the SUPERSEDED guard caught a literal `..` too, so the
+assertion would have passed against the guard it exists to defend. The fixture now uses
+THREE dots, which only the current guard refuses.
+
+### Mutation matrix after this pass
+
+Each mutation applied and COMMITTED, the suite run, then every predicate restored and
+verified byte-identical (20/20 predicates, path guard identical, no bucket missing its
+MIME list, zero residual rows).
+
+    strip owner clauses from patient_documents_delete        -> 1 test fails
+    re-gate that DELETE on patients.READ (the CRITICAL)      -> 2 tests fail
+    strip clinic_ids from patient_documents_delete           -> 1 test fails
+    strip archived_at / is_delete_marker from the same       -> 1 test fails
+    revert the path guard to the superseded in('.','..')    -> 1 test fails
+    clear allowed_mime_types on all five buckets             -> 1 test fails
+
+### Verification method, because the first four attempts were wrong
+
+Three separate harness errors are worth recording, because each produced a confident
+wrong answer rather than an error:
+
+1. Scripts run from a temp directory cannot resolve `pg`, so the mutation NEVER APPLIED
+   and the "23 passed" runs were the unmutated suite. Five confident green results from
+   a mutation that was never live.
+2. `CREATE POLICY` cannot take bind parameters - it is a utility statement - so building
+   the mutated predicate with `$1` failed. The permission literal has to be inlined.
+3. A probe that seeds its fixture and then deletes from it, in one transaction and under
+   two different roles, reports results that disagree with the real suite. At baseline
+   it claimed a permitted delete returned zero rows where the real suite proves it
+   succeeds. I discarded the probe as evidence rather than reasoning from it.
+
+The reliable instrument is the real suite with the mutation committed, plus a snapshot
+restore that is VERIFIED against a pre-recorded snapshot instead of assumed.
+
+### Other corrections
+
+- `allowed_mime_types` had ZERO assertions in the entire repository. It is the only
+  control on `metadata`, which is deliberately unpinned, so clearing it left 487 tests
+  green. Now asserted per bucket against the operator-confirmed list.
+- The uploader-only trade-off, the `archived_at` / `is_delete_marker` pins, the MIME
+  allowlist and the path guard on SELECT now each have a test that fails when the
+  control is removed. The archived object also asserts the READ side stays visible,
+  because SELECT deliberately ignores `archived_at`.
+- Corrected this file's own claim that the path guard fixed `.. `, `. .` and `..;`. It
+  does not; those are still accepted by design, and only `%2e%2e` is settled rather than
+  merely unrefuted.
+
+### Still open, unchanged by this pass
+
+Uploader-only means a departed user's documents are undeletable by EVERY application
+role; the third review's point that the severity is understated stands, and it needs an
+operator runbook. The HTTP-layer questions remain for Task 18's harness: whether the
+Storage API executes user requests as `authenticated`, whether a forged mimetype is
+served inline, whether `allowed_mime_types` is enforced by the API at all, and whether
+`anon` can reach a private bucket despite RLS denying it.

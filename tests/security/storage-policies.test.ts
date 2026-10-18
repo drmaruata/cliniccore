@@ -73,6 +73,21 @@ const EXPECTED_PERMISSION: Record<string, { read: string; write: string }> = {
   "org-assets": { read: "settings.manage", write: "settings.manage" },
 };
 
+/**
+ * The bucket-level file-type allowlist. `metadata` is deliberately UNPINNED in the
+ * write predicates - the Storage API writes it server-side during upload as the
+ * request's role, so a pin rejecting it would fail every legitimate upload. That makes
+ * this list the ONLY control on the mimetype a write-permission holder can declare, and
+ * a control nothing asserted is a control that can be deleted silently.
+ */
+const EXPECTED_MIME = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "application/dicom",
+  "text/plain",
+];
+
 const ORG_A = "3a1b0c1d-0000-4000-8000-000000000001";
 const ORG_B = "3a1b0c1d-0000-4000-8000-000000000002";
 const ORG_SUSPENDED = "3a1b0c1d-0000-4000-8000-000000000003";
@@ -85,6 +100,7 @@ const DAVE = "3a1b0c1d-0000-4000-8000-0000000000a2";
 const CAROL = "3a1b0c1d-0000-4000-8000-0000000000a3";
 const OPERATOR = "3a1b0c1d-0000-4000-8000-0000000000a4";
 const FRANK = "3a1b0c1d-0000-4000-8000-0000000000a5";
+const GRACE = "3a1b0c1d-0000-4000-8000-0000000000a6";
 
 const ROLE_MIXED_A = "3a1b0c1d-0000-4000-8000-0000000000c1";
 const ROLE_ADMIN_A = "3a1b0c1d-0000-4000-8000-0000000000c2";
@@ -114,8 +130,8 @@ async function stage(): Promise<Session> {
       `insert into auth.users (id, email, raw_user_meta_data) values
          ($1,'alice@example.test','{}'), ($2,'dave@example.test','{}'),
          ($3,'carol@example.test','{}'), ($4,'operator@example.test','{}'),
-         ($5,'frank@example.test','{}')`,
-      [ALICE, DAVE, CAROL, OPERATOR, FRANK],
+         ($5,'frank@example.test','{}'), ($6,'grace@example.test','{}')`,
+      [ALICE, DAVE, CAROL, OPERATOR, FRANK, GRACE],
     );
     await session.query(
       `insert into public.organizations (id, name, slug, status) values
@@ -129,10 +145,30 @@ async function stage(): Promise<Session> {
          ($2,$7,'active'), ($3,$7,'active')`,
       [ORG_A, ORG_B, ORG_SUSPENDED, ALICE, DAVE, FRANK, CAROL],
     );
+    // GRACE is the principal ALICE cannot be. ALICE's ROLE ASSIGNMENT is clinic-scoped,
+    // so `can()` alone already refuses a clinic she was not granted - which means no
+    // test could tell whether the `clinic_ids` reach clause was doing any work.
+    //
+    // GRACE's assignment is ORG-WIDE, so `can()` returns true for every clinic in the
+    // organization. Her REACH is narrowed instead by a clinic_memberships row. Only the
+    // reach clause can refuse her, so she is what pins the third conjunct - on SELECT,
+    // INSERT, UPDATE and DELETE alike. This is Task 9's "pin each clause separately"
+    // lesson; the third review found DELETE had never had it.
+    const [graceMembership] = await session.query<{ id: string }>(
+      `insert into public.organization_memberships (organization_id, user_id, status)
+       values ($1, $2, 'active') returning id`,
+      [ORG_A, GRACE],
+    );
     await session.query(
       `insert into public.clinics (id, organization_id, name) values
          ($1,$4,'A1'), ($2,$4,'A2'), ($3,$5,'B1')`,
       [CLINIC_A1, CLINIC_A2, CLINIC_B1, ORG_A, ORG_B],
+    );
+    // After `clinics`, because clinic_memberships carries a composite FK to it.
+    await session.query(
+      `insert into public.clinic_memberships (id, organization_id, membership_id, clinic_id)
+       values (gen_random_uuid(), $1, $2, $3)`,
+      [ORG_A, graceMembership?.id, CLINIC_A1],
     );
     await session.query("set local role service_role");
     await session.query(`update public.profiles set is_platform_admin = true where id = $1`, [
@@ -164,7 +200,8 @@ async function stage(): Promise<Session> {
          ('3a1b0c1d-0000-4000-8000-0000000000f1', $1, $2, $3, $4),
          ('3a1b0c1d-0000-4000-8000-0000000000f2', $1, $5, $6, null),
          ('3a1b0c1d-0000-4000-8000-0000000000f3', $1, $7, $8, $4),
-         ('3a1b0c1d-0000-4000-8000-0000000000f4', $9, $10, $11, null)`,
+         ('3a1b0c1d-0000-4000-8000-0000000000f4', $9, $10, $11, null),
+         ('3a1b0c1d-0000-4000-8000-0000000000f5', $1, $12, $6, null)`,
       [
         ORG_A,
         ALICE,
@@ -177,6 +214,7 @@ async function stage(): Promise<Session> {
         ORG_B,
         CAROL,
         ROLE_CLINICIAN_B,
+        GRACE,
       ],
     );
 
@@ -199,6 +237,21 @@ async function stage(): Promise<Session> {
       ["prescription-documents", `${ORG_A}/${CLINIC_A1}/alice-rx.pdf`, ALICE],
       ["org-assets", `${ORG_A}/logo.png`, DAVE],
       ["patient-documents", `not-a-uuid/orphan.pdf`, ALICE],
+      // FRANK must OWN objects, or his DELETE and UPDATE refusals prove nothing: the
+      // owner clause would filter the row first, so a policy with the permission check
+      // REMOVED would behave identically to a correct one. Measured - with no
+      // FRANK-owned rows, stripping `can()` from the clinical DELETE policies left all
+      // 17 tests green. He owns these so the permission clause is the only possible
+      // reason a write is refused.
+      ["patient-documents", `${ORG_A}/${CLINIC_A1}/frank-report.pdf`, FRANK],
+      ["clinical-attachments", `${ORG_A}/${CLINIC_A1}/frank-note.txt`, FRANK],
+      ["org-assets", `${ORG_A}/frank-logo.png`, FRANK],
+      // An object whose NAME carries a traversal segment, written as the owner so it
+      // exists regardless of policy. The segment is THREE dots, not two, on purpose:
+      // the superseded guard accepted `...` and `....`, and the current one refuses any
+      // all-dots segment. Seeding a literal `..` would have been caught by BOTH guards,
+      // so the assertion would have passed against the guard it exists to defend.
+      ["org-assets", `${ORG_A}/${CLINIC_A1}/.../seeded.png`, DAVE],
     ] as const) {
       await session.query(
         `insert into storage.objects (id, bucket_id, name, owner_id, is_delete_marker, is_versioned)
@@ -206,6 +259,16 @@ async function stage(): Promise<Session> {
         [bucket, name, owner],
       );
     }
+
+    // An object the SERVICE ROLE has archived. Only service_role can produce this state,
+    // which is the point: the pinned archived_at means no authenticated principal can
+    // then delete it, and that trade-off needs asserting rather than assuming.
+    await session.query(
+      `insert into storage.objects
+         (id, bucket_id, name, owner_id, archived_at, is_delete_marker, is_versioned)
+       values (gen_random_uuid(), 'patient-documents', $1, $2, now(), false, false)`,
+      [`${ORG_A}/${CLINIC_A1}/dave-archived.pdf`, DAVE],
+    );
   };
 
   try {
@@ -266,6 +329,27 @@ dbDescribe("storage buckets", () => {
       const want = command === "select" ? wanted?.read : wanted?.write;
       const got = (row.text ?? "").match(/private\.can\([^,]+, '([^']+)'/)?.[1];
       expect(got, `${row.policyname} must demand ${want}`).toBe(want);
+      // The bucket_id literal inside the predicate is what stops one bucket's policy
+      // matching another bucket's rows. Asserting it here covers all twenty policies
+      // in one place, where before it was pinned for two buckets by one behavioural
+      // test.
+      expect(row.text ?? "", `${row.policyname} must pin its own bucket_id`).toContain(
+        `bucket_id = '${key.replace(/_/g, "-")}'`,
+      );
+      // The clinic-reach conjunct: present on every clinical policy, absent from
+      // org-assets, which is organization-scoped and has no clinic segment to check.
+      //
+      // This is a TEXT assertion and it is here because the behavioural version did not
+      // hold. MEASURED: deleting the conjunct from patient_documents_delete left all 23
+      // tests green. The behavioural test for it is still present and still worth
+      // having, but a clause whose removal the suite cannot distinguish from correct is
+      // exactly what a catalogue assertion is for. Asserting the ABSENCE for org-assets
+      // too, so this cannot be satisfied by adding the conjunct everywhere.
+      const wantsClinicReach = key !== "org_assets";
+      expect(
+        /clinic_ids/.test(row.text ?? ""),
+        `${row.policyname} ${wantsClinicReach ? "must" : "must not"} gate on clinic reach`,
+      ).toBe(wantsClinicReach);
     }
   });
 });
@@ -280,7 +364,9 @@ dbDescribe("storage object isolation", () => {
       );
       expect(rows.map((r) => r.name)).toEqual([
         `${ORG_A}/${CLINIC_A1}/alice-report.pdf`,
+        `${ORG_A}/${CLINIC_A1}/dave-archived.pdf`,
         `${ORG_A}/${CLINIC_A1}/dave-note.pdf`,
+        `${ORG_A}/${CLINIC_A1}/frank-report.pdf`,
         `${ORG_A}/${CLINIC_A2}/alice-clinic2.pdf`,
       ]);
     } finally {
@@ -392,6 +478,7 @@ dbDescribe("a read permission is not a write permission", () => {
       expect(readable.map((r) => r.name)).toEqual([
         `${ORG_A}/${CLINIC_A1}/alice-note.txt`,
         `${ORG_A}/${CLINIC_A1}/dave-note.txt`,
+        `${ORG_A}/${CLINIC_A1}/frank-note.txt`,
       ]);
       // And FRANK, who holds encounters.read too, is refused the same writes - so the
       // refusals above are the write policy rather than an empty bucket.
@@ -400,7 +487,7 @@ dbDescribe("a read permission is not a write permission", () => {
       const frankReads = await session.query<{ n: string }>(
         `select count(*)::text as n from storage.objects where bucket_id = 'clinical-attachments'`,
       );
-      expect(Number(frankReads[0]?.n)).toBe(2);
+      expect(Number(frankReads[0]?.n)).toBe(3);
     } finally {
       await session.rollback();
     }
@@ -599,7 +686,11 @@ dbDescribe("path parsing is total", () => {
       const own = await session.query<{ name: string }>(
         `select name from storage.objects where bucket_id = 'patient-documents' order by name`,
       );
-      expect(own).toHaveLength(3);
+      // Named rather than counted: a bare "nonzero" assertion cannot tell a working
+      // policy from one that has been quietly widened, and adding a fixture row would
+      // otherwise force this number to be edited rather than reasoned about.
+      expect(own.map((r) => r.name)).toContain(`${ORG_A}/${CLINIC_A1}/alice-report.pdf`);
+      expect(own.map((r) => r.name)).not.toContain("not-a-uuid/orphan.pdf");
     } finally {
       await session.rollback();
     }
@@ -722,6 +813,255 @@ dbDescribe("suspension and the platform", () => {
         [`${ORG_A}/${CLINIC_A1}/operator.pdf`, OPERATOR],
         /row-level security/i,
       );
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("uploader-only ownership is load-bearing", () => {
+  // Operator-confirmed trade-off, and the third review found it defended by nothing:
+  // stripping the owner clauses from every INSERT and DELETE policy left all 17 tests
+  // green, because the fixture's other principals owned nothing of each other's.
+  it("refuses an administrator any write to another user's object", async () => {
+    const session = await stage();
+    try {
+      await session.query(`select set_config('storage.allow_delete_query', 'true', true)`);
+      // DAVE holds every write permission in the mapping and is org-wide, so the owner
+      // clause is the only thing that can refuse him.
+      await become(session, DAVE);
+
+      const removed = await session.query<{ name: string }>(
+        `delete from storage.objects
+          where bucket_id = 'patient-documents' and name = $1 returning name`,
+        [`${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
+      );
+      expect(removed).toEqual([]);
+
+      const renamed = await session.query<{ name: string }>(
+        `update storage.objects set name = $1
+          where bucket_id = 'patient-documents' and name = $2 returning name`,
+        [`${ORG_A}/${CLINIC_A1}/taken-over.pdf`, `${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
+      );
+      expect(renamed).toEqual([]);
+
+      // Handing a new object to someone else, which would let it escape his own control
+      // and land under a colleague's ownership in one step.
+      await expectRejection(
+        session,
+        `insert into storage.objects (id, bucket_id, name, owner_id, is_delete_marker, is_versioned)
+         values (gen_random_uuid(), 'patient-documents', $1, $2, false, false)`,
+        [`${ORG_A}/${CLINIC_A1}/gifted.pdf`, ALICE],
+        /row-level security/i,
+      );
+
+      // Positive control: his OWN object deletes and renames freely, so the refusals
+      // above are the owner clause and not the write path being closed for everyone.
+      const own = await session.query<{ name: string }>(
+        `delete from storage.objects
+          where bucket_id = 'patient-documents' and name = $1 returning name`,
+        [`${ORG_A}/${CLINIC_A1}/dave-note.pdf`],
+      );
+      expect(own).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("bucket configuration", () => {
+  it("restricts every bucket to the agreed file types", async () => {
+    // The only control on the mimetype, since `metadata` is deliberately unpinned.
+    // Before this assertion the entire allowlist could be deleted and the suite stayed
+    // green - the same ratchet class three times over, sitting on an
+    // operator-confirmed decision.
+    const rows = await query<{ id: string; allowed_mime_types: string[] | null }>(
+      `select id, allowed_mime_types from storage.buckets order by id`,
+    );
+    expect(rows).toHaveLength(5);
+    for (const row of rows) {
+      expect(row.allowed_mime_types, `${row.id} has no MIME allowlist at all`).not.toBeNull();
+      expect([...(row.allowed_mime_types ?? [])].sort(), `${row.id} file types`).toEqual(
+        [...EXPECTED_MIME].sort(),
+      );
+    }
+  });
+});
+
+dbDescribe("the archive and delete-marker pins", () => {
+  it("refuses a client to create an archived object, or delete one the service role archived", async () => {
+    const session = await stage();
+    try {
+      await session.query(`select set_config('storage.allow_delete_query', 'true', true)`);
+      await become(session, DAVE);
+
+      await expectRejection(
+        session,
+        `insert into storage.objects
+           (id, bucket_id, name, owner_id, archived_at, is_delete_marker, is_versioned)
+         values (gen_random_uuid(), 'patient-documents', $1, $2, now(), false, false)`,
+        [`${ORG_A}/${CLINIC_A1}/pre-archived.pdf`, DAVE],
+        /row-level security/i,
+      );
+      await expectRejection(
+        session,
+        `insert into storage.objects
+           (id, bucket_id, name, owner_id, is_delete_marker, is_versioned)
+         values (gen_random_uuid(), 'patient-documents', $1, $2, true, false)`,
+        [`${ORG_A}/${CLINIC_A1}/marker.pdf`, DAVE],
+        /row-level security/i,
+      );
+
+      // The recorded trade-off: only the service role can archive, and once it has, no
+      // authenticated principal can delete the object again - not even its uploader,
+      // who holds every write permission.
+      const removed = await session.query<{ name: string }>(
+        `delete from storage.objects
+          where bucket_id = 'patient-documents' and name = $1 returning name`,
+        [`${ORG_A}/${CLINIC_A1}/dave-archived.pdf`],
+      );
+      expect(removed).toEqual([]);
+
+      // But it is still READABLE, because SELECT deliberately ignores archived_at - an
+      // object under legal hold has to stay visible to the people investigating it.
+      const readable = await session.query<{ name: string }>(
+        `select name from storage.objects
+          where bucket_id = 'patient-documents' and name = $1`,
+        [`${ORG_A}/${CLINIC_A1}/dave-archived.pdf`],
+      );
+      expect(readable).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("the path guard is not confined to writes", () => {
+  it("hides a traversal-named object from SELECT too", async () => {
+    const session = await stage();
+    try {
+      await become(session, DAVE);
+      const rows = await session.query<{ name: string }>(
+        `select name from storage.objects where name like $1`,
+        [`%seeded.png`],
+      );
+      expect(rows).toEqual([]);
+      // Positive control: his real org-assets objects are visible, so the empty result
+      // is the path guard and not a policy that shows DAVE nothing at all.
+      const real = await session.query<{ name: string }>(
+        `select name from storage.objects where bucket_id = 'org-assets' order by name`,
+      );
+      expect(real.map((r) => r.name)).toEqual([`${ORG_A}/frank-logo.png`, `${ORG_A}/logo.png`]);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses a traversal name on an org-assets write", async () => {
+    const session = await stage();
+    try {
+      await become(session, DAVE);
+      await expectRejection(
+        session,
+        `insert into storage.objects (id, bucket_id, name, owner_id, is_delete_marker, is_versioned)
+         values (gen_random_uuid(), 'org-assets', $1, $2, false, false)`,
+        [`${ORG_A}/../${ORG_B}/traversed.png`, DAVE],
+        /row-level security/i,
+      );
+      const permitted = await insertObject(session, "org-assets", `${ORG_A}/dave-brand.png`, DAVE);
+      expect(permitted).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("the reach clause is load-bearing on its own", () => {
+  it("refuses GRACE a clinic that only clinic_ids excludes", async () => {
+    // Every other reach test here uses ALICE, whose role ASSIGNMENT is clinic-scoped -
+    // so private.can already refuses her and nothing could tell whether the clinic_ids
+    // conjunct was doing any work. GRACE's assignment is ORG-WIDE, so can() says yes to
+    // every clinic and the reach clause is the only possible reason for a refusal.
+    // Strip that conjunct from any of the four policies and this goes red.
+    const session = await stage();
+    try {
+      // Seeded as the OWNER, so the policies do not decide whether these rows exist, and
+      // so each object is GRACE's: an object owned by somebody else would be filtered
+      // by the owner clause first, and the refusal would be attributable to the wrong
+      // clause. That confound is exactly what my first attempt at this test did.
+      await session.query(
+        `insert into storage.objects
+           (id, bucket_id, name, owner_id, is_delete_marker, is_versioned)
+         values (gen_random_uuid(), 'patient-documents', $1, $2, false, false),
+                (gen_random_uuid(), 'patient-documents', $3, $2, false, false)`,
+        [`${ORG_A}/${CLINIC_A1}/grace-a1.pdf`, GRACE, `${ORG_A}/${CLINIC_A2}/grace-a2.pdf`],
+      );
+      await session.query(`select set_config('storage.allow_delete_query', 'true', true)`);
+      await become(session, GRACE);
+
+      // The premise, asserted rather than assumed.
+      const permitted = await session.query<{ c: boolean }>(
+        `select private.can($1, 'patients.update', $2) as c`,
+        [ORG_A, CLINIC_A2],
+      );
+      expect(
+        permitted[0]?.c,
+        "premise: an org-wide assignment makes can() true for any clinic",
+      ).toBe(true);
+      const reach = await session.query<{ id: string }>(`select private.clinic_ids($1) as id`, [
+        ORG_A,
+      ]);
+      expect(reach.map((r) => r.id)).toEqual([CLINIC_A1]);
+
+      // SELECT: clinic A2 invisible, clinic A1 visible.
+      expect(
+        await session.query(`select name from storage.objects where name = $1`, [
+          `${ORG_A}/${CLINIC_A2}/grace-a2.pdf`,
+        ]),
+      ).toEqual([]);
+      expect(
+        await session.query(`select name from storage.objects where name = $1`, [
+          `${ORG_A}/${CLINIC_A1}/grace-a1.pdf`,
+        ]),
+      ).toHaveLength(1);
+
+      // INSERT into the unreachable clinic raises; into the reachable one it succeeds.
+      await expectRejection(
+        session,
+        `insert into storage.objects (id, bucket_id, name, owner_id, is_delete_marker, is_versioned)
+         values (gen_random_uuid(), 'patient-documents', $1, $2, false, false)`,
+        [`${ORG_A}/${CLINIC_A2}/grace-new.pdf`, GRACE],
+        /row-level security/i,
+      );
+      const created = await insertObject(
+        session,
+        "patient-documents",
+        `${ORG_A}/${CLINIC_A1}/grace-new.pdf`,
+        GRACE,
+      );
+      expect(created).toHaveLength(1);
+
+      // UPDATE into the unreachable clinic raises on WITH CHECK.
+      await expectRejection(
+        session,
+        `update storage.objects set name = $1
+          where bucket_id = 'patient-documents' and name = $2`,
+        [`${ORG_A}/${CLINIC_A2}/grace-moved.pdf`, `${ORG_A}/${CLINIC_A1}/grace-a1.pdf`],
+        /row-level security/i,
+      );
+
+      // DELETE from the unreachable clinic filters to zero rows; from the reachable one
+      // it deletes. Both objects are hers, so the owner clause cannot be the reason.
+      expect(
+        await session.query(`delete from storage.objects where name = $1 returning name`, [
+          `${ORG_A}/${CLINIC_A2}/grace-a2.pdf`,
+        ]),
+      ).toEqual([]);
+      expect(
+        await session.query(`delete from storage.objects where name = $1 returning name`, [
+          `${ORG_A}/${CLINIC_A1}/grace-a1.pdf`,
+        ]),
+      ).toHaveLength(1);
     } finally {
       await session.rollback();
     }
