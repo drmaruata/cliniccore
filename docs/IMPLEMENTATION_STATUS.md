@@ -1245,3 +1245,105 @@ with tenant administration. **Left open and recorded, not declared fixed.**
 returns NULL. The trigger catalogue is `pg_trigger`. A guarded `create trigger` written
 against `pg_triggers` fails with 42P01 and the whole migration rolls back. Measured, not
 assumed.
+
+### Task 9 third review: I was wrong twice, and both errors were mine to measure
+
+A third independent review, fresh context, asked to verify every finding from the first two
+AND to challenge my judgement about the ones I deliberately left open. Ten more findings.
+Two CRITICAL and one IMPORTANT are now fixed in `01240`; three of my own rulings were
+overturned.
+
+#### I declined the top risk on a premise I never measured, and the premise was false
+
+I twice declined a grant ceiling because "a strict subset ceiling would also break the
+legitimate admin-creates-owner flow". I had never tested it.
+
+MEASURED, against a tenant built by the real onboarding RPC: `organization_owner` and
+`organization_admin` carry **byte-identical 17-permission sets** (owner-only keys: none).
+So an org_admin holding all seventeen passes a subset ceiling completely unchanged. The
+flow I claimed the ceiling would break does not exist, and the ceiling is eight lines:
+
+    select not exists (select 1 from public.role_permissions rp
+      where rp.role_id = p_role_id and not private.can(p_org_id, rp.permission_key, null))
+
+Verified by execution: a `medical_director` self-assigning `organization_owner` now
+raises; an `org_admin` assigning `organization_owner` to a colleague still succeeds, as
+does assigning `clinic_admin` and `clinician` (both strict subsets). The only thing it
+blocks is granting a role strictly above your own permissions - which is the escalation.
+
+I do not need a role hierarchy. The registry's GRANT-CEILING OBLIGATION is about the
+CLIENT model; this is the database half of the same rule, and I conflated the two.
+
+#### A second CRITICAL that was in no ledger at all
+
+A `settings.manage` holder could mint **any** permission key, including one its own role
+deliberately withholds. Measured as `clinic_admin`: add `subscription.manage` to its own
+role, assign it to itself - OK. Two statements. `clinic_admin` is a clinic-level tenant
+role, so the blast radius is wider than the `staff.manage` path, and nobody - including
+three review passes - had recorded it.
+
+`role_permissions` has no `organization_id` column, which is the whole reason its
+policies reach through `roles`, so the key ceiling is `private.can(r.organization_id,
+permission_key)` INSIDE the existing EXISTS rather than a separate helper. One fewer
+function to keep correct, and it cannot be called with a mismatched organization.
+
+#### The lockout `01230` exists to prevent was reachable through the wrong table
+
+`01230` guards `roles` DELETE. The same lockout is reachable in ONE statement through
+`role_permissions`: clear every grant from your own admin role, and the tenant has zero
+grants, zero ways to make any, and no client repair path - through the role editor's
+"clear all permissions" button, which is going to ship. The guard was on the wrong table
+for the invariant. `role_permissions_delete` now refuses to strip a role the caller
+holds; strip one you do not hold and it still works.
+
+#### private.role_in_use was a cross-tenant oracle I introduced
+
+It took a role_id and returned a boolean about ANY role, so a member of one tenant could
+probe another's: measured, a member of org B reading true for an org A role, false for an
+unused one, true for the platform role. It was the only helper whose answer was not
+scoped to `auth.uid()`. PostgreSQL does not check EXECUTE when invoking a trigger
+function, so the check moved into a `BEFORE DELETE` trigger and **the grant was revoked
+outright**. Measured after: the delete raises "role org_admin is still in use", a direct
+call returns permission denied, an unused role still deletes.
+
+#### Two more of my own tests were passing for no reason
+
+Both were the same mistake, and it is the fourth time in this task: **a refusal test that
+matches zero rows proves nothing.** One named a role key the fixture never creates, so the
+INSERT selected nothing and never evaluated the WITH CHECK. The other relied on
+`roles_select` returning rows for a principal the fixture had never made a member of, so
+again zero rows. Both now target rows that exist, and both say why in a comment.
+
+Also corrected: `01230`'s claim that "revoke the assignments, then drop the role" is the
+intact workflow is false - `role_in_use` counts grants as well as assignments, so BOTH must
+go. Third false claim recorded as fact in this task. And `AGENTS.md` said 18 history rows
+when there were 20; the same commit that added the `01230` lesson left the count beside it
+stale.
+
+#### Confirmed still open, with the reviewer disagreeing on one
+
+- **Self-suspension by a `settings.manage` holder.** Re-confirmed by execution. The
+  reviewer disagrees with my "RLS cannot express a column rule" reasoning: a `BEFORE
+UPDATE` trigger on `organizations` - the same pattern `guard_role_identity` already uses
+  - can refuse a `status` change by anyone who is not a platform administrator, without
+    touching grants and without breaking the operator's restore path. I am not persuaded
+    that a tenant admin may suspend their own tenant is intended behaviour, but it is
+    genuinely a product decision, so it stays open and is now cheap to close.
+- Privilege pre-staging, the cross-organization membership move, the platform branch
+  breadth on `organizations` UPDATE, the untested TRUNCATE revoke, and
+  `patients.read` vs `patients.export` - the reviewer AGREED with deferring all five.
+- `roles.is_system` is now **write-only and inert**: nothing reads it (only
+  `gen-permissions-sql.ts` writes it, `00400`/`00600` seed it, `guard_role_identity`
+  freezes it). Recommendation to accept: change ONE of the three descriptions rather than
+  leaving two comments asserting a meaning no code implements.
+- `clinic_memberships_select` has no self branch unlike `user_role_assignments_select`.
+  Judged not a gap: a user gets their clinic scope from `private.clinic_ids()`, which is
+  the intended accessor, so adding a branch would widen the surface for nothing.
+
+#### The pattern all three reviews missed
+
+Review 1 looked at USING looseness. Review 2 looked at neuterability. Both looked at
+_policies_. Nobody asked what invariant each table's write path has to preserve - so both
+stayed inside the `roles` table while the same lockout and the same escalation both
+remained reachable from `role_permissions`. Three of the four escalations in this task
+were closed by ONE idea: a definer permission predicate, ~10 lines, no hierarchy.

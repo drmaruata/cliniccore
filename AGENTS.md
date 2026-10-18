@@ -29,11 +29,12 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`01210` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`01240` (extensions, core functions, identity/tenancy
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
-  then the four Task 9 RLS migrations plus `01210`'s identifier correction), all applied —
-  18 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
+  gates, `01230`'s role guard and `01240`'s grant ceiling), all applied —
+  21 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/`,

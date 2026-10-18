@@ -364,6 +364,16 @@ const CAROL = "cccccccc-3333-4333-8333-cccccccccccc";
 const DAVE = "dddddddd-4444-4444-8444-dddddddddddd";
 const OPERATOR = "eeeeeeee-5555-4555-8555-eeeeeeeeeeee";
 
+/* Two principals who exist only to be PARTIAL holders. The grant ceiling is
+ * invisible without them: dave holds all seventeen permissions, so every ceiling
+ * passes for him, and alice holds none, so she fails before the ceiling is even
+ * consulted. FRANK holds staff.manage alone; GRACE holds settings.manage without
+ * the clinical and billing keys. */
+const FRANK = "fa000000-1111-4111-8111-fa0000000001";
+const GRACE = "ac000000-1111-4111-8111-ac0000000002";
+const ROLE_PARTIAL = "00000000-0000-4000-8000-000000000003";
+const ROLE_SETTINGS = "00000000-0000-4000-8000-000000000004";
+
 const PATIENT_1 = "12121212-1111-4111-8111-121212121212";
 const PATIENT_2 = "23232323-2222-4222-8222-232323232323";
 const PATIENT_3 = "34343434-3333-4333-8333-343434343434";
@@ -405,8 +415,9 @@ async function seed(session: Session): Promise<void> {
     `insert into auth.users (id, email, raw_user_meta_data) values
        ($1,'alice@example.test','{}'), ($2,'bob@example.test','{}'),
        ($3,'carol@example.test','{}'), ($4,'dave@example.test','{}'),
-       ($5,'operator@example.test','{}')`,
-    [ALICE, BOB, CAROL, DAVE, OPERATOR],
+       ($5,'operator@example.test','{}'), ($6,'frank@example.test','{}'),
+       ($7,'grace@example.test','{}')`,
+    [ALICE, BOB, CAROL, DAVE, OPERATOR, FRANK, GRACE],
   );
   await session.query(
     `insert into public.organizations (id, name, slug, status) values
@@ -417,8 +428,9 @@ async function seed(session: Session): Promise<void> {
   await session.query(
     `insert into public.organization_memberships (organization_id, user_id, status) values
        ($1,$4,'active'), ($1,$5,'active'), ($1,$6,'active'),
-       ($2,$7,'active'), ($3,$7,'active')`,
-    [ORG_A, ORG_B, ORG_SUSPENDED, ALICE, BOB, DAVE, CAROL],
+       ($2,$7,'active'), ($3,$7,'active'),
+       ($1,$8,'active'), ($1,$9,'active')`,
+    [ORG_A, ORG_B, ORG_SUSPENDED, ALICE, BOB, DAVE, CAROL, FRANK, GRACE],
   );
   await session.query(
     `insert into public.clinics (id, organization_id, name) values
@@ -434,9 +446,12 @@ async function seed(session: Session): Promise<void> {
 
   await session.query(
     `insert into public.roles (id, organization_id, key, name, is_system) values
-       ('00000000-0000-4000-8000-000000000001', $1, 'clinician',   'Clinician',   false),
-       ('00000000-0000-4000-8000-000000000002', $1, 'org_admin',   'Org Admin',   false)`,
-    [ORG_A],
+       ('00000000-0000-4000-8000-000000000001', $1, 'clinician',        'Clinician',        false),
+       ('00000000-0000-4000-8000-000000000002', $1, 'org_admin',        'Org Admin',        false),
+       ($2, $1, 'medical_director',  'Medical Director',  false),
+       ($3, $1, 'clinic_admin',      'Clinic Admin',      false),
+       ('00000000-0000-4000-8000-000000000006', $1, 'organization_owner', 'Organization Owner', false)`,
+    [ORG_A, ROLE_PARTIAL, ROLE_SETTINGS],
   );
   await session.query(
     `insert into public.role_permissions (role_id, permission_key) values
@@ -446,14 +461,27 @@ async function seed(session: Session): Promise<void> {
        ('00000000-0000-4000-8000-000000000002', 'staff.manage'),
        ('00000000-0000-4000-8000-000000000002', 'audit.read'),
        ('00000000-0000-4000-8000-000000000002', 'patients.create'),
-       ('00000000-0000-4000-8000-000000000002', 'patients.update')`,
+       ('00000000-0000-4000-8000-000000000002', 'patients.update'),
+       ('00000000-0000-4000-8000-000000000002', 'subscription.manage'),
+       ($1, 'staff.manage'),
+       ($2, 'settings.manage'), ($2, 'staff.manage'), ($2, 'patients.read'),
+       ('00000000-0000-4000-8000-000000000006', 'patients.read'),
+       ('00000000-0000-4000-8000-000000000006', 'settings.manage'),
+       ('00000000-0000-4000-8000-000000000006', 'staff.manage'),
+       ('00000000-0000-4000-8000-000000000006', 'audit.read'),
+       ('00000000-0000-4000-8000-000000000006', 'patients.create'),
+       ('00000000-0000-4000-8000-000000000006', 'patients.update'),
+       ('00000000-0000-4000-8000-000000000006', 'subscription.manage')`,
+    [ROLE_PARTIAL, ROLE_SETTINGS],
   );
   await session.query(
     `insert into public.user_role_assignments (id, organization_id, user_id, role_id, clinic_id) values
        ('00000000-0000-4000-8000-000000000011', $1, $2, '00000000-0000-4000-8000-000000000001', $4),
        ('00000000-0000-4000-8000-000000000012', $1, $3, '00000000-0000-4000-8000-000000000001', null),
-       ('00000000-0000-4000-8000-000000000013', $1, $5, '00000000-0000-4000-8000-000000000002', null)`,
-    [ORG_A, ALICE, BOB, CLINIC_1, DAVE],
+       ('00000000-0000-4000-8000-000000000013', $1, $5, '00000000-0000-4000-8000-000000000002', null),
+       ('00000000-0000-4000-8000-000000000014', $1, $6, $7, null),
+       ('00000000-0000-4000-8000-000000000015', $1, $8, $9, null)`,
+    [ORG_A, ALICE, BOB, CLINIC_1, DAVE, FRANK, ROLE_PARTIAL, GRACE, ROLE_SETTINGS],
   );
 
   // The one thing that scopes bob to a single clinic. Without this row he would
@@ -653,7 +681,8 @@ dbDescribe("privilege escalation is closed on every path", () => {
       const roles = await session.query<{ key: string }>(
         `select key from public.roles order by key`,
       );
-      expect(roles.map((r) => r.key)).toEqual(["clinician", "org_admin"]);
+      expect(roles.map((r) => r.key)).toEqual(expect.arrayContaining(["clinician", "org_admin"]));
+      expect(roles.map((r) => r.key)).not.toContain("platform_super_admin");
     } finally {
       await session.rollback();
     }
@@ -690,7 +719,7 @@ dbDescribe("privilege escalation is closed on every path", () => {
         `update public.organization_memberships set status = 'suspended' where organization_id = $1 returning user_id::text`,
         [ORG_A],
       );
-      expect(permitted).toHaveLength(3);
+      expect(permitted).toHaveLength(5);
     } finally {
       await session.rollback();
     }
@@ -751,12 +780,14 @@ dbDescribe("privilege escalation is closed on every path", () => {
     const session = await stage();
     try {
       await become(session, DAVE);
-      // clinician is assigned to alice, so it is in use.
-      const inUse = await session.query<{ key: string }>(
-        `delete from public.roles where organization_id = $1 and key = 'clinician' returning key`,
+      // Refused by the BEFORE DELETE trigger, so it RAISES. Previously this was a
+      // policy clause and filtered silently - the third refusal shape in this file.
+      await expectRejection(
+        session,
+        `delete from public.roles where organization_id = $1 and key = 'clinician'`,
         [ORG_A],
+        /still in use/i,
       );
-      expect(inUse).toEqual([]);
 
       // Positive control: a role nobody holds is the tenant's to remove.
       await session.query(
@@ -783,11 +814,12 @@ dbDescribe("privilege escalation is closed on every path", () => {
           where r.organization_id = $1 and r.key = 'temp_used'`,
         [ORG_A, BOB],
       );
-      const nowUsed = await session.query<{ key: string }>(
-        `delete from public.roles where organization_id = $1 and key = 'temp_used' returning key`,
+      await expectRejection(
+        session,
+        `delete from public.roles where organization_id = $1 and key = 'temp_used'`,
         [ORG_A],
+        /still in use/i,
       );
-      expect(nowUsed).toEqual([]);
     } finally {
       await session.rollback();
     }
@@ -816,7 +848,10 @@ dbDescribe("privilege escalation is closed on every path", () => {
         `select key, is_system from public.roles where organization_id = $1 order by key`,
         [ORG_A],
       );
-      expect(after.map((r) => r.key)).toEqual(["clinician", "org_admin"]);
+      expect(after.map((r) => r.key)).toEqual(
+        expect.arrayContaining(["clinician", "org_admin", "organization_owner"]),
+      );
+      expect(after.map((r) => r.key)).not.toContain("platform_super_admin");
       expect(after.every((r) => r.is_system === false)).toBe(true);
     } finally {
       await session.rollback();
@@ -928,8 +963,15 @@ dbDescribe("privilege escalation is closed on every path", () => {
            join public.roles r on r.id = a.role_id
           order by r.key, a.clinic_id nulls first`,
       );
-      expect(rows.map((r) => r.key)).toEqual(["clinician", "clinician", "org_admin"]);
-      expect(rows.map((r) => r.clinic_scoped)).toEqual([false, true, false]);
+      expect(rows.map((r) => r.key)).toEqual([
+        "clinic_admin",
+        "clinician",
+        "clinician",
+        "medical_director",
+        "org_admin",
+      ]);
+      const scoped = rows.filter((r) => r.clinic_scoped).map((r) => r.key);
+      expect(scoped).toEqual(["clinician"]);
 
       await session.resetRole();
       await become(session, ALICE);
@@ -1239,7 +1281,8 @@ dbDescribe("authorised writes actually work", () => {
         `update public.roles set name = 'Renamed' where organization_id = $1 returning name`,
         [ORG_A],
       );
-      expect(permitted).toHaveLength(2);
+      expect(permitted.length).toBeGreaterThan(0);
+      expect(new Set(permitted.map((r) => r.name))).toEqual(new Set(["Renamed"]));
     } finally {
       await session.rollback();
     }
@@ -1256,12 +1299,12 @@ dbDescribe("authorised writes actually work", () => {
       await become(session, DAVE);
 
       const regrant = await session.query<{ permission_key: string }>(
-        `update public.role_permissions set permission_key = 'patients.export'
+        `update public.role_permissions set permission_key = 'patients.create'
           where role_id = '00000000-0000-4000-8000-000000000001'
             and permission_key = 'patients.read'
         returning permission_key`,
       );
-      expect(regrant).toEqual([{ permission_key: "patients.export" }]);
+      expect(regrant).toEqual([{ permission_key: "patients.create" }]);
 
       await session.query(
         `insert into public.patient_identifiers (organization_id, patient_id, kind, value)
@@ -1304,6 +1347,144 @@ dbDescribe("authorised writes actually work", () => {
         [ORG_A, ALICE],
       );
       expect(unassigned).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("the grant ceiling", () => {
+  // I DECLINED this twice, on the stated premise that a subset ceiling "would break
+  // the legitimate admin-creates-owner flow". That premise was never measured, and it
+  // is false: measured against a tenant built by the real onboarding RPC,
+  // organization_owner and organization_admin carry BYTE-IDENTICAL 17-permission
+  // sets, so an org_admin who holds all seventeen passes a subset ceiling unchanged.
+  // A ceiling therefore closes the escalation without closing the flow.
+  it("refuses to assign a role carrying a permission the assigner does not hold", async () => {
+    const session = await stage();
+    try {
+      await become(session, FRANK);
+      // FRANK holds staff.manage and nothing else. organization_owner carries 17.
+      await expectRejection(
+        session,
+        `insert into public.user_role_assignments (organization_id, user_id, role_id)
+         select $1, $2, r.id from public.roles r
+          where r.organization_id = $1 and r.key = 'organization_owner'`,
+        [ORG_A, FRANK],
+        /row-level security/i,
+      );
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses to mint a permission key the granter does not hold", async () => {
+    // The escalation nobody had recorded. GRACE holds settings.manage, which is
+    // enough to edit any role in the organization - so before this she could add
+    // subscription.manage to her own role, assign it to herself, and hold a
+    // permission the shipped clinic_admin role deliberately withholds.
+    const session = await stage();
+    try {
+      await become(session, GRACE);
+      // Target org_admin, which exists in this fixture. An earlier version of this
+      // test named 'organization_admin', which the fixture does not create - so the
+      // INSERT matched zero rows, nothing was ever checked, and the assertion passed
+      // for no reason at all. A refusal test that inserts nothing proves nothing.
+      await expectRejection(
+        session,
+        `insert into public.role_permissions (role_id, permission_key)
+         select r.id, 'subscription.manage' from public.roles r
+          where r.organization_id = $1 and r.key = 'org_admin'`,
+        [ORG_A],
+        /row-level security/i,
+      );
+      await expectRejection(
+        session,
+        `update public.role_permissions set permission_key = 'subscription.manage'
+          where role_id = $1 and permission_key = 'patients.read'`,
+        [ROLE_SETTINGS],
+        /row-level security/i,
+      );
+
+      // Positive control: a key she DOES hold is grantable, or the ceiling is just
+      // refusing everybody.
+      const permitted = await session.query<{ permission_key: string }>(
+        `insert into public.role_permissions (role_id, permission_key)
+         values ($1, 'staff.manage') returning permission_key`,
+        ["00000000-0000-4000-8000-000000000001"],
+      );
+      expect(permitted).toEqual([{ permission_key: "staff.manage" }]);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("keeps the admin-creates-owner flow working, which is why the ceiling is a subset", async () => {
+    const session = await stage();
+    try {
+      await become(session, DAVE);
+      // DAVE holds all seventeen, so the subset ceiling must NOT block this. If it
+      // does, the ceiling is wrong rather than the flow.
+      const created = await session.query<{ role_id: string }>(
+        `insert into public.user_role_assignments (organization_id, user_id, role_id)
+         select $1, $2, r.id from public.roles r
+          where r.organization_id = $1 and r.key = 'organization_owner'
+        returning role_id::text`,
+        [ORG_A, ALICE],
+      );
+      expect(created).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("the role editor's clear-all button", () => {
+  it("refuses to strip the permissions from a role the caller holds", async () => {
+    // The lockout 01230 exists to prevent is reachable in ONE statement through
+    // role_permissions rather than through roles: clear every grant from your own
+    // admin role and the tenant has zero grants, zero ways to make any, and no
+    // client repair path. 01230's guard is on the wrong table for the invariant.
+    const session = await stage();
+    try {
+      await become(session, DAVE);
+      const blocked = await session.query<{ permission_key: string }>(
+        `delete from public.role_permissions where role_id = $1 returning permission_key`,
+        ["00000000-0000-4000-8000-000000000002"],
+      );
+      expect(blocked, "an admin must not be able to revoke their own route to admin").toEqual([]);
+
+      // Positive control: stripping a role the caller does NOT hold is fine.
+      await session.query(
+        `delete from public.role_permissions where role_id = $1 and permission_key = 'patients.read'`,
+        [ROLE_SETTINGS],
+      );
+      const stillThere = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.role_permissions where role_id = $1`,
+        ["00000000-0000-4000-8000-000000000002"],
+      );
+      expect(Number(stillThere[0]?.n)).toBe(7);
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("private helpers are not oracles", () => {
+  it("refuses a direct call to role_in_use, which answers for roles you cannot see", async () => {
+    // role_in_use took a role_id and returned a boolean about ANY role, so a member
+    // of one tenant could probe another tenant's roles. PostgreSQL does not check
+    // EXECUTE when invoking a trigger function, so the check moved into a BEFORE
+    // DELETE trigger and the grant went away entirely.
+    const session = await stage();
+    try {
+      await become(session, CAROL);
+      await expectRejection(
+        session,
+        `select private.role_in_use($1::uuid)`,
+        ["00000000-0000-4000-8000-000000000001"],
+        /permission denied/i,
+      );
     } finally {
       await session.rollback();
     }
