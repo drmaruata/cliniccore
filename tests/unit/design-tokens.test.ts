@@ -2212,8 +2212,12 @@ describe("the hex rule is not vacuous", () => {
     // reasoning: neither is UI surface, but both sit under lib/, and a module
     // that slipped past the gate would let a hard-coded hex into the codebase
     // unnoticed. 17 -> 19 code files; measured.
-    expect(code.length + css.length).toBe(21);
-    expect(code.length).toBe(19);
+    // Task 12 added lib/supabase/{client,server,proxy}.ts, on the same reasoning: none
+    // is UI surface, but all sit under lib/, and a module that slipped past the gate
+    // would let a hard-coded hex into the codebase unnoticed. 19 -> 22 code files.
+    // The ROOT proxy.ts is not counted - it is not under a scan root.
+    expect(code.length + css.length).toBe(24);
+    expect(code.length).toBe(22);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was

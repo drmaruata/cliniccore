@@ -270,3 +270,18 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## Task 13+ : Supabase clients exist, but the browser still cannot onboard
+
+`lib/supabase/` and the root `proxy.ts` landed in Task 12. Two consequences the next
+agent must not have to rediscover:
+
+- **There is no browser-callable RPC.** `types/database.types.ts` has
+  `Functions: { [_ in never]: never }`, because PostgREST exposes only the `public` schema
+  and every helper — including `create_organization_with_owner` — lives in `private`.
+  Measured, not inferred. Until `public` wrappers exist, a signed-in browser cannot create
+  an organization at all. The wrappers are the smaller change and keep the authorization
+  primitives in one place; add them as a migration, never by editing an applied one.
+- **The invitation-acceptance RPC must be a definer.** `organization_memberships` INSERT
+  and DELETE are both closed by policy, so accepting an invitation cannot write the
+  membership row as the caller.

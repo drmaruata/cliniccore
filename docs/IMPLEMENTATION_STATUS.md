@@ -1951,3 +1951,89 @@ the kind of thing this file exists to catch.
   currency symbols and spacing literals are not. A CLDR change that moves a literal into a
   position the removal loop mishandles would break the round trip with no error anywhere,
   and nothing in this codebase could detect it.
+
+## Task 12: Supabase clients and session handling
+
+Brief scope only — the four client modules, the root proxy, and the session test. The
+`public` RPC wrappers that Tasks 5 and 9 flagged are NOT here; see the standing gap below.
+
+### Next.js 16, verified rather than assumed
+
+`middleware.ts`/`middleware` is deprecated in favour of `proxy.ts`/`proxy`, read from
+`node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md` for
+this exact version: the file must live at the project root, it exports `proxy` or a
+default, and `runtime` is **not** an available config option — setting it throws. Edge
+runtime is not supported. A leftover `middleware` export is silently ignored, so the
+session refresh would simply never run; the test asserts the export shape for that
+reason rather than as a formality.
+
+`@supabase/ssr` 0.12.7 requires `createServerClient(url, key, options)` with options
+mandatory, so the env vars are passed explicitly rather than discovered. `createBrowserClient`
+takes the same shape.
+
+### The refresh invariant, and the half of it that is easy to omit
+
+`setAll` must write to BOTH `request.cookies` and the response, and must rebuild
+`NextResponse.next({ request })` each time. MUTATION TESTING showed why the second half
+matters and why a naive test misses it:
+
+| mutation                                         | result                                                                                                                                           |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| write to the response only, not the request      | CAUGHT                                                                                                                                           |
+| never rebuild `NextResponse.next({ request })`   | **RATCHET** until the forwarded-header assertion was added                                                                                       |
+| `getClaims` never awaited, so no refresh happens | CAUGHT                                                                                                                                           |
+| root exports `middleware` instead of `proxy`     | CAUGHT                                                                                                                                           |
+| matcher drops `_next/static`                     | CAUGHT                                                                                                                                           |
+| cleanup silently skipped, leaking probe users    | CAUGHT                                                                                                                                           |
+| initial response built without `{ request }`     | RATCHET, and **benign** — setAll replaces it whenever it matters, and in the no-refresh case the request is unmodified so the two are equivalent |
+
+The rebuild ratchet is the instructive one. `setAll` sets `response.cookies` directly, so
+a proxy that omits the rebuild passes every cookie assertion — while the request the ROUTE
+sees still carries the expired cookie and server components read a stale session. That
+divergence is invisible from `response.cookies`; it surfaces only in
+`x-middleware-request-cookie`, which is what the test now asserts on.
+
+### Supabase rate-limits public signUp, and it presents as flakiness
+
+MEASURED, and it cost real time before it was diagnosed. At three signups per run the
+suite went green, green, then one failure, then three — the signature of a filling rate
+limit window, not a logic bug. Two fixes:
+
+1. **One signup per run**, created in `beforeAll` and shared by every test that only reads
+   a session.
+2. **The sign-out test must be declared last.** `signOut()` defaults to scope `global` and
+   revokes EVERY refresh token for the user, including the shared session. Running it
+   first made three later tests fail with "Invalid Refresh Token: Refresh Token Not Found"
+   — a fixture destroying itself and surfacing as three unrelated failures. Vitest runs a
+   file's tests in declaration order, so placing it last is deterministic; if this file is
+   ever made concurrent it needs its own user.
+3. **A fallback when the public path IS rate-limited**: create the user through the admin
+   endpoint, which is not subject to that limit, and sign in through the PUBLIC client so
+   the session under test is still obtained the ordinary way. The public path is still
+   tried first, because exercising it is the point.
+
+Verified stable afterwards: 6/6 across six consecutive runs, and 6/6 through the fallback
+while the window was still full.
+
+### The one destructive thing here, and how it is verified
+
+Real auth users are created in the live project. `afterAll` deletes them with the service
+role and then **asserts that no `probe-` user survives**, so cleanup failing is a test
+failure rather than a slow leak. Measured residue after every run: 0 users.
+
+### Standing gap, recorded rather than silently deferred
+
+`types/database.types.ts` reports `Functions: { [_ in never]: never }`, and that is
+re-confirmed by the MCP rather than inferred: `private.*` is not exposed by PostgREST, so
+the browser has **no RPC at all** and cannot call `create_organization_with_owner`. Task 12
+was scoped to auth/session by operator decision, so this is NOT closed. Task 12 is also
+where the invitation-acceptance RPC will have to land, because `organization_memberships`
+INSERT and DELETE are both closed and the membership row must be written by a definer.
+
+### Also worth knowing
+
+`server-only` was already pinned at `0.0.1` in `package.json` but was missing from
+`node_modules`; installing it and then reverting the caret npm introduced keeps the
+project's exact-pin convention. `tests/unit/design-tokens.test.ts` pins the number of code
+files under its scan root and correctly broke at 24 — `lib/supabase/{client,server,proxy}.ts`
+are under `lib/`; the ROOT `proxy.ts` is not counted because it is not under a scan root.
