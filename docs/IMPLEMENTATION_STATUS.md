@@ -1796,3 +1796,77 @@ repeatedly, so the exact set of affected dates differs under a newer `tzdata`. A
 non-ASCII-digit locales (ar-EG, bn-IN, fa-IR and about eight others) still throw - documented
 as a limit rather than handled, because a throw is the safe failure, but it needs Unicode
 digit folding if `organizations.locale` ever carries one.
+
+## Task 11 re-review: three wrong designs in a row, and my own tests were the only thing that caught the third
+
+The re-review of `283a422` found HIGH-1 still open and two silent-wrong-amount bugs in
+my own fix. All three are now closed; the sweep numbers are on the other side of them.
+
+### The binary search was wrong because its premise was wrong
+
+I justified it with "a local date at this instant is at or after D is MONOTONE in the
+instant, because a local date only ever moves forward". **That is false.** A fall-back that
+crosses local midnight moves the local date BACKWARDS, so the same calendar day occurs
+twice with a short interval belonging to the previous day in between, and a binary search
+converges on the LAST crossing rather than the first.
+
+MEASURED by the reviewer across all 418 zones and all 14 828 transitions in 1990-2035:
+**57 such events** in Goose_Bay, St_Johns, Moncton and Casey, each returning a window that
+began an hour after its own local midnight. My own "45 738 samples, zero failures" was
+true and not reproducible - I had sampled 22 zones and never the backward-date ones.
+
+### And then the WALK step was wrong too, and only a tiling test caught it
+
+The replacement returns the maximal contiguous run of the local date containing the
+instant. It walks away from the instant in 300-second steps. That still failed, and the
+failure is the most instructive one in this task: at 2005-10-30 in America/St_Johns local
+time passes 00:59 of the 10-30 and then reverts to the 10-29, so the 10-30 run lasts **60
+seconds**. A 300-second step steps straight over it and reports a **25-hour** window that
+**contains the instant** and spans the gap.
+
+So it passed every containment assertion I had written. The ONLY thing that caught it was
+the test asserting adjacent windows meet exactly. A window that spans a gap satisfies
+"contains the instant" and fails "tiles with its neighbour", which is why a tiling
+invariant is worth a test even when every other assertion is green.
+
+MEASURED shortest run anywhere in tzdata 1990-2035: **60 seconds**. The step is now **30
+seconds**, a 2x margin, with a 32-hour bound as the backstop - no real local date occupies
+more than about 32 hours, so an implausible window is refused rather than billed against.
+
+A memo on `(zone, day, hour)` was also unsound and is now self-verifying: two instants in
+the same clock hour can be in different runs, and containment alone does not prove the
+cached window is the right run. The test that reproduced this was order-dependent - it
+passed alone and failed after the preceding test warmed the cache - which is a class of bug
+worth naming, because it only appears when tests share a module-level cache.
+
+### Two silent wrong amounts, both in the fix I wrote for the previous round
+
+**Currency names containing the locale's decimal separator.** parseMinor kept a SET of
+every character the formatter emits and deleted matching characters. When the localised
+currency name contains the decimal separator - "د.إ." contributes a "." - the real
+separator was deleted along with it, and `parseMinor(formatMinor(1n, "AED", "ar"))`
+returned **100** instead of 1. Literals are now removed as whole STRINGS, and what
+remains must match the numeric grammar.
+
+**Locales whose positive rendering carries literals the negative one lacks.** The literal
+alphabet was sampled only from the negative form. In de-CH the negative rendering carries no
+non-breaking space and the positive one does, so the formatter's own output was rejected -
+a hard break for de-CH, en-CH, it-CH and lo, on a tenant-controlled column that has no CHECK
+constraint. The alphabet is now the union of both renderings.
+
+Also closed: digit grouping was never validated, so "₹1,234,56" parsed as 12345600;
+unbalanced parentheses silently negated a charge, so "₹5.00)" became -500; and a
+10-million-digit string became a BigInt.
+
+### Verified after
+
+601 920 samples across all 418 zones and 1990-2035: **zero containment failures**. Every
+zone tiles exactly across a full day, including the four split zones. All of the reviewer's
+specific cases return the right answer now: AED/ar, XCG/he, XCG/km, XCG/fr-CH, EGP/ar-AE and
+KWD/ar all round-trip to 1; CHF/en-CH, de-CH, it-CH, lo and lo-LA all round-trip; the three
+grouping cases and the three unbalanced-bracket cases all throw; the seven split-day cases
+all contain their input.
+
+The lesson worth carrying: **each of my three fixes was justified by an invariant I asserted
+rather than measured**, and each was wrong in the same way - at the boundary where the
+invariant stops holding. Containment is not enough; a window that bridges a gap satisfies it.

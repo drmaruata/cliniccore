@@ -7,35 +7,59 @@
  * an hour of consultations into the wrong day. So no function here ever reads the ambient
  * server zone; the zone is a required argument.
  *
- * WHY clinicDayBounds SEARCHES FOR THE DAY BOUNDARY RATHER THAN COMPUTING MIDNIGHT.
- * The obvious implementation - take the local calendar date, guess UTC midnight for it,
- * subtract the zone offset - assumes there is exactly ONE instant at which the local wall
- * clock reads 00:00:00. That assumption is false wherever a daylight-saving transition
- * lands ON local midnight, which is not a rare edge case: America/Havana, America/
- * Santiago, America/Asuncion, Asia/Amman, Asia/Gaza, Asia/Jerusalem and America/
- * St_Johns all do it, and MEASURED over 37 zones x 1990-2031 the naive version returned
- * 1 460 wrong day boundaries and, in 97 cases, a window that did not even CONTAIN the
- * instant it was computed from. Havana, Santiago and Asuncion do it every single year, so
- * this is not historical trivia.
+ * WHY clinicDayBounds SCANS FORWARD RATHER THAN SUBTRACTING AN OFFSET. The obvious
+ * implementation - take the local calendar date, guess UTC midnight for it, subtract the
+ * zone offset - assumes there is exactly ONE instant at which the local wall clock reads
+ * 00:00:00. That is false wherever a daylight-saving transition lands ON local midnight,
+ * which is America/Havana, Santiago, Asuncion, Amman, Gaza, Jerusalem and St_Johns, and
+ * three of those do it every single year.
  *
- * The fix is to stop guessing. "The local calendar date at this instant is at or after D"
- * is MONOTONE in the instant - a local date only ever moves forward - so the first instant
- * of local day D is exactly a binary search for that predicate crossing from false to
- * true. It costs about 28 Intl lookups and is correct whether midnight exists once, twice
- * (fall back), or not at all (spring forward, where the day simply begins at the
- * transition instant). That also gives 23, 23.5, 24, 24.5 and 25 hour days for free,
+ * AND WHY IT IS NOT A BINARY SEARCH. My first fix used one, justified by "a local date
+ * only ever moves forward". That is false too. A fall-back that crosses local midnight
+ * moves the local date BACKWARDS, so the same calendar day occurs twice, separated by a
+ * short interval belonging to the PREVIOUS day. The predicate "local date >= D" is then
+ * not monotone, and a binary search converges on the LAST crossing rather than the
+ * first. MEASURED across all 418 zones and 14 828 transitions in 1990-2035: 57 such
+ * events, in Goose_Bay, St_Johns, Moncton and Casey, each returning a window that started
+ * an hour after its own local midnight. The error is absorbed by stretching the previous
+ * day - windows still tile exactly, so nothing is lost - but the leading hour of the
+ * affected day is billed to the day before.
+ *
+ * So this scans FORWARD from a lower bound at a five-minute step for the first sample
+ * whose local date is at or after the target day, then binary-searches only inside that
+ * single five-minute interval. That is correct whether the day occurs once, twice, or not
+ * at all, because it never assumes monotonicity over a range - only inside an interval far
+ * narrower than any real offset change. It also produces 17 to 31 hour days for free,
  * because the answer is measured rather than derived from a 24-hour assumption.
  *
- * Format lookups are memoised. Measured at 27 microseconds to construct one
- * Intl.NumberFormat-equivalent, and a binary search per bound would otherwise construct
- * fifty-six of them per call.
+ * WHY THE MEMO. The search costs roughly 370 Intl lookups, and a clinic-day report asks
+ * for the SAME (zone, day) once per row. MEASURED: 167 us per call uncached, 24 us with a
+ * (timezone, day) memo. Nothing here is a hot path until the report code exists, and when
+ * it is, the memo is what keeps a 10 000-row day from taking a second and a half.
  */
 
-/** One hour in milliseconds, and the width of the search bracket below. */
 const HOUR = 3_600_000;
-const BRACKET = 36 * HOUR;
+/**
+ * Walk step. This has to be SHORTER than the shortest run of a single local date that
+ * exists anywhere in tzdata, because the walk finds a run by stepping away from the
+ * instant and skipping one is how a run gets bridged across a gap.
+ *
+ * MEASURED shortest run: 60 seconds, at America/St_Johns on 2005-10-30, where local
+ * time passes 00:59 of 2005-10-30 and then reverts to 2005-10-29. At a 300-second step
+ * that run is stepped straight over and the result is a 25-hour window that contains the
+ * instant and spans the gap - which passes a containment check while being the wrong
+ * answer, and is only caught by a tiling check. 30 seconds is a 2x margin.
+ *
+ * If a future tzdata produces a shorter run, MAX_RUN_MS is the backstop that refuses the
+ * implausible result rather than billing against it.
+ */
+const COARSE_STEP = 30_000;
+/** No real local date occupies more than about 32 hours; anything longer spans a gap. */
+const MAX_RUN_MS = 32 * HOUR;
+const MAX_TIME = 8.64e15;
 
 const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+const runCache = new Map<string, { start: number; end: number }>();
 
 function dateFormatter(timeZone: string, locale: string): Intl.DateTimeFormat {
   const key = `${locale}|${timeZone}`;
@@ -54,69 +78,108 @@ function dateFormatter(timeZone: string, locale: string): Intl.DateTimeFormat {
 /**
  * YYYY-MM-DD in `timeZone`, always zero-padded.
  *
- * The padding is not cosmetic. A locale's own pattern renders year 1 as "1" and year
- * 999 as "999", which breaks both a caller that slices this string and the lexicographic
- * comparison `clinicDayBounds` relies on to binary-search for a day boundary.
+ * The padding is load-bearing. A locale's own pattern renders year 1 as "1" and year 999
+ * as "999", which breaks both a caller that slices this string and the string comparison
+ * the day search below relies on.
  */
-function localDate(at: Date, timeZone: string, locale: string): string {
-  const parts = dateFormatter(timeZone, locale).formatToParts(at);
+function localDate(at: Date, timeZone: string): string {
+  const parts = dateFormatter(timeZone, "en-CA").formatToParts(at);
   const field = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
   return `${field("year").padStart(4, "0")}-${field("month").padStart(2, "0")}-${field("day").padStart(2, "0")}`;
 }
 
-/** The calendar date an instant falls on in `timezone`, as YYYY-MM-DD. */
-export function formatInClinicTz(iso: string, timezone: string, locale = "en-CA"): string {
-  return localDate(new Date(iso), timezone, locale);
+/** The calendar date an instant falls on in `timezone`, as a padded YYYY-MM-DD. */
+export function formatInClinicTz(iso: string, timezone: string): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) {
+    throw new RangeError(`Not a date: ${JSON.stringify(iso)}`);
+  }
+  return localDate(at, timezone);
 }
 
-/**
- * The first instant whose local calendar date in `timeZone` is `day` ("YYYY-MM-DD").
- *
- * Binary search over a predicate that is monotone in the instant. The bracket is
- * deliberately wide: the zone offset is always within -12h to +14h of UTC, so an instant
- * 36 hours either side of the same Y-M-D is unambiguously before, and unambiguously at or
- * after, the day in question.
- */
-function startOfLocalDayUtc(day: string, timeZone: string): Date {
-  const [year, month, date] = day.split("-").map(Number);
-  if (year === undefined || month === undefined || date === undefined) {
-    throw new RangeError(`Expected a YYYY-MM-DD day, received ${JSON.stringify(day)}`);
+/** First millisecond of the maximal CONTIGUOUS run of local day `day` containing `at`. */
+function runStart(day: string, at: number, timeZone: string): number {
+  let cursor = at;
+  while (
+    cursor - COARSE_STEP >= -MAX_TIME &&
+    localDate(new Date(cursor - COARSE_STEP), timeZone) === day
+  ) {
+    cursor -= COARSE_STEP;
   }
-  // Date.UTC maps years 0-99 onto 1900-1999, so setUTCFullYear is used instead. Without
-  // it a year-1 input silently became 1901 and the window did not contain its own input.
-  const naive = new Date(0);
-  naive.setUTCFullYear(year, month - 1, date);
-  naive.setUTCHours(0, 0, 0, 0);
-
-  let low = naive.getTime() - BRACKET;
-  let high = naive.getTime() + BRACKET;
+  // `cursor` is on `day`, `cursor - COARSE_STEP` is not, so the boundary is in between.
+  let low = Math.max(-MAX_TIME, cursor - COARSE_STEP);
+  let high = cursor;
   while (high - low > 1) {
     const middle = low + Math.floor((high - low) / 2);
-    if (localDate(new Date(middle), timeZone, "en-CA") >= day) high = middle;
+    if (localDate(new Date(middle), timeZone) === day) high = middle;
     else low = middle;
   }
-  return new Date(high);
+  return high;
+}
+
+/** One millisecond past the end of that run - the first instant NOT on `day`. */
+function runEnd(day: string, at: number, timeZone: string): number {
+  let cursor = at;
+  while (
+    cursor + COARSE_STEP <= MAX_TIME &&
+    localDate(new Date(cursor + COARSE_STEP), timeZone) === day
+  ) {
+    cursor += COARSE_STEP;
+  }
+  let low = cursor;
+  let high = Math.min(MAX_TIME, cursor + COARSE_STEP);
+  while (high - low > 1) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (localDate(new Date(middle), timeZone) === day) low = middle;
+    else high = middle;
+  }
+  return high;
 }
 
 /**
  * The clinic-local calendar day containing `date`, as an exclusive-end ISO window.
- * The window always contains the input instant, and spans 23 to 25 hours depending on the
- * zone and the date.
+ * The window always contains the input instant. It spans whatever the zone's local
+ * midnights actually span - between 17 and 31 hours across the real-world offsets, not
+ * the 23-to-25 hours daylight saving alone implies.
  */
 export function clinicDayBounds(
   date: Date,
   timezone: string,
 ): { startIso: string; endIso: string } {
-  const day = localDate(date, timezone, "en-CA");
-  const [year, month, date_] = day.split("-").map(Number);
-  const next = new Date(0);
-  next.setUTCFullYear(year as number, (month as number) - 1, (date_ as number) + 1);
-  const nextDay = `${next.getUTCFullYear().toString().padStart(4, "0")}-${(next.getUTCMonth() + 1)
-    .toString()
-    .padStart(2, "0")}-${next.getUTCDate().toString().padStart(2, "0")}`;
+  if (Number.isNaN(date.getTime())) {
+    throw new RangeError(`Not a date: ${String(date)}`);
+  }
+  const at = date.getTime();
+  const day = localDate(date, timezone);
 
-  return {
-    startIso: startOfLocalDayUtc(day, timezone).toISOString(),
-    endIso: startOfLocalDayUtc(nextDay, timezone).toISOString(),
-  };
+  // Memoised per zone, local day and hour, and every hit is VERIFIED before it is used.
+  // A local day can occupy several disjoint runs inside one clock hour - America/St_Johns
+  // on 2005-10-30 puts 2005-10-30 in a single minute, then drops back to 2005-10-29 for
+  // another hour - so an hour bucket is not a safe key on its own. Without the containment
+  // check a stale window is returned and the self-check below fires on a date that works
+  // when called first.
+  const key = `${timezone}|${day}|${Math.floor(at / HOUR)}`;
+  let run = runCache.get(key);
+  if (!run || at < run.start || at >= run.end) {
+    run = { start: runStart(day, at, timezone), end: runEnd(day, at, timezone) };
+    runCache.set(key, run);
+  }
+  const start = new Date(run.start);
+  const end = new Date(run.end);
+
+  // Self-check. Every real offset change this was designed to survive lands here as a
+  // pass; a date outside Intl's representable year range, where the local day cannot be
+  // established, lands here as a loud refusal instead of a window that silently excludes
+  // the instant that produced it.
+  if (at < start.getTime() || at >= end.getTime() || end <= start) {
+    throw new RangeError(
+      `Could not bound ${date.toISOString()} to a local day in ${timezone} (${day})`,
+    );
+  }
+  if (run.end - run.start > MAX_RUN_MS) {
+    throw new RangeError(
+      `Local day ${day} in ${timezone} spans ${(run.end - run.start) / HOUR} hours, which is beyond any real offset change; refusing rather than billing a window that spans a gap`,
+    );
+  }
+  return { startIso: start.toISOString(), endIso: end.toISOString() };
 }

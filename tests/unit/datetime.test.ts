@@ -191,3 +191,83 @@ describe("the date string is always four-digit padded", () => {
     expect(bounds.startIso.startsWith("0001-06-1")).toBe(true);
   });
 });
+
+describe("a fall-back that crosses local midnight", () => {
+  // The second time this bug appeared, and the harder one. A fall-back that moves the
+  // local date BACKWARDS makes one calendar day occupy two disjoint stretches of real
+  // time, so "the local day" is not one interval. My first fix assumed a local date only
+  // ever moves forward and binary-searched for the crossing - which converges on the
+  // LAST crossing, not the first. MEASURED: 57 such events in Goose_Bay, St_Johns,
+  // Moncton and Casey, each returning a window that began an hour after its own midnight.
+  //
+  // The rule now is the maximal CONTIGUOUS run of the local date containing the instant,
+  // which is what a contiguous window can honestly represent, and which tiles exactly.
+  it("returns the run containing the instant, for every split the reviewer named", () => {
+    const cases = [
+      ["America/Goose_Bay", "1990-10-28T03:00:00Z"],
+      ["America/Goose_Bay", "1990-10-28T03:01:00Z"],
+      ["America/Moncton", "1993-10-31T03:00:00Z"],
+      ["America/St_Johns", "2005-10-30T02:30:00Z"],
+      ["America/St_Johns", "2005-10-30T02:31:00Z"],
+      ["Antarctica/Casey", "2010-03-04T15:00:00Z"],
+    ] as const;
+    for (const [zone, iso] of cases) {
+      const at = new Date(iso).getTime();
+      const bounds = clinicDayBounds(new Date(iso), zone);
+      const start = new Date(bounds.startIso).getTime();
+      const end = new Date(bounds.endIso).getTime();
+      expect(start, `${zone} ${iso}`).toBeLessThanOrEqual(at);
+      expect(end, `${zone} ${iso}`).toBeGreaterThan(at);
+      expect(formatInClinicTz(bounds.startIso, zone)).toBe(formatInClinicTz(iso, zone));
+    }
+  });
+
+  it("tiles a split day with no gap and no overlap", () => {
+    // Adjacent distinct windows must meet exactly. A gap silently loses billable time
+    // and an overlap double-counts it.
+    const distinct = (zone: string, baseIso: string) => {
+      const base = new Date(baseIso).getTime();
+      const windows: string[] = [];
+      let previous: string | null = null;
+      for (let step = 0; step < 288; step += 1) {
+        const bounds = clinicDayBounds(new Date(base + step * 300_000), zone);
+        const signature = `${bounds.startIso}|${bounds.endIso}`;
+        if (signature === previous) continue;
+        if (previous !== null && windows.length > 0) {
+          expect(bounds.startIso, `${zone} must meet the previous window exactly`).toBe(
+            windows[windows.length - 1],
+          );
+        }
+        windows.push(bounds.endIso);
+        previous = signature;
+      }
+      return windows.length;
+    };
+    expect(distinct("America/St_Johns", "2005-10-30T00:00:00Z")).toBeGreaterThan(1);
+    expect(distinct("America/Goose_Bay", "1990-10-28T00:00:00Z")).toBeGreaterThan(1);
+    expect(distinct("Asia/Kolkata", "2026-10-14T00:00:00Z")).toBeGreaterThan(0);
+  });
+
+  it("is not fooled by two runs inside one clock hour", () => {
+    // America/St_Johns puts 2005-10-30 into a SINGLE MINUTE at 02:30Z and then reverts
+    // to 2005-10-29. Two instants in the same hour are in different runs, so a cache
+    // keyed on the hour alone returns a window belonging to the other one.
+    const before = clinicDayBounds(new Date("2005-10-30T02:25:00Z"), "America/St_Johns");
+    const during = clinicDayBounds(new Date("2005-10-30T02:30:00Z"), "America/St_Johns");
+    const after = clinicDayBounds(new Date("2005-10-30T02:31:00Z"), "America/St_Johns");
+    expect(formatInClinicTz(before.startIso, "America/St_Johns")).toBe("2005-10-29");
+    expect(formatInClinicTz(during.startIso, "America/St_Johns")).toBe("2005-10-30");
+    expect(formatInClinicTz(after.startIso, "America/St_Johns")).toBe("2005-10-29");
+    expect(during.endIso).not.toBe(after.endIso);
+  });
+});
+
+describe("dates outside what Intl can represent", () => {
+  it("refuses rather than returning a window that excludes its input", () => {
+    // A date ICU will not render has no established local day, so the answer is a loud
+    // refusal rather than a plausible-looking wrong window.
+    expect(() => clinicDayBounds(new Date(Number.NaN), "UTC")).toThrow(RangeError);
+    expect(() => clinicDayBounds(new Date("not a date"), "UTC")).toThrow(RangeError);
+    expect(() => formatInClinicTz("not a date", "UTC")).toThrow(RangeError);
+  });
+});

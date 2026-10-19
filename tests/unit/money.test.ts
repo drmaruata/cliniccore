@@ -176,3 +176,60 @@ describe("locales beyond the default", () => {
     expect(() => parseMinor(rendered, "INR", "ar-EG")).toThrow();
   });
 });
+
+describe("localised currency names that contain the separator", () => {
+  // N1. Keeping a SET of every character the formatter emits, and deleting matching
+  // characters, is wrong when the currency's localised name contains the locale's own
+  // decimal separator: "د.إ." contributes a "." indistinguishable from the decimal
+  // point, so the real separator was deleted along with it and the amount came back 100x
+  // too large. MEASURED before the fix, on the formatter's own output.
+  it("round-trips where the currency name contains the decimal separator", () => {
+    for (const [currency, locale] of [
+      ["AED", "ar"],
+      ["XCG", "he"],
+      ["XCG", "km"],
+      ["XCG", "fr-CH"],
+      ["EGP", "ar-AE"],
+      ["KWD", "ar"],
+    ] as const) {
+      expect(parseMinor(formatMinor(1n, currency, locale), currency, locale), `${locale}`).toBe(1n);
+      expect(
+        parseMinor(formatMinor(123456n, currency, locale), currency, locale),
+        `${locale}`,
+      ).toBe(123456n);
+    }
+  });
+
+  it("round-trips locales whose positive rendering carries literals the negative one lacks", () => {
+    // N2. The literal alphabet was sampled only from the negative form. In de-CH the
+    // negative rendering has no non-breaking space and the positive one does, so the
+    // formatter's own output was rejected.
+    for (const locale of ["en-CH", "de-CH", "it-CH", "lo", "lo-LA"]) {
+      expect(parseMinor(formatMinor(100n, "CHF", locale), "CHF", locale), locale).toBe(100n);
+    }
+  });
+
+  it("rejects a misplaced separator instead of concatenating the digits", () => {
+    // N3. Removing non-digits is not enough: these would each parse as a plausible but
+    // wrong amount.
+    expect(() => parseMinor("₹1,234,56", "INR")).toThrow();
+    expect(() => parseMinor("₹1,23", "INR")).toThrow();
+    expect(() => parseMinor("₹123,45", "INR")).toThrow();
+    // The correctly grouped forms still parse.
+    expect(parseMinor("₹1,234.56", "INR")).toBe(123456n);
+    expect(parseMinor("₹12,34,567.89", "INR")).toBe(123456789n);
+  });
+
+  it("rejects an unbalanced bracket rather than silently negating", () => {
+    // N5. A typo in a pasted field must not turn a charge into a credit.
+    expect(() => parseMinor("₹5.00)", "INR")).toThrow();
+    expect(() => parseMinor("₹(5.00)", "INR")).toThrow();
+    expect(() => parseMinor("₹1,000.00)", "INR")).toThrow();
+    // Balanced still means negative.
+    expect(parseMinor("(₹5.00)", "INR")).toBe(-500n);
+  });
+
+  it("refuses an absurdly long input rather than building a huge BigInt", () => {
+    expect(() => parseMinor("1".repeat(10_000) + ".00", "INR")).toThrow(RangeError);
+  });
+});

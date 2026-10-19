@@ -210,13 +210,20 @@ These were all measured. Each one silently produces a green build and a wrong re
   whitespace, semicolons and union pipes, both files hash to the same value. `types/` is
   deliberately _not_ in `.prettierignore` (unlike `components/ui`) so the format gate still
   covers a file the application imports.
-- **`clinicDayBounds` searches for the day boundary; do not "optimise" it into computing local
-  midnight.** Subtracting the zone offset from a UTC-midnight guess assumes exactly one instant
-  reads `00:00:00` local. That is false wherever a DST transition lands _on_ local midnight —
-  Havana, Santiago, Asuncion, Amman, Gaza, Jerusalem and St_Johns all do, and three recur every
-  year. Measured over 37 zones × 1990-2031 the naive version returned **1 460 wrong day
-  boundaries and 97 windows that did not contain the instant they were computed from**. The
-  binary search is not gold-plating; it is the fix.
+- **`clinicDayBounds` walks for the day boundary, and the walk step is load-bearing — do not
+  "optimise" it into a binary search or a local-midnight calculation.** Three wrong designs in a row:
+  (1) subtracting the zone offset from a UTC-midnight guess assumes one instant reads `00:00:00` local,
+  false where a DST transition lands _on_ local midnight — Havana, Santiago, Asuncion, Amman, Gaza,
+  Jerusalem, St_Johns, three of them every year, **1 460 wrong boundaries and 97 windows that excluded
+  their own input** over 37 zones × 1990-2031; (2) a binary search justified by "a local date only ever
+  moves forward", which is false — a fall-back crossing local midnight moves it **backwards**, so the
+  search converges on the LAST crossing, **57 more cases** across all 418 zones; (3) a 300-second walk
+  step, which steps _over_ a 60-second run (St_Johns 2005-10-30) and returns a window that contains the
+  instant but **spans the gap** — it passes containment and fails only a tiling check. The step is
+  therefore **30 seconds**, a 2× margin under the measured shortest run, with a 32-hour sanity bound as
+  backstop. **MEASURED: 601 920 samples over all 418 zones, zero failures; every zone tiles exactly.**
+  Cost: ~30 ms for the first call per `(zone, day, hour)`, then memoised. If a future tzdata yields a
+  shorter run, `MAX_RUN_MS` refuses the implausible window rather than billing against it.
 
 ## Testing quirks
 
