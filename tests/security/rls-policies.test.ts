@@ -635,10 +635,18 @@ dbDescribe("suspension cuts access but not restoration", () => {
       await session.resetRole();
       await become(session, OPERATOR);
       const operatorView = await session.query<{ slug: string }>(
-        `select slug from public.organizations order by slug`,
+        `select slug from public.organizations where slug in ('rls-a','rls-b','rls-s') order by slug`,
       );
       // The operator must still see the suspended tenant, or they can never
       // restore it - which is the only reason they exist.
+      //
+      // Scoped to THIS test's slugs rather than all organizations. The operator's
+      // view is global by policy (private.is_platform_admin sees every tenant), so
+      // a global assertion here depends on no other suite having created an
+      // organization - which stopped being true once active-org.test.ts landed.
+      // The invariant under test is "the three rls-* tenants, including the
+      // suspended one, are visible", not "these are the only tenants in the
+      // database".
       expect(operatorView.map((r) => r.slug)).toEqual(["rls-a", "rls-b", "rls-s"]);
     } finally {
       await session.rollback();

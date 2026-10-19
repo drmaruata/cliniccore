@@ -2456,3 +2456,103 @@ getter to throw INSIDE error handling, converting a handled 500 into an unhandle
 Only an `AppError` contributes a message, because an `AppError` message is authored by us. A
 thrown object carrying a convincing `status` and `message` is not honoured: it would let a
 thrower pick both halves of the response.
+
+## Task 13 review: two ratchets in a new shape, and an overstated matrix
+
+Review of `211b0d8`. Verdict: complete, not blocked - every interface behaves correctly under
+every externally-reachable attack. What it found was test-suite blind spots, plus one
+measurement of mine that did not survive being checked.
+
+### CORRECTION FIRST, because it is mine
+
+The previous entry reported "Mutation matrix: 10 of 10, zero ratchets." That is overstated.
+Two of the ten entries, as literally described, do not turn the suite red:
+
+- "a dead cookie falling back" was only red in its crude form (fall back to the FIRST
+  membership). The subtle form - fall back to the SOLE remaining membership when the cookie
+  is dead - survived green, because both shipped dead-cookie tests left TWO memberships
+  behind, where that branch cannot run (review F1).
+- "memberships not scoped to the user" survived green, because RLS already restricts the
+  rows and the fixture's orgs contained only the probe user, so the missing filter was
+  unobservable (M2).
+
+The reviewer verified 8 of the 10 as genuinely red, and found TWO ratchets the matrix did not
+contain at all. The matrix was a real measurement of the wrong things, which is the exact
+failure mode this file exists to catch.
+
+### The two new ratchets, both fixture blind spots rather than assertion errors
+
+**F1: the dead-cookie rule was untested in the only state where a fallback can fire.**
+Removing the user's membership from the cookie's org while TWO others remained meant the
+sole-survivor branch could never run. Adding a test that leaves EXACTLY ONE survivor closes
+it: the mutation now fails 8 tests.
+
+**F2: userCan's organization scoping was unobservable.** The fixture granted roles in
+exactly one organization, so dropping `.eq("organization_id", org.id)` from the assignment
+query could not change any answer. The probe user now holds a DIFFERENT grant in a SECOND
+organization, and the test asserts the two never agree: acting in org A, the grant held in
+org B must read false, and vice versa.
+
+### F5: userCan now mirrors private.can's platform refusal - and the test can see it
+
+`userCan` diverged from `private.can` on platform keys: a platform role assigned within a
+tenant would have made `userCan("platform.tenants.manage")` return true while the database
+refuses the request - exactly the divergence the helper exists to prevent. One line mirrors
+`can`'s refusal: `permission.startsWith("platform.")` returns false.
+
+And the test for it was ANOTHER instance of the standing failure: it asserted `false` while
+the fixture held no platform grants, so the answer was false with or without the refusal -
+which is why removing the refusal kept the suite green even after the code was fixed. The
+fixture now REALLY grants `platform.tenants.read` to the probe user's tenant role, and the
+test proves the grant exists before asserting the refusal suppresses it.
+
+### F4: the flip test consumed the fixture for the tests after it
+
+The `userCan` flip test deleted the assignment and never restored it, so the two tests
+following it ran with zero assignments and their `false` expectations were satisfied by the
+fixture rather than by the guards they name. The assignment is now restored and re-asserted.
+
+### F8: suspended org and revoked membership - correct, and now pinned
+
+MEASURED by the reviewer against the applied policies: `private.is_member` requires
+`m.status = 'active' AND o.status = 'active'`, and the unique `(organization_id, user_id)`
+constraint makes a revoked row the user's only row for that org - invisible to them. So a
+suspended organization and a revoked membership both resolve to null, and the code has NO
+status logic of its own; the invariant is 100% RLS-carried.
+
+That was the risk: the module header claimed behavior nothing tested, and if the SELECT
+policy is ever "simplified" to `user_id = auth.uid()`, revoked memberships would resolve
+with nothing failing loudly. Both cases are now pinned by fixtures - a suspended
+organization and a revoked membership each resolve to null however the cookie points.
+
+### F6: the seeded platform role finally has a positive existence test
+
+Every test mentioning `platform_super_admin` asserted it is ABSENT from something, which is
+trivially satisfied when the row is missing - the state this repository was actually in for
+a while, silently. `tests/integration/platform-seed.test.ts` now asserts it EXISTS with
+exactly its four grants, and that the grant KEYS match the registry rather than merely
+counting to four, so a drifted seed is caught by name.
+
+### Verified as genuinely correct, and worth knowing
+
+- `toSafeResponse`'s boundary holds under every externally-reachable shape the reviewer could
+  construct: circular structures, throwing getters, `Symbol.hasInstance` objects, cause
+  chains, PostgREST bodies. In-process shapes that DO pass - a Proxy around a real AppError,
+  `Object.create(AppError.prototype)`, a NaN status - all require access to the class, and
+  no library, driver or PostgREST error is an AppError. Forward rules recorded for
+  Tasks 15-17: never build an AppError message or code from request- or DB-derived text, and
+  never put `code` in a header.
+- The active-org invariant is RLS-carried and verified APPLIED, not just written.
+- The onboarding-rpc rescope is sound, not a weakening: every count is scoped to the
+  organization that call created, a missing row yields NaN rather than a pass, and the
+  global form was un-runnable in parallel by construction.
+- Migration 01500 is byte-equivalent in effect to 00400's seed, correctly filed, and the live
+  database matches its migrations exactly - verified read-only.
+
+### Mutation matrix after the fixes
+
+Dead-cookie sole-survivor fallback (F1); userCan organization scoping dropped (F2); the
+platform-key refusal removed (F5); stale cookie trusted; ambiguous choice picks the first;
+unauthenticated not short-circuited; userCan hard-coded true; requireActiveOrg returns null;
+the cookie made script-readable; toSafeResponse forwarding any Error message. **All ten
+caught, with the fixture states that make each observable.**

@@ -217,6 +217,72 @@ it("falls back to the sole membership only when there is no cookie at all", asyn
   await admin().from("organization_memberships").delete().eq("organization_id", solo);
 });
 
+it("does not fall back when the cookie named a real org that died and exactly one remains", async () => {
+  // THE ONE STATE THE FALLBACK CAN ACTUALLY FIRE IN, and the seventh ratchet this
+  // repository has caught. MEASURED: both shipped dead-cookie tests left TWO memberships
+  // behind, where the sole-survivor fallback branch cannot run - so replacing that branch
+  // with "fall back to the only one left" kept the entire suite green. The shipped code is
+  // right; only this test could see it.
+  const doomed = await makeOrg(`lone-${Date.now()}`);
+  await join(doomed);
+  selectOrg(doomed);
+  expect((await activeOrg.getActiveOrg())?.id).toBe(doomed);
+
+  await admin()
+    .from("organization_memberships")
+    .delete()
+    .eq("organization_id", doomed)
+    .eq("user_id", userId);
+
+  // orgA and orgB memberships still exist... temporarily remove orgA so exactly ONE
+  // membership (orgB) remains, which is the state the fallback could fire in.
+  await admin()
+    .from("organization_memberships")
+    .delete()
+    .eq("organization_id", orgA)
+    .eq("user_id", userId);
+
+  const resolved = await activeOrg.getActiveOrg();
+  expect(resolved).toBeNull();
+
+  await join(orgA);
+});
+
+it("returns null for a SUSPENDED organization, however the cookie points at it", async () => {
+  // The header claims "an organization that is suspended resolves to null". Nothing tested
+  // it. MEASURED against the applied policies: this is carried entirely by RLS -
+  // private.is_member requires organizations.status = 'active' - and the code has NO
+  // status logic of its own. If the SELECT policy is ever "simplified" to
+  // user_id = auth.uid(), this resolves to a suspended tenant with nothing failing loudly,
+  // so the behaviour is pinned here.
+  const suspended = await makeOrg(`susp-${Date.now()}`);
+  await join(suspended);
+  selectOrg(suspended);
+  expect((await activeOrg.getActiveOrg())?.id).toBe(suspended);
+
+  await admin().from("organizations").update({ status: "suspended" }).eq("id", suspended);
+
+  expect(await activeOrg.getActiveOrg()).toBeNull();
+});
+
+it("returns null for a REVOKED membership, not the organization it points at", async () => {
+  // Same mechanism, other half: the membership row still EXISTS but is not active, so
+  // the unique (organization_id, user_id) constraint makes it the user's only row for
+  // that org - and RLS makes it invisible to them.
+  const revoked = await makeOrg(`revoked-${Date.now()}`);
+  await join(revoked);
+  selectOrg(revoked);
+  expect((await activeOrg.getActiveOrg())?.id).toBe(revoked);
+
+  await admin()
+    .from("organization_memberships")
+    .update({ status: "revoked" })
+    .eq("organization_id", revoked)
+    .eq("user_id", userId);
+
+  expect(await activeOrg.getActiveOrg()).toBeNull();
+});
+
 it("returns null with no cookie and several memberships, rather than picking one", async () => {
   clearOrg();
   expect(await activeOrg.getActiveOrg()).toBeNull();
@@ -258,80 +324,128 @@ describe("setActiveOrg", () => {
 describe("userCan", () => {
   // A POSITIVE CONTROL, added because the first version of this block was a ratchet.
   //
-  // MEASURED: with the probe user holding NO roles, `userCan` returned false for
-  // everything via the `roleIds.length === 0` guard, never reaching the permission lookup
-  // at all - so replacing that lookup with a hard-coded `return true` left the suite green.
-  // A control whose expected value is identical for a permitted and an unpermitted
-  // principal proves nothing, and this one had exactly that shape.
+  // MEASURED: with the probe user holding NO roles, userCan returned false for everything
+  // via the empty-assignment guard, never reaching the permission lookup at all - so
+  // replacing that lookup with a hard-coded 'return true' left the suite green. A control
+  // whose expected value is identical for a permitted and an unpermitted principal proves
+  // nothing, and this one had exactly that shape.
   //
-  // The fix gives the user a real org-scoped role with a real grant, and asserts the answer
-  // MOVES when the grant is removed. A tenant role is created here because the database
-  // seeds only the platform role globally - tenant roles are created per organization by
-  // onboarding - so the fixture has to create one to have anything to grant.
-  let roleId = "";
-  const GRANTED = "settings.manage";
-  const NOT_GRANTED = "patients.export";
+  // A SECOND reason this block was rebuilt: the fixture granted roles in exactly ONE
+  // organization, so dropping the organization scoping from the assignment query was also
+  // unobservable - the seventh ratchet this repository has caught. The probe user now holds
+  // a DIFFERENT grant in a SECOND organization, and the two must never agree.
+  let roleA = "";
+  let roleB = "";
+  const IN_A = "settings.manage";
+  const IN_B = "patients.read";
 
   beforeAll(async () => {
-    const { data: role, error } = await admin()
-      .from("roles")
-      .insert({ key: "active_org_probe", name: "Active org probe", organization_id: orgA })
-      .select("id")
-      .single();
-    if (error) throw error;
-    roleId = role.id as string;
+    const mk = async (orgId: string, key: string, name: string, grant: string) => {
+      const { data: role, error } = await admin()
+        .from("roles")
+        .insert({ key, name, organization_id: orgId })
+        .select("id")
+        .single();
+      if (error) throw new Error(`roles insert: ${error.message}`);
+      const g = await admin()
+        .from("role_permissions")
+        .insert({ role_id: role.id, permission_key: grant });
+      if (g.error) throw new Error(`role_permissions insert: ${g.error.message}`);
+      const a = await admin()
+        .from("user_role_assignments")
+        .insert({ organization_id: orgId, user_id: userId, role_id: role.id });
+      if (a.error) throw new Error(`user_role_assignments insert: ${a.error.message}`);
+      return role.id as string;
+    };
+    roleA = await mk(orgA, "active_org_probe_a", "Probe A", IN_A);
 
-    const grant = await admin()
+    // orgB is also a real membership (created in the outer beforeAll), so a role there is a
+    // legitimate thing for this user to hold - and exactly what makes cross-org leakage in
+    // the query observable.
+    // A platform key attached to a TENANT role - the exact shape the review's F5
+    // described. permissions is one global table with no scope column, so a tenant can
+    // attach one to its own role, and the assignment policy constrains only
+    // organization_id, not the role's own organization. private.can refuses such keys
+    // server-side; the helper must refuse them too, and this row is what makes the
+    // refusal observable instead of dead code.
+    const platformGrant = await admin()
       .from("role_permissions")
-      .insert({ role_id: roleId, permission_key: GRANTED });
-    if (grant.error) throw new Error(`role_permissions insert: ${grant.error.message}`);
-    const assign = await admin()
-      .from("user_role_assignments")
-      .insert({ organization_id: orgA, user_id: userId, role_id: roleId });
-    if (assign.error) throw new Error(`user_role_assignments insert: ${assign.error.message}`);
+      .insert({ role_id: roleA, permission_key: "platform.tenants.read" });
+    if (platformGrant.error)
+      throw new Error(`platform grant insert: ${platformGrant.error.message}`);
+
+    roleB = await mk(orgB, "active_org_probe_b", "Probe B", IN_B);
   });
 
   afterAll(async () => {
-    await admin().from("user_role_assignments").delete().eq("role_id", roleId);
-    await admin().from("role_permissions").delete().eq("role_id", roleId);
-    await admin().from("roles").delete().eq("id", roleId);
+    for (const roleId of [roleA, roleB].filter(Boolean)) {
+      await admin().from("user_role_assignments").delete().eq("role_id", roleId);
+      await admin().from("role_permissions").delete().eq("role_id", roleId);
+      await admin().from("roles").delete().eq("id", roleId);
+    }
   });
 
-  it("reports a permission the database actually grants", async () => {
+  it("reports the grant held in the organization being acted in", async () => {
     selectOrg(orgA);
-    expect(await activeOrg.userCan(GRANTED)).toBe(true);
+    expect(await activeOrg.userCan(IN_A)).toBe(true);
   });
 
-  it("reports a permission this role does not hold", async () => {
+  it("scopes the answer to the active organization, never the user's other roles", async () => {
+    // The assertion that makes the organization filter load-bearing. The user genuinely
+    // holds IN_B - in orgB - so a query that forgot the organization scope would answer
+    // true here, and the UI would render a control the database would refuse.
     selectOrg(orgA);
-    // Same user, same organization, same role - so the only difference from the case above
-    // is the permission. Without both, the test could not tell "reads the grants" from
-    // "answers something plausible".
-    expect(await activeOrg.userCan(NOT_GRANTED)).toBe(false);
+    expect(await activeOrg.userCan(IN_B)).toBe(false);
+    selectOrg(orgB);
+    expect(await activeOrg.userCan(IN_B)).toBe(true);
+    expect(await activeOrg.userCan(IN_A)).toBe(false);
+    selectOrg(orgA);
   });
 
   it("flips when the assignment is withdrawn", async () => {
     selectOrg(orgA);
-    expect(await activeOrg.userCan(GRANTED)).toBe(true);
+    expect(await activeOrg.userCan(IN_A)).toBe(true);
 
-    await admin().from("user_role_assignments").delete().eq("role_id", roleId);
+    await admin().from("user_role_assignments").delete().eq("role_id", roleA);
 
     // The claim changed in the database; the answer must change with it. This is the
     // assertion a hard-coded return cannot survive.
-    expect(await activeOrg.userCan(GRANTED)).toBe(false);
+    expect(await activeOrg.userCan(IN_A)).toBe(false);
+
+    // RESTORED, deliberately. An earlier version deleted the assignment and left it
+    // deleted, so the two tests after it ran with zero assignments and their 'false'
+    // expectations were satisfied by the fixture rather than by the guard they name.
+    const restore = await admin()
+      .from("user_role_assignments")
+      .insert({ organization_id: orgA, user_id: userId, role_id: roleA });
+    if (restore.error) throw new Error(`restore: ${restore.error.message}`);
+    expect(await activeOrg.userCan(IN_A)).toBe(true);
   });
 
-  it("never reports a platform-scoped permission to a tenant member", async () => {
-    // private.can refuses any key beginning `platform.`, because permissions is one global
-    // table and a tenant could otherwise attach one to its own role. A client-side helper
-    // that skipped that rule would offer an admin a control the database will refuse.
+  it("never reports a platform-scoped permission, even one the database really grants", async () => {
+    // MEASURED, twice. The first version of this test asserted userCan("platform.*") is
+    // false while the fixture held NO platform grants, so the answer was false with or
+    // without the refusal - a control whose expected value is identical for a permitted
+    // and an unpermitted principal, the sixth time this repository has caught exactly
+    // that shape. The fixture now REALLY grants platform.tenants.read to the probe user's
+    // tenant role, so the refusal is the only thing standing between the database and a
+    // "true" that would render a control the database would refuse.
+    //
+    // Prove the fixture first, so the assertion below cannot pass vacuously.
+    const held = await admin()
+      .from("role_permissions")
+      .select("permission_key")
+      .eq("role_id", roleA);
+    expect(held.data?.map((r) => r.permission_key)).toContain("platform.tenants.read");
+
     selectOrg(orgA);
+    expect(await activeOrg.userCan("platform.tenants.read")).toBe(false);
     expect(await activeOrg.userCan("platform.tenants.manage")).toBe(false);
   });
 
   it("is false with no active organization", async () => {
     clearOrg();
-    expect(await activeOrg.userCan(GRANTED)).toBe(false);
+    expect(await activeOrg.userCan(IN_A)).toBe(false);
     selectOrg(orgA);
   });
 });

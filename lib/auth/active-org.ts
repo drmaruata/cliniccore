@@ -142,6 +142,12 @@ export async function setActiveOrg(orgId: string): Promise<void> {
  * changed since the app shipped. It does not consult a compiled-in list.
  */
 export async function userCan(permission: PermissionKey): Promise<boolean> {
+  // Mirrors private.can's platform refusal, for the same reason it has one: `permissions`
+  // is one global table with no scope column, and a tenant can attach a platform key to its
+  // own role. The database would refuse the request; a helper that answered `true` would
+  // render a control that does nothing when clicked.
+  if (permission.startsWith("platform.")) return false;
+
   const supabase = await createServerClient();
   const {
     data: { user },

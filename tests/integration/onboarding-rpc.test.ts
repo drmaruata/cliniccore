@@ -99,7 +99,9 @@ dbDescribe("create_organization_with_owner", () => {
       const owner = await session.query<{ role_key: string; clinic_scoped: boolean }>(
         `select r.key as role_key, a.clinic_id is not null as clinic_scoped
            from public.user_role_assignments a
-           join public.roles r on r.id = a.role_id`,
+           join public.roles r on r.id = a.role_id
+          where a.organization_id = $1`,
+        [orgId],
       );
       // Org-wide: an owner administers the organization, not one clinic.
       expect(owner[0]?.role_key).toBe("organization_owner");
