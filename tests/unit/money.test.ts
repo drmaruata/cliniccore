@@ -200,13 +200,48 @@ describe("localised currency names that contain the separator", () => {
     }
   });
 
-  it("round-trips locales whose positive rendering carries literals the negative one lacks", () => {
-    // N2. The literal alphabet was sampled only from the negative form. In de-CH the
-    // negative rendering has no non-breaking space and the positive one does, so the
-    // formatter's own output was rejected.
-    for (const locale of ["en-CH", "de-CH", "it-CH", "lo", "lo-LA"]) {
-      expect(parseMinor(formatMinor(100n, "CHF", locale), "CHF", locale), locale).toBe(100n);
+  it("round-trips BOTH signs in locales that place the minus oddly", () => {
+    // Round 3 of the review found the mirror image of the bug above: the literal
+    // alphabet fix was verified only on POSITIVE amounts, and the negative rendering of
+    // these ten locales puts the minus in the MIDDLE - de-CH emits "₹-1'234.56" - so the
+    // parser read it as an interior sign and threw on the formatter's own output.
+    // MEASURED: 126 040 negative renderings rejected. Both signs are asserted here so
+    // neither side can regress alone again.
+    for (const locale of [
+      "de-CH",
+      "en-CH",
+      "it-CH",
+      "lo",
+      "lo-LA",
+      "nl",
+      "nl-BE",
+      "es-CL",
+      "es-PY",
+      "es-VE",
+    ]) {
+      for (const amount of [100n, -100n, 123456n, -123456n, -1n]) {
+        expect(
+          parseMinor(formatMinor(amount, "CHF", locale), "CHF", locale),
+          `${locale} ${amount}n`,
+        ).toBe(amount);
+      }
     }
+  });
+
+  it("reads a single-decimal paste as the cent it denotes", () => {
+    // The fraction is one or two digits by design, so "₹5.5" is a legal paste and means
+    // 550 paise. Removing the pad silently turned it into 505 - the one mutation in the
+    // whole matrix that produced a wrong amount rather than a throw.
+    expect(parseMinor("₹5.5", "INR")).toBe(550n);
+    expect(parseMinor("₹1234.9", "INR")).toBe(123490n);
+    expect(parseMinor("₹0.5", "INR")).toBe(50n);
+  });
+
+  it("rejects a decimal point with no digits after it", () => {
+    // Guarded by the shape grammar alone, so it needs pinning: without it this parses as
+    // 500 instead of refusing.
+    expect(() => parseMinor("₹5.", "INR")).toThrow();
+    expect(() => parseMinor("₹.", "INR")).toThrow();
   });
 
   it("rejects a misplaced separator instead of concatenating the digits", () => {

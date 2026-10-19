@@ -1870,3 +1870,84 @@ all contain their input.
 The lesson worth carrying: **each of my three fixes was justified by an invariant I asserted
 rather than measured**, and each was wrong in the same way - at the boundary where the
 invariant stops holding. Containment is not enough; a window that bridges a gap satisfies it.
+
+## Task 11 third review: clinicDayBounds survived; one HIGH closed in parseMinor
+
+Third review of `ca50bec`.
+
+### clinicDayBounds: could not be broken
+
+Three independent oracles (a definition-level five-condition predicate, a transition-table
+bracket-and-bisect, and pure tiling), over all 418 zones and 1883-2036:
+
+- 3 855 280 probes at every transition, 1990-2036, at T-1/T/T+1 plus every second for
+  +/-120 s - **0 problems**
+- 2 863 120 probes over 1883-1990 - 1 799 "problems", all of them the `MAX_RUN_MS`
+  backstop firing on CORRECT 47 and 48 hour runs from Pacific date-line moves
+  (1892-1969). A loud refusal, not a wrong window, and correctly placed: the longest run
+  in 1990-2036 is 25 h and the longest dateline run is 48 h, so a 32 h bound sits between.
+- 21 367 148 tiling probes, every transition +/-6 h at 30 s steps - **0 breaks, 0 overlaps**
+- 15 adversarial zones checked against an independent oracle, including Pacific/Apia's
+  skipped day, Lisbon 1992, Troll, Tehran 2022 where DST was abolished, Lord Howe's
+  30-minute DST and Chatham's +12:45 - all exact
+- 400 adversarially interleaved memo calls across 4 zones x days x hours - **0 problems**
+
+The third review independently re-measured the shortest run as 60 seconds (Goose_Bay
+1990-2001 and St_Johns 2005-10-30, both confirmed directly), which validates the 2x margin
+on the 30-second step from the other direction.
+
+### HIGH closed: parseMinor rejected the formatter's own NEGATIVE output in 10 locales
+
+The test written to guard the N2 defect tested only the POSITIVE side - the exact mirror
+of the ratchet it was written for. Ten locales put the minus in the MIDDLE; de-CH renders a
+negative as "₹-1'234.56", so the sign detector saw an "interior" minus and threw. MEASURED:
+126 040 negative renderings rejected, 10.75% of all negatives ICU emits.
+
+Literals are now removed BEFORE the sign is read. All 40 sampled negatives across de-CH,
+en-CH, it-CH, lo, lo-LA, nl, nl-BE, es-CL, es-PY and es-VE now round-trip exactly, and the
+interior-minus guard still rejects "2026-10-14" because that string carries no currency
+literal, so its hyphens survive the removal. The test now asserts BOTH signs.
+
+### CORRECTION: the N2 "literal union" fix is inert on this ICU
+
+The third review measured that sampling literals from the negative rendering ALONE produces
+identical output across 136 890 renderings - `.trim()` already absorbs the leading
+non-breaking space that de-CH's positive rendering adds. So the fix is harmless and may
+matter on a future CLDR release, but **the claim in the previous commit and in this file
+that "the formatter's own output was rejected" is NOT reproducible here.** Recorded rather
+than left standing, because a documented invariant that turns out to be inert is exactly
+the kind of thing this file exists to catch.
+
+### Closed in the same pass
+
+- `cents.padEnd(2,"0")` was load-bearing and untested - the only mutation in the whole
+  matrix that produced a WRONG amount rather than a throw: "₹5.5" parsed as 505 instead of 550. Now pinned.
+- "₹5." was guarded only by the shape grammar and unpinned. Now pinned.
+- The module header's performance figures were wrong by ~55x in the direction that
+  UNDERSTATES cost: it claimed 167 us uncached and ~370 Intl lookups; the real figures are
+  ~11 ms and ~2 900. Corrected, with the number that actually matters for report design.
+- The memo key now omits the hour. The containment guard makes that sound, and it is a
+  31x improvement: MEASURED, 30 days x 4 clinics x 24 hours went from ~31 s to 999 ms.
+  Re-verified after the change: 601 920 samples over 418 zones with zero failures, every
+  zone tiling exactly, and 9 216 interleaved calls across the four split zones with zero
+  failures - the split days simply recompute on alternation, which is rare and correct.
+
+### Recorded, not changed
+
+- Four `datetime.ts` backstops (`MAX_RUN_MS`, `runEnd`'s MAX_TIME clamp, `runStart`'s
+  negative clamp, the self-check's containment clause) are untested ratchets with zero
+  measured divergence on realistic inputs. They are the safety net the header advertises,
+  so pinning them is worth doing, but none is reachable with a wrong answer today.
+- `runCache` and `dateFormatters` are unbounded module-level maps. 76 800 keys measured at
+  48 MB. Fine for a short-lived request; a long-lived worker would grow without bound.
+- The round trip is not total above about 10^170 paise, where the rendering exceeds the
+  256-character input ceiling. Irrelevant at real magnitudes.
+- **Brief deviation, now recorded:** the brief's Interfaces line is
+  `formatInClinicTz(iso, timezone, locale?)` and the shipped signature is
+  `(iso, timezone)`. A locale cannot change which calendar date an instant falls on, and
+  the output is padded ISO by construction, so the parameter would be decorative.
+- **The residual risk worth naming:** both modules derive their grammar from `Intl` at
+  runtime and cache it with no ICU version in the key. Separators are stable CLDR data;
+  currency symbols and spacing literals are not. A CLDR change that moves a literal into a
+  position the removal loop mishandles would break the round trip with no error anywhere,
+  and nothing in this codebase could detect it.

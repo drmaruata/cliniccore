@@ -221,9 +221,12 @@ These were all measured. Each one silently produces a green build and a wrong re
   step, which steps _over_ a 60-second run (St_Johns 2005-10-30) and returns a window that contains the
   instant but **spans the gap** — it passes containment and fails only a tiling check. The step is
   therefore **30 seconds**, a 2× margin under the measured shortest run, with a 32-hour sanity bound as
-  backstop. **MEASURED: 601 920 samples over all 418 zones, zero failures; every zone tiles exactly.**
-  Cost: ~30 ms for the first call per `(zone, day, hour)`, then memoised. If a future tzdata yields a
-  shorter run, `MAX_RUN_MS` refuses the implausible window rather than billing against it.
+  backstop. **MEASURED: 601 920 samples over all 418 zones, zero failures; every zone tiles exactly;
+  a third review probed ~28 million instants against three independent oracles and could not break it.**
+  Cost: ~11 ms for the first call covering a `(zone, day)`, then ~5 µs memoised. The memo key
+  deliberately excludes the hour — with the hour in it, a 30-day × 4-clinic report costs 2 880 cold
+  keys and **~31 s** instead of 120 keys and **~1 s** (both measured). The key is sound only because
+  every hit is containment-checked before use.
 
 ## Testing quirks
 

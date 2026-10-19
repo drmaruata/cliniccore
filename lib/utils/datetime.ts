@@ -32,10 +32,13 @@
  * narrower than any real offset change. It also produces 17 to 31 hour days for free,
  * because the answer is measured rather than derived from a 24-hour assumption.
  *
- * WHY THE MEMO. The search costs roughly 370 Intl lookups, and a clinic-day report asks
- * for the SAME (zone, day) once per row. MEASURED: 167 us per call uncached, 24 us with a
- * (timezone, day) memo. Nothing here is a hot path until the report code exists, and when
- * it is, the memo is what keeps a 10 000-row day from taking a second and a half.
+ * WHY THE MEMO, AND WHAT IT COSTS. MEASURED on the 30-second step: about 2 900
+ * `formatToParts` calls, roughly 11 ms for the FIRST call covering a zone and local day,
+ * then ~5 us per call once memoised. So a 10 000-row single-day report costs about 54 ms,
+ * while a report spanning 30 days across 4 clinics costs 120 cold keys - about 1.3 s. The
+ * key deliberately excludes the hour: keying on it would make that same report 2 880 cold
+ * keys and about 31 s. Nothing here is a hot path until the report code exists, and when
+ * it is, the memo is the difference between usable and not.
  */
 
 const HOUR = 3_600_000;
@@ -152,13 +155,18 @@ export function clinicDayBounds(
   const at = date.getTime();
   const day = localDate(date, timezone);
 
-  // Memoised per zone, local day and hour, and every hit is VERIFIED before it is used.
-  // A local day can occupy several disjoint runs inside one clock hour - America/St_Johns
-  // on 2005-10-30 puts 2005-10-30 in a single minute, then drops back to 2005-10-29 for
-  // another hour - so an hour bucket is not a safe key on its own. Without the containment
-  // check a stale window is returned and the self-check below fires on a date that works
-  // when called first.
-  const key = `${timezone}|${day}|${Math.floor(at / HOUR)}`;
+  // Memoised per zone and local day. Every hit is VERIFIED before it is used: a local day
+  // can occupy several disjoint runs, so a cached window is only correct for instants
+  // inside it and anything else recomputes. That check is what makes the day-only key
+  // sound. An hour bucket would NOT be sound on its own - America/St_Johns on 2005-10-30
+  // puts 2005-10-30 into a single minute and then drops back to 2005-10-29 for another
+  // hour - and without the check a stale window is returned and the self-check below
+  // fires on a date that works when called first.
+  //
+  // Keying on the day rather than the hour is a 24x difference in cold work. MEASURED:
+  // 2 880 hour-bucketed keys cost about 31 s, and 120 day keys cost about 1.3 s. A split
+  // day simply recomputes on alternation, which is rare and still correct.
+  const key = `${timezone}|${day}`;
   let run = runCache.get(key);
   if (!run || at < run.start || at >= run.end) {
     run = { start: runStart(day, at, timezone), end: runEnd(day, at, timezone) };
