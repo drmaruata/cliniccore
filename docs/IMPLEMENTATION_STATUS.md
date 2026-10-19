@@ -2347,3 +2347,112 @@ is parallel-safe across three concurrent files.
 
 Independently confirmed by BUILD: `next build` emits `f Proxy (Middleware)`, which is far
 stronger evidence than any unit test here.
+
+## Task 13: typed errors, validation, and revalidating active-org resolution
+
+### getActiveOrg never trusts the cookie
+
+The cookie says which organization a user last chose; the database decides whether that is
+still true. A user removed from an organization, or an organization that is suspended,
+resolves to `null` - never to whatever the cookie still claims. A cookie is user-controlled:
+it can be edited, replayed after a removal, or copied from another clinic.
+
+The re-validation is one query that RLS already governs - the signed-in user reads their own
+memberships and nothing else - so "is this still true?" is answered by the same policy that
+answers everything else here, not by a check of our own.
+
+**A dead cookie never falls back.** With no cookie at all, a user in exactly one organization
+resolves to it (operator-confirmed: unambiguous, and a fresh login lands somewhere useful);
+with several, the result is null because there is no correct answer. But a cookie that WAS
+present and no longer resolves returns null - the user chose, that choice died, and silently
+moving them into a different clinic is worse than asking. MEASURED: this is what makes
+"remove membership B" resolve to null rather than silently to A.
+
+`setActiveOrg` writes the cookie without checking membership (operator-confirmed): every read
+re-validates, so a bogus id resolves to null on the next page, and checking at write time
+would duplicate the membership query on a rare user action.
+
+### `userCan` is ADVISORY and the name is deliberate
+
+Not `hasPermission`, because Task 3 already owns a pure `hasPermission(roles, permission)`
+over an in-memory role list, and two signatures under one name is a bug waiting to happen at
+every call site. It exists so a UI can hide a control the user cannot use; it must never gate
+access, because it is answerable client-side and RLS is the boundary.
+
+### Three defects of my own, each caught by mutation rather than by reading
+
+**The positive control was missing.** The first `userCan` test gave the probe user NO roles,
+so `userCan` returned false through the `roleIds.length === 0` guard and never reached the
+permission lookup - replacing that lookup with a hard-coded `return true` left the suite
+green. MEASURED. This is the fifth time in this repository that a control whose expected
+value is identical for a permitted and an unpermitted principal has been caught. Fixed by
+giving the fixture a real org-scoped role with a real grant and asserting the answer MOVES
+when the grant is withdrawn. A tenant role is created by the fixture because the database
+seeds only the platform role globally - tenant roles come from onboarding.
+
+**Test ordering.** The signed-out test emptied the auth cookie and never restored it, so
+every later test ran signed out. The `userCan` assertions PASSED in isolation and FAILED in a
+full-file run - the worst shape a failure can have, because running the file alone appears
+to clear it. Now every test starts from the same signed-in session and states its own
+preconditions.
+
+**A no-op assignment that was not a no-op.**
+`process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+with the variable undefined stores the STRING `"undefined"`, which the auth server rejects as
+an invalid key. The symptom was a client that looked configured but authenticated nobody -
+and because `getActiveOrg` returns null when there is no user, that presented as "signed
+out" rather than as a configuration fault.
+
+### A leaked sweep deleted seeded state, and nothing complained
+
+While clearing leaked rows from repeated runs, the cleanup was widened to every row matching
+a sentinel - which removed the seeded `platform_super_admin` role and its four platform
+permissions. **Nothing failed loudly**, because every test that mentions that role asserts
+it is ABSENT from organization-scoped reads, which trivially passes when the row is missing.
+That is worth recording: a seeded row that no test requires to EXIST can disappear silently,
+and the tests written to protect it are all negative.
+
+Restored by `20261014001500_reassert_platform_seed.sql`, which re-applies 00400's own
+idempotent seed statements verbatim rather than inventing a second definition. The migration
+was first applied with `name = 'reassert_platform_seed'`, and `tenancy-schema.test.ts` caught
+it: the applier records the FILENAME, and the migration-history test compares against it.
+The history row was corrected and the migration re-applied under its filename.
+
+The active-org fixture now tracks every organization it creates and deletes exactly those.
+A cleanup that can delete state it did not create will eventually delete state it should not.
+
+### A pre-existing flake in someone else's test, exposed by adding a second writer
+
+`onboarding-rpc.test.ts` asserted GLOBAL absolute counts -
+`select count(*) from public.organizations` - and passed only because nothing else wrote an
+organization concurrently. Adding a second integration suite that creates organizations made
+it fail roughly one full-suite run in two. Every count is now scoped to the organization that
+call created, which is the only property an assertion about "the RPC bootstraps one X" can
+have. Verified with three consecutive full-suite runs.
+
+### Validation, and one order-of-operations bug
+
+`z.email().trim().toLowerCase()` does NOT normalise: Zod checks the format against the INPUT
+string, so `Dr@clinic.test` was rejected as malformed. Transform first, validate second -
+`z.string().trim().toLowerCase().pipe(z.email().max(254))`.
+
+Zod STRIPS unknown keys rather than rejecting them, so `resetPasswordSchema` ignores a
+supplied `email` rather than erroring. Asserted explicitly, because "the extra field is
+ignored" and "the extra field is absent from the parsed output" are different claims and only
+the second matters to a caller forwarding the parsed value to Supabase.
+
+### Mutation matrix: 10 of 10, zero ratchets
+
+A stale cookie trusted over the database; a dead cookie falling back; an ambiguous choice
+picking the first membership; the unauthenticated short-circuit removed; `userCan` hard-coded
+true; `requireActiveOrg` returning null; the cookie made script-readable; memberships not
+scoped to the user; `toSafeResponse` forwarding any Error message; `toSafeResponse`
+stringifying an unknown error. Every one turns the suite red.
+
+### `toSafeResponse` touches nothing on an unknown value
+
+No `String(e)`, no `e.message`, no `JSON.stringify(e)` - each is a way for a hostile or lazy
+getter to throw INSIDE error handling, converting a handled 500 into an unhandled rejection.
+Only an `AppError` contributes a message, because an `AppError` message is authored by us. A
+thrown object carrying a convincing `status` and `message` is not honoured: it would let a
+thrower pick both halves of the response.

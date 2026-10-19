@@ -56,6 +56,16 @@ dbDescribe("create_organization_with_owner", () => {
       // Back to the owner to count: RLS would otherwise return nothing.
       await session.resetRole();
 
+      // SCOPED TO THE ORGANIZATION THIS CALL CREATED, not global counts.
+      //
+      // MEASURED: these were `select count(*) from public.organizations` and friends, and
+      // they passed only because no other test wrote an organization concurrently. Task 13
+      // added a second integration suite that creates and deletes organizations, and this
+      // test then failed roughly one full-suite run in two - a flake in someone else's
+      // test, caused by an assertion that depended on state it does not own.
+      //
+      // Scoping every count to `orgId` makes it correct regardless of what else is running,
+      // which is the only property an assertion about "the RPC bootstraps one X" can have.
       const counts = await session.query<{
         orgs: string;
         memberships: string;
@@ -65,15 +75,17 @@ dbDescribe("create_organization_with_owner", () => {
         org_grants: string;
         assignments: string;
       }>(
-        `select (select count(*) from public.organizations) as orgs,
-                (select count(*) from public.organization_memberships) as memberships,
-                (select count(*) from public.organization_memberships where status = 'active') as active_memberships,
-                (select count(*) from public.clinics) as clinics,
-                (select count(*) from public.roles where organization_id is not null) as org_roles,
+        `select (select count(*) from public.organizations where id = $1) as orgs,
+                (select count(*) from public.organization_memberships where organization_id = $1) as memberships,
+                (select count(*) from public.organization_memberships
+                   where organization_id = $1 and status = 'active') as active_memberships,
+                (select count(*) from public.clinics where organization_id = $1) as clinics,
+                (select count(*) from public.roles where organization_id = $1) as org_roles,
                 (select count(*) from public.role_permissions rp
                    join public.roles r on r.id = rp.role_id
-                  where r.organization_id is not null) as org_grants,
-                (select count(*) from public.user_role_assignments) as assignments`,
+                  where r.organization_id = $1) as org_grants,
+                (select count(*) from public.user_role_assignments where organization_id = $1) as assignments`,
+        [orgId],
       );
       const row = counts[0];
       expect(Number(row?.orgs)).toBe(1);
