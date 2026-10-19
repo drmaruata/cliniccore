@@ -99,3 +99,80 @@ describe("parseMinor", () => {
     expect(() => parseMinor("₹", "INR")).toThrow();
   });
 });
+
+describe("parseMinor refuses rather than sanitises", () => {
+  // The bug this section exists for: an earlier parser stripped every non-digit, so a
+  // pasted date became a negative twenty-crore line item. `parseMinor("2026-10-14")`
+  // returned -2026101400, because the hyphens vanished and the digits concatenated.
+  it("rejects a date, a phone number and a stray slash", () => {
+    expect(() => parseMinor("2026-10-14", "INR")).toThrow();
+    expect(() => parseMinor("+91 98765 43210", "INR")).toThrow();
+    expect(() => parseMinor("abc 12/2026", "INR")).toThrow();
+  });
+
+  it("rejects more than two decimal places instead of truncating", () => {
+    expect(() => parseMinor("1234.567", "INR")).toThrow();
+    expect(() => parseMinor("1234.5678", "INR")).toThrow();
+  });
+
+  it("rejects an amount formatted in one locale and read back in another", () => {
+    // Previously a de-DE string under the default returned 123 - a silent 10 000x error.
+    expect(() => parseMinor("1.234,56 €", "EUR")).toThrow();
+    expect(() => parseMinor("1 234,56 €", "EUR")).toThrow();
+  });
+
+  it("rejects a currency that is not a three-letter ISO code", () => {
+    for (const typo of ["IN", "INRR", "RUPEE", "1NR", ""]) {
+      expect(() => formatMinor(100n, typo), typo).toThrow(RangeError);
+    }
+    // XYZ is a real ISO 4217 code meaning "no currency", so it is deliberately allowed.
+    expect(formatMinor(100n, "XYZ")).toContain("1.00");
+    expect(() => parseMinor("1.00", "INR")).not.toThrow();
+  });
+});
+
+describe("formatMinor guards its input", () => {
+  it("refuses anything that is not bigint paise", () => {
+    for (const wrong of [1, 1.5, "100", null, undefined, true]) {
+      expect(() => formatMinor(wrong as never, "INR"), String(wrong)).toThrow(TypeError);
+    }
+  });
+});
+
+describe("locales beyond the default", () => {
+  // A hard-coded `{ group: ",", decimal: "." }` would pass every other test in this file,
+  // so these are the assertions that make the separator lookup load-bearing.
+  it("round-trips a locale that reverses the separators", () => {
+    const rendered = formatMinor(123456n, "EUR", "de-DE");
+    // de-DE separates the symbol with a NON-BREAKING space, so the literal string is
+    // brittle to assert; the round trip is the assertion that carries the meaning.
+    expect(rendered).toContain("1.234,56");
+    expect(parseMinor(rendered, "EUR", "de-DE")).toBe(123456n);
+  });
+
+  it("round-trips a locale that groups with a space", () => {
+    const rendered = formatMinor(123456n, "EUR", "fr-FR");
+    expect(parseMinor(rendered, "EUR", "fr-FR")).toBe(123456n);
+  });
+
+  it("round-trips in the default locale too, so the locale cases are not the only guard", () => {
+    const rendered = formatMinor(123456n, "INR", "en-IN");
+    expect(parseMinor(rendered, "INR", "en-IN")).toBe(123456n);
+  });
+
+  it("reads accounting parentheses as negative, because Intl can emit them", () => {
+    // currencyDisplay:"accounting" is one word away in numberFormat(), and parentheses
+    // are what Indian accounting packages print.
+    expect(parseMinor("(₹5.00)", "INR")).toBe(-500n);
+    expect(parseMinor("(0.01)", "INR")).toBe(-1n);
+    expect(parseMinor("₹5.00", "INR")).toBe(500n);
+  });
+
+  it("throws rather than returning a wrong amount for a non-ASCII-digit locale", () => {
+    // A documented limit, not an oversight: ar-EG renders ١٢٣ and this parser will not
+    // fold it. A throw is correct - the alternative is a silently wrong amount.
+    const rendered = formatMinor(123456n, "INR", "ar-EG");
+    expect(rendered).not.toContain("1");
+    expect(() => parseMinor(rendered, "INR", "ar-EG")).toThrow();
+  });
+});

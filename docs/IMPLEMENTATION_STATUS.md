@@ -1681,3 +1681,118 @@ operator runbook. The HTTP-layer questions remain for Task 18's harness: whether
 Storage API executes user requests as `authenticated`, whether a forged mimetype is
 served inline, whether `allowed_mime_types` is enforced by the API at all, and whether
 `anon` can reach a private bucket despite RLS denying it.
+
+## Task 11 review: a day-boundary bug that billed the wrong clinic day
+
+Review of `fdb9e21`. The generated types were verified against the live tool and are not
+hand-edited; the money and timezone logic was correct on every value the suite exercised.
+The defects were all at edges the suite did not reach.
+
+### CRITICAL, and it was a live billing defect
+
+`clinicDayBounds` computed local midnight by taking the local calendar date, guessing UTC
+midnight for it, and subtracting the zone offset. That assumes there is exactly ONE instant
+at which the local wall clock reads `00:00:00`. It is false wherever a daylight-saving
+transition lands ON local midnight - at which point that instant either does not exist
+(spring forward) or happens twice (fall back).
+
+MEASURED by the reviewer over 37 zones x 1990-2031: **1 460 wrong day boundaries and 97
+instants that fell outside the window returned for them.** The zones are America/Havana,
+America/Santiago, America/Asuncion, Asia/Amman, Asia/Gaza, Asia/Jerusalem and
+America/St_Johns - and Havana, Santiago and Asuncion do it EVERY SINGLE YEAR, so this is not
+historical trivia. The concrete case: `clinicDayBounds(2000-04-02T04:30:00Z,
+"America/Havana")` returned a window ending at 04:00Z, so the 04:30Z instant that produced
+it was outside its own day. An appointment in the last hour of a clinic's evening would be
+billed to the next clinic day, and on the fall-back side an hour of revenue would belong to
+no day at all. No throw, no log.
+
+THE FIX IS STRUCTURAL. "The local calendar date at this instant is at or after D" is
+MONOTONE in the instant, because a local date only ever moves forward. So the first instant
+of local day D is exactly a binary search for that predicate crossing from false to true.
+It costs about 28 Intl lookups and is correct whether midnight exists once, twice, or not at
+all. It also produces 23, 23.5, 24, 24.5 and 25 hour days for free, because the answer is
+measured rather than derived from a 24-hour assumption.
+
+RE-MEASURED AFTER THE FIX: 45 738 (zone, instant) samples across 22 zones and 11 years, and
+**zero windows exclude their own instant**. The Havana transition day is now correctly 24
+hours - the wall clock skips 00:00-01:00, but the elapsed time between two local midnights is
+still 24 hours, and the naive version had reported 23.
+
+This is the "gold-plating" trap inverted: the two-pass offset fix-up looked like sufficient
+care and was not. The tests used only Asia/Kolkata, America/New_York and Asia/Kathmandu, and
+New York transitions at 02:00 local, so local midnight always exists there. A suite that only
+exercises zones without the edge case cannot see it.
+
+### HIGH: parseMinor read two realistic inputs as wrong amounts
+
+**Accounting parentheses parsed as POSITIVE.** `parseMinor("(₹5.00)")` returned 500 rather
+than -500. `Intl` emits parentheses the moment `currencyDisplay: "accounting"` is set - one
+word away in `numberFormat()` - and parentheses are what Indian accounting packages print. A
+credit note read back through this becomes a charge.
+
+**The "no digits means throw" guard did not cover the realistic corruption.** It only
+complained when the input had no digits at all, so `parseMinor("2026-10-14")` returned
+**-2 026 101 400** - the hyphens vanished, the digits concatenated, and the internal minus
+tripped the sign detector. `parseMinor("+91 98765 43210")` returned 91987654321000. The
+principle in the header was right; the predicate was aimed at the wrong failure mode.
+
+So parseMinor now VALIDATES instead of sanitising. A character is accepted only if the
+formatter itself emits it for that locale and currency, a minus is accepted only as the first
+or last character, the fractional part must be at most two digits, and anything else throws.
+A loud refusal, because the alternative is a plausible-looking wrong number on an invoice.
+
+**Whitespace had to be handled carefully to get there.** My first attempt kept stripping all
+whitespace, which meant `parseMinor("1 234,56 €", "EUR")` still returned 12345600 - the
+fr-FR grouping space was blanked and the comma then read as grouping. Interior whitespace is
+now left in place and accepted only if THIS locale actually groups with it. That single detail
+was the difference between a loud throw and a silent 100x error.
+
+### MEDIUM and LOW, closed
+
+- Cross-locale input is now refused rather than silently misread. `parseMinor("1.234,56 €",
+"EUR")` under the default previously returned 123 for 123456 - a silent 10 000x error; it
+  now throws. The strict validation is what makes it a throw.
+- More than two decimal places threw instead of silently truncating, while the function was
+  documented as formatMinor's exact inverse.
+- `separators()` was the basis of the header's most prominent claim and was called from one
+  place, so hard-coding `{group:",",decimal:"."}` left ALL tests green. Now pinned by de-DE,
+  fr-FR and en-IN round-trip tests.
+- The non-bigint guard existed but was untested. Now asserted.
+- `formatMinor` accepted a bad currency code and rendered it on an invoice. Now a three-letter
+  ISO check - though `XYZ` is deliberately still allowed, because it is a real ISO 4217 code
+  meaning "no currency", which is what my first version of that test got wrong.
+- `Date.UTC` maps years 0-99 onto 1900-1999, so a year-1 input silently became 1901 and the
+  window did not contain it. Now `setUTCFullYear`. Asia/Kolkata turns out to have been on
+  local mean time (+05:53:28) before 1906, so even a no-DST zone has sub-minute offsets -
+  handled correctly by the search.
+- `formatInClinicTz` did not always return padded YYYY-MM-DD: year 1 rendered as "1-01-01".
+  That breaks a caller that slices the result AND breaks the lexicographic comparison the day
+  search depends on, so the two fixes are linked.
+- `Intl` formatters are memoised. MEASURED at 27 microseconds to construct one, and a binary
+  search per bound would otherwise construct fifty-six per call.
+- Dead code removed: an unreachable `undefined` guard and an impossible `group === decimal`
+  branch.
+
+### A documentation correction
+
+My precision figures were LOOSE, not wrong, and are corrected in the header. "Exact through
+10^15 paise" holds for the decades below 10^15 but the [10^15, 10^16) decade is about 15%
+inexact; and at the 10^16 magnitude roughly THREE values in four lose a paisa, not two. The
+load-bearing conclusion - display only, at every magnitude - is unchanged.
+
+### Confirmed as correct, so it is not re-litigated
+
+The generated types match the live generator (identical hash after stripping prettier's
+formatting; all 26 blocks match), every test value in both files is correct rather than merely
+self-consistent, `Number(amount)/100` really is the only float, the New York 23h/25h day
+lengths are exact, Lord Howe's 30-minute DST shift is handled, and the deviation from the
+brief's `2026-10-15` assertion is right - 18:00 UTC at +05:30 is 23:30 on the 14th.
+
+### Open and unverifiable here
+
+Small-ICU Node/Vercel runtimes: this host has full ICU, and `en-CA` may render differently on
+a reduced build. Timezone-data skew: Havana, Chile and Jordan DST rules have changed
+repeatedly, so the exact set of affected dates differs under a newer `tzdata`. And
+non-ASCII-digit locales (ar-EG, bn-IN, fa-IR and about eight others) still throw - documented
+as a limit rather than handled, because a throw is the safe failure, but it needs Unicode
+digit folding if `organizations.locale` ever carries one.

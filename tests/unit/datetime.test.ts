@@ -110,3 +110,84 @@ describe("clinicDayBounds", () => {
     );
   });
 });
+
+describe("zones whose transition lands on local midnight", () => {
+  // The failure this section exists for. America/Havana, America/Santiago,
+  // America/Asuncion, Asia/Amman, Asia/Gaza, Asia/Jerusalem and America/St_Johns all
+  // shift the offset AT local midnight, so there is either no instant whose wall clock
+  // reads 00:00:00, or two of them. An implementation that computes local midnight and
+  // subtracts the offset returned a window that did not contain its own input:
+  // MEASURED over 37 zones x 1990-2031, 1 460 wrong boundaries and 97 such instants.
+  // Three of those zones do it every single year.
+  it("returns a window that contains the instant it was computed from", () => {
+    const cases = [
+      ["America/Havana", "2000-04-02T04:30:00Z"],
+      ["America/Havana", "2000-04-02T04:59:59Z"],
+      ["America/Santiago", "1990-09-16T03:00:00Z"],
+      ["America/Asuncion", "2000-10-01T03:30:00Z"],
+      ["Asia/Amman", "2022-02-25T21:00:00Z"],
+      ["America/St_Johns", "2020-03-29T04:00:00Z"],
+      ["Asia/Colombo", "2000-12-31T19:00:00Z"],
+    ] as const;
+
+    for (const [zone, iso] of cases) {
+      const at = new Date(iso).getTime();
+      const bounds = clinicDayBounds(new Date(iso), zone);
+      const start = new Date(bounds.startIso).getTime();
+      const end = new Date(bounds.endIso).getTime();
+      expect(start, `${zone} ${iso} start must not exceed the instant`).toBeLessThanOrEqual(at);
+      expect(end, `${zone} ${iso} end is exclusive and must exceed the instant`).toBeGreaterThan(
+        at,
+      );
+      // The window names the day the instant actually falls on, not an adjacent one.
+      expect(formatInClinicTz(bounds.startIso, zone)).toBe(formatInClinicTz(iso, zone));
+    }
+  });
+
+  it("gives the Havana transition day its true 24 hours, not a shortened day", () => {
+    // The wall clock skips 00:00-01:00 that day, but the elapsed time between two local
+    // midnights is still 24 hours. The earlier version reported 23.
+    const bounds = clinicDayBounds(new Date("2000-04-02T04:30:00Z"), "America/Havana");
+    expect(new Date(bounds.endIso).getTime() - new Date(bounds.startIso).getTime()).toBe(
+      24 * 60 * 60 * 1000,
+    );
+  });
+
+  it("handles a half-hour daylight-saving shift", () => {
+    // Lord Howe moves by 30 minutes, not 60 - a quarter-hour DST zone is the case any
+    // offset-in-minutes arithmetic tuned for whole hours gets wrong.
+    const spring = clinicDayBounds(new Date("2026-04-05T13:00:00Z"), "Australia/Lord_Howe");
+    expect(new Date(spring.endIso).getTime() - new Date(spring.startIso).getTime()).toBe(
+      24.5 * 60 * 60 * 1000,
+    );
+  });
+
+  it("handles an offset that is not a whole number of minutes", () => {
+    // Asia/Kolkata was on local mean time (+05:53:28) before 1906, so even a "no-DST"
+    // zone has sub-minute offsets for historical dates.
+    const at = new Date("0001-06-15T12:00:00Z").getTime();
+    const bounds = clinicDayBounds(new Date("0001-06-15T12:00:00Z"), "Asia/Kolkata");
+    expect(new Date(bounds.startIso).getTime()).toBeLessThanOrEqual(at);
+    expect(new Date(bounds.endIso).getTime()).toBeGreaterThan(at);
+  });
+});
+
+describe("the date string is always four-digit padded", () => {
+  // A locale's own pattern renders year 1 as "1" and year 999 as "999", which breaks a
+  // caller that slices the result and breaks the lexicographic comparison the day
+  // search relies on.
+  it("pads years below 1000", () => {
+    expect(formatInClinicTz(new Date("0001-06-15T12:00:00Z").toISOString(), "Asia/Kolkata")).toBe(
+      "0001-06-15",
+    );
+    expect(formatInClinicTz(new Date("0999-01-01T00:00:00Z").toISOString(), "Asia/Kolkata")).toBe(
+      "0999-01-01",
+    );
+  });
+
+  it("never reports a day earlier than 1970 for a date that is not", () => {
+    // Date.UTC maps years 0-99 onto 1900-1999, so the pre-1900 case silently became 1901.
+    const bounds = clinicDayBounds(new Date("0001-06-15T12:00:00Z"), "Asia/Kolkata");
+    expect(bounds.startIso.startsWith("0001-06-1")).toBe(true);
+  });
+});

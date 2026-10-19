@@ -203,6 +203,20 @@ These were all measured. Each one silently produces a green build and a wrong re
 - **`shadcn add` re-emits `import { cn } from "cn"`** — the unrelated npm package, whose merge engine does not know this project's custom colours and therefore cannot collapse `bg-primary` against `bg-success`. CSS source order then decides the colour. This is now a hard ESLint error (`no-restricted-imports`, scoped to `components/**` and `app/**` in `eslint.config.mjs`), so repoint generated files at `@/lib/utils/cn` and let lint tell you when you forget. `components.json`'s `aliases.utils` is set correctly and is **not** a defence — the CLI emitted the bad import anyway. The assertion in `tests/unit/cn.test.tsx` stays because it also covers the `package.json` dependency entry, which ESLint cannot see.
 - **`components/ui` is in `.prettierignore` on purpose** — generated code is kept byte-for-byte as the CLI emitted it so the diff against a fresh `shadcn add` stays meaningful. Lint and tests still cover those files; only formatting skips them. Do not "fix" formatting there.
 - **Vitest's `include` glob must keep `.tsx`.** A `*.test.ts`-only glob reports success while skipping every component test. Do not narrow it.
+- **`types/database.types.ts` is generated, and `prettier` reformats it.** Regenerating via
+  `SUPABASE_GENERATE_TYPESCRIPT_TYPES` always produces a diff against the committed file —
+  prettier adds member semicolons and collapses the leading `|` on union types. **That diff is
+  expected; do not "fix" it and never hand-edit the content.** Verified equal: after stripping
+  whitespace, semicolons and union pipes, both files hash to the same value. `types/` is
+  deliberately _not_ in `.prettierignore` (unlike `components/ui`) so the format gate still
+  covers a file the application imports.
+- **`clinicDayBounds` searches for the day boundary; do not "optimise" it into computing local
+  midnight.** Subtracting the zone offset from a UTC-midnight guess assumes exactly one instant
+  reads `00:00:00` local. That is false wherever a DST transition lands _on_ local midnight —
+  Havana, Santiago, Asuncion, Amman, Gaza, Jerusalem and St_Johns all do, and three recur every
+  year. Measured over 37 zones × 1990-2031 the naive version returned **1 460 wrong day
+  boundaries and 97 windows that did not contain the instant they were computed from**. The
+  binary search is not gold-plating; it is the fix.
 
 ## Testing quirks
 
