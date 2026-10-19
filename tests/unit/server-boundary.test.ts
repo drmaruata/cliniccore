@@ -52,7 +52,12 @@ describe("the server boundary", () => {
     // which nothing but the vitest binary reads - next.config.ts, tsconfig.json,
     // eslint.config.mjs and playwright.config.ts must not reference it, or a production
     // build could resolve `server-only` to an empty stub.
-    for (const file of ["next.config.ts", "tsconfig.json", "eslint.config.mjs"]) {
+    for (const file of [
+      "next.config.ts",
+      "tsconfig.json",
+      "eslint.config.mjs",
+      "playwright.config.ts",
+    ]) {
       const contents = read(file);
       expect(contents.includes("server-only-stub"), `${file} must not alias server-only`).toBe(
         false,

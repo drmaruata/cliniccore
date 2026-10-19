@@ -1,16 +1,24 @@
 /**
  * Browser-side Supabase client.
  *
- * WHY A FACTORY RATHER THAN A SINGLETON. A module-level client would be constructed once
- * per bundle and would capture the environment at import time, which is the shape that
- * breaks under server rendering and makes a signed-out user hard to reason about. A
- * factory returns a client the caller owns.
+ * WHY A FACTORY RATHER THAN A MODULE-LEVEL CLIENT IN THIS FILE. The concern is that a
+ * module-level client would read the environment at IMPORT time. Reading it inside the
+ * function instead keeps this module importable from a test that sets `process.env`
+ * itself, rather than depending on whether a prefixed variable reaches a test through
+ * `process.env` or only through `import.meta.env` - a Vite-version detail the database
+ * helper already refuses to depend on.
  *
- * WHY THE ENV VARS ARE READ AT CALL TIME. `NEXT_PUBLIC_*` is inlined by Next at build
- * time in the browser, but reading it inside the function keeps this module importable
- * from a test that sets `process.env` itself, rather than depending on whether a prefixed
- * variable reaches a test through `process.env` or only through `import.meta.env` - a
- * Vite-version detail the database helper already refuses to depend on.
+ * WHAT THE FACTORY DOES *NOT* BUY, MEASURED AND CORRECTED HERE. An earlier version of
+ * this comment claimed the caller "owns" the returned client, which is not what happens:
+ * `@supabase/ssr`'s `createBrowserClient` keeps a module-level `cachedBrowserClient` and
+ * returns it whenever `isBrowser()` is true - which includes jsdom, so it is true under
+ * test as well as in production. Two calls here therefore return the SAME object. That is
+ * the library's deliberate design and it is the desirable one here: one cookie-managed
+ * client per browser, not a fresh one per component render.
+ *
+ * `tests/unit/supabase-browser-client.test.ts` pins both facts - that this module reads the
+ * environment when called, and that the library memoises the result - so a future bump
+ * that changes either is visible rather than silent.
  *
  * The publishable key is browser-safe by construction; `SUPABASE_SERVICE_ROLE_KEY` must
  * never appear in anything reachable from this file.

@@ -31,6 +31,7 @@ import {
   PUBLISHABLE_KEY,
   SUPABASE_URL,
   clientOverJar,
+  createdProbeUserIds,
   createProbeSession,
   decodeCookie,
   deleteProbeUsers,
@@ -46,18 +47,16 @@ const { updateSession } = await import("../../lib/supabase/proxy");
 const rootProxy = await import("../../proxy");
 
 let sharedCookie = "";
-const createdIds: string[] = [];
 
 beforeAll(async () => {
   const probe = await createProbeSession();
   sharedCookie = probe.cookie;
-  createdIds.push(probe.userId);
 });
 
 afterAll(async () => {
   // Prove the cleanup rather than trusting it: an accumulating pile of probe users is
   // the residue problem this repository has been bitten by more than once.
-  expect(await deleteProbeUsers(createdIds)).toEqual([]);
+  expect(await deleteProbeUsers(createdProbeUserIds)).toEqual([]);
 });
 
 const requestCarrying = (value?: string) => {

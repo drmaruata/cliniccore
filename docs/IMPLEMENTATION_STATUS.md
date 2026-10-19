@@ -2245,3 +2245,105 @@ count was wrong.
   The tests pin the CODE's mapping, not Next's runtime derivation of `nextUrl.protocol`, so a
   Next upgrade changing `initProtocol` would keep the suite green while production changed.
   Worth a startup check or a runbook line before any self-hosted deployment.
+
+## Task 12 third review: a HIGH that survived two rounds, and a doc comment that overstated
+
+Third review of `df507c5`. Verdict from the reviewer: "Task 12 is complete in construction,
+not in verification" - the shipped code is correct on every point the brief names, but a
+closure raised _because its predecessor was a ratchet_ was itself still a ratchet.
+
+### F1 HIGH - my N4 fix had a reachable-but-never-taken branch
+
+The third pass made the mocked `cookieStore.set` throwable and added a test asserting the
+helpers survive it. That test seeded a FRESH cookie - and a fresh token is valid, so
+`@supabase/ssr` never called `setAll` at all. **MEASURED: the mock's `set` was invoked ZERO
+times.** Removing the `try`/`catch` left the suite green.
+
+This is the fourth time in this task that a test existed, said the right words, and could
+not see the thing it claimed to protect. The pattern is now unmistakable: **a branch that
+is reachable but never taken passes every assertion in its own test.** The fix is the one
+`auth-session.test.ts` already used - rewind `expires_at` so the token is stale, forcing
+the refresh that forces the cookie write - plus a counter, so "the branch was taken" is
+asserted rather than assumed. Removing the catch is now caught, with the throw surfacing.
+
+### F2 - the retry could outlive the hook and leak a user while cleanup reported success
+
+vitest's `hookTimeout` DEFAULTS TO 10s and is not covered by the configured `testTimeout`.
+One fully exhausted retry is 0 + 2.5s + 7s, and `createProbeSession` makes up to three such
+calls - about 28.5s inside a 10s budget, engaging exactly when the auth server is slowest.
+
+The consequence was worse than a timeout: if `beforeAll` throws, `createdIds` was never
+populated, so `afterAll` called `deleteProbeUsers([])`, which iterates nothing and returns
+`[]` - and `expect(leftovers).toEqual([])` **passed**. The assertion designed to catch the
+leak was the thing reporting success.
+
+`hookTimeout: 60_000` is now explicit, and the fixture registers each created id in an
+exported list the moment it exists - before anything that can throw - so a failed
+acquisition still leaves something to clean up.
+
+### F3 - the throw-versus-retry gate was unasserted, and understated as recorded
+
+`isRateLimit` was module-private and no test referenced it. Mutating it to `() => false`
+keeps the entire suite green, which deletes the throw-versus-retry decision the previous
+round added: a bad key or a disabled provider then gets retried three times and reported as
+"wait for the rate-limit window" - a 28.5s misdiagnosis that then trips F2's timeout and
+leaks a user. Now exported and asserted against the messages Supabase actually returns.
+
+### F4/F5 - small, and both were mine to fix
+
+`server-boundary.test.ts` named `playwright.config.ts` in its comment but omitted it from
+the array, so an alias smuggled there - Task 15's E2E runs `npm run build && npm run start`,
+so it would run a spec against the stub - went unnoticed. Added.
+
+And `scripts/check-no-secrets.ts` still carried the sentence N3 called "actively
+misleading" - that the boundary "cannot be bypassed by an alias this scanner does not
+model" - two rounds after it was identified. Corrected to say what the scanner actually
+enforces and to point at the test that pins the import.
+
+### F6 - a literal `\n` had been committed into a file header
+
+`prettier` does not reflow comment interiors, so a here-string artefact passed every gate
+for two commits. Repaired; the repo is now clean of the pattern.
+
+### F7 - `createBrowserClient`, and a doc comment that OVERCLAIMED
+
+The brief's fifth interface had no test, and adding one surfaced a bigger problem. The
+module claimed a factory rather than a singleton "because a module-level client would
+capture the environment at import time", and that "a factory returns a client the caller
+owns".
+
+**MEASURED from the library source: `@supabase/ssr` keeps a module-level
+`cachedBrowserClient` and returns it whenever `isBrowser()` is true** - which includes
+jsdom. Two calls return the SAME object regardless of what this module does. So the caller
+never owned the client, and the environment is captured on the first call either way.
+
+That memoisation is the library's deliberate design and is the desirable one here - one
+cookie-managed client per browser rather than a fresh one per component render. The honest
+statement of what the factory buys is much narrower, the comment now says so, and the test
+pins both facts: that this module reads the environment when called, and that the library
+memoises the result.
+
+The first version of that test asserted the env behaviour by breaking the URL, passed in
+isolation and FAILED in a full run - `process.env` is shared between files landing in the
+same worker, so another suite's `beforeAll` makes the outcome depend on file order. Rewritten
+around `vi.resetModules()` and a fresh import per test.
+
+### One of my own patches introduced a bug, caught immediately
+
+Moving the id registration into the fixture left the call sites also pushing it, so the same
+id was deleted twice and the suite failed with "User not found" - masking the real result
+behind a cleanup error. `deleteProbeUsers` is now idempotent, because "already gone" is the
+outcome that was wanted.
+
+### What the reviewer confirmed is genuinely correct
+
+All seven round-1 and all nine round-2 closures hold under mutation. The `setAll` ordering
+is pinned from both failure directions; the refresh trigger is pinned; `SameSite`, `Path`,
+`HttpOnly` and `Secure` are pinned in both directions; the root proxy is pinned through its
+OWN response and defeats all three three-line rewrites; the `server-only` first line is
+pinned against deletion AND relocation; `getUser`'s signed-out/throw distinction is pinned by
+a fully mocked zero-network file; cleanup is correctly scoped to caller-supplied ids and so
+is parallel-safe across three concurrent files.
+
+Independently confirmed by BUILD: `next build` emits `f Proxy (Middleware)`, which is far
+stronger evidence than any unit test here.

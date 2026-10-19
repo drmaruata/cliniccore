@@ -98,8 +98,22 @@ export const sessionCookieValue = (session: {
  */
 const RATE_LIMIT_BACKOFF_MS = [0, 2_500, 7_000];
 
-const isRateLimit = (error: { message?: string; status?: number }): boolean =>
+/**
+ * Exported so its behaviour can be asserted rather than assumed. MEASURED: mutating this
+ * to `() => false` leaves the whole suite green, which deletes the throw-versus-retry
+ * decision entirely - every auth failure is then retried three times and the final message
+ * blames the rate-limit window for a bad key or a disabled provider.
+ */
+export const isRateLimit = (error: { message?: string; status?: number }): boolean =>
   /rate limit/i.test(error.message ?? "") || error.status === 429;
+
+/**
+ * Every probe user this module created, INCLUDING one whose session acquisition then
+ * failed. A caller must read the ids from HERE rather than from a return value, because a
+ * `beforeAll` that throws never returns - and an ids list that stays empty in that case
+ * makes the cleanup assertion pass while a real user is left in the live project.
+ */
+export const createdProbeUserIds: string[] = [];
 
 async function withRateLimitRetry<T>(
   label: string,
@@ -141,10 +155,18 @@ export async function createProbeSession(): Promise<{ userId: string; cookie: st
   );
 
   if (signedUp.ok) {
-    return {
-      userId: signedUp.data.user?.id ?? "",
-      cookie: sessionCookieValue(signedUp.data.session!),
-    };
+    const id = signedUp.data.user?.id;
+    // Registered BEFORE the session is read, so a failure below still leaves an id to
+    // clean up. Pushing "" here would make deleteProbeUsers throw on an empty id and
+    // mask the real cause.
+    if (id) createdProbeUserIds.push(id);
+    const session = signedUp.data.session;
+    if (!session) {
+      throw new Error(
+        "signUp returned a user with no session. If 'Confirm email' has been enabled on this project, these suites cannot run.",
+      );
+    }
+    return { userId: id ?? "", cookie: sessionCookieValue(session) };
   }
 
   // Fallback: the admin endpoint is not subject to the public per-window limit.
@@ -159,10 +181,14 @@ export async function createProbeSession(): Promise<{ userId: string; cookie: st
     return { data: result.data, error: result.error };
   });
 
-  return {
-    userId: created.user?.id ?? "",
-    cookie: sessionCookieValue(signedIn.session!),
-  };
+  const userId = created.user?.id;
+  if (userId) createdProbeUserIds.push(userId);
+  if (!signedIn.session) {
+    throw new Error(
+      "Supabase returned no session after createUser + signIn. If 'Confirm email' has been enabled on this project, signUp and signIn both return a user with a null session and these suites cannot run.",
+    );
+  }
+  return { userId: userId ?? "", cookie: sessionCookieValue(signedIn.session) };
 }
 
 /**
@@ -184,7 +210,12 @@ export async function deleteProbeUsers(ids: string[]): Promise<string[]> {
   const client = admin();
   for (const id of ids) {
     const { error } = await client.auth.admin.deleteUser(id);
-    if (error) throw new Error(`cleanup failed for ${id}: ${error.message}`);
+    // "already gone" is the outcome we wanted, not a failure. Treating it as one would
+    // mask the real error behind a cleanup error - and a duplicate id would do exactly
+    // that, which it did.
+    if (error && !/not found/i.test(error.message)) {
+      throw new Error(`cleanup failed for ${id}: ${error.message}`);
+    }
   }
   const { data } = await client.auth.admin.listUsers({ page: 1, perPage: 200 });
   const remaining = new Set((data?.users ?? []).map((user) => user.id));

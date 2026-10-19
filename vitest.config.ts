@@ -21,6 +21,11 @@ export default defineConfig({
     // The real defence is statement_timeout in beginSession, which distinguishes a slow
     // network from a slow predicate. 15s is still a hard bound, so a hung test fails.
     testTimeout: 15_000,
+    // MEASURED: vitest's hookTimeout DEFAULTS TO 10s and is not covered by testTimeout.
+    // The auth fixtures' fully exhausted rate-limit retry is ~28.5s (three calls x
+    // 0+2.5+7s), so the hook - not the test - is the budget, and the timeout lands exactly
+    // when the auth server is slowest: which is the moment that leaks a probe user.
+    hookTimeout: 60_000,
   },
   resolve: {
     alias: {

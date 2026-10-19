@@ -1,5 +1,6 @@
 // @vitest-environment node
-/*\n * Task 12 - the server-side client and its two session helpers.
+/*
+ * Task 12 - the server-side client and its two session helpers.
  *
  * WHY THIS FILE EXISTS AT ALL. `lib/supabase/server.ts` exports three of the five
  * interfaces the brief names and carries the repository's hardest boundary obligation
@@ -21,8 +22,11 @@ import {
   AUTH_COOKIE,
   PUBLISHABLE_KEY,
   SUPABASE_URL,
+  createdProbeUserIds,
   createProbeSession,
+  decodeCookie,
   deleteProbeUsers,
+  encodeCookie,
 } from "../helpers/auth-session-fixture";
 
 type CookieEntry = { name: string; value: string } & Record<string, unknown>;
@@ -38,11 +42,19 @@ const jar = new Map<string, CookieEntry>();
  */
 let cookieWritesThrow = false;
 
+/**
+ * How many times the mock's `set` was invoked. Asserted, because a branch that is
+ * reachable but never taken passes every assertion in its own test - which is precisely
+ * how the first two versions of the throw test went green while testing nothing.
+ */
+let cookieWriteAttempts = 0;
+
 vi.doMock("next/headers", () => ({
   cookies: async () => ({
     getAll: () => [...jar.values()],
     get: (name: string) => jar.get(name),
     set: (name: string, value: string, options?: Record<string, unknown>) => {
+      cookieWriteAttempts += 1;
       if (cookieWritesThrow)
         throw new Error("Cookies can only be modified in a Server Action or Route Handler.");
       jar.set(name, { name, value, ...options });
@@ -62,17 +74,15 @@ const server = await import("../../lib/supabase/server");
 
 let userId = "";
 let cookie = "";
-const createdIds: string[] = [];
 
 beforeAll(async () => {
   const probe = await createProbeSession();
   userId = probe.userId;
   cookie = probe.cookie;
-  createdIds.push(userId);
 });
 
 afterAll(async () => {
-  const leftovers = await deleteProbeUsers(createdIds);
+  const leftovers = await deleteProbeUsers(createdProbeUserIds);
   expect(leftovers).toEqual([]);
 });
 
@@ -129,17 +139,31 @@ it("getUser returns the signed-in user", async () => {
 });
 
 it("survives a cookie write that throws, which is what a Server Component does", async () => {
-  // Found by mutation: removing the `catch` in server.ts leaves the suite green, because
-  // the mocked `cookieStore.set` was a plain Map write that could never throw. So the one
-  // thing standing between a token refresh and a 500 on every read-only render - the
-  // swallowed write - was never exercised. In production `cookieStore.set` DOES throw
-  // inside a Server Component, and the proxy has already refreshed and written the cookie,
-  // so swallowing is correct here rather than merely convenient.
-  seed(cookie);
+  // Found by mutation TWICE. First pass: the mocked `cookieStore.set` was a plain Map
+  // write that could never throw, so the catch in server.ts was never reached. Second
+  // pass, after making the mock throwable: this test seeded a FRESH cookie, and a fresh
+  // token is valid, so `@supabase/ssr` never called `setAll` at all - MEASURED, the mock's
+  // `set` was invoked ZERO times. A reachable-but-never-taken branch is still a ratchet:
+  // removing the try/catch left the suite green.
+  //
+  // The fix is the one `auth-session.test.ts` already uses: rewind `expires_at` so the
+  // token is stale, which forces the refresh that forces the cookie write that throws.
+  // In production `cookieStore.set` DOES throw inside a Server Component - `cookies()` is
+  // writable only from a Server Action or Route Handler - and the proxy has already
+  // refreshed and written the cookie, so swallowing is correct here, not merely convenient.
+  const stale = encodeCookie({
+    ...decodeCookie(cookie),
+    expires_at: Math.floor(Date.now() / 1000) - 60,
+  });
+  seed(stale);
+  cookieWriteAttempts = 0;
   cookieWritesThrow = true;
   try {
     await expect(server.getUser()).resolves.not.toBeNull();
     await expect(server.getClaims()).resolves.not.toBeNull();
+    // And the branch was genuinely taken, rather than the assertions passing because
+    // nothing happened at all - which is exactly how the previous two versions passed.
+    expect(cookieWriteAttempts).toBeGreaterThan(0);
   } finally {
     cookieWritesThrow = false;
   }

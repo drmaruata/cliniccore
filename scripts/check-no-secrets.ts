@@ -35,7 +35,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *
  * ENFORCEMENT LAYERS. `lib/supabase/server.ts` MUST begin with
  * `import "server-only"`; that is the PRIMARY defence, because it fails at
- * bundle time and cannot be bypassed by an alias this scanner does not model.
+    // CORRECTED after Task 12: that claim was wrong. vitest.config.ts DOES alias
+    // "server-only" (to a stub, so tests can import lib/supabase/server.ts), and
+    // tests/unit/server-boundary.test.ts is what keeps that alias out of the production
+    // config files - not this scanner. This scanner still enforces the SUPABASE_SERVICE_ROLE_KEY
+    // path rule and the "use client" rule; the import "server-only" line itself is pinned
+    // by that test, not here.
  * Rule 3 is the SECONDARY layer: it fails in `npm run lint` even when the
  * bundler would not, and it catches the mistake in review. See
  * docs/IMPLEMENTATION_STATUS.md — the obligation is carried into the later
