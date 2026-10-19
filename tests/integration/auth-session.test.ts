@@ -75,13 +75,37 @@ it("the root proxy exports a named `proxy` function, not `middleware`", () => {
   expect(exported.middleware).toBeUndefined();
 });
 
-it("the root proxy actually returns the refresh result", () => {
-  // Asserting the export SHAPE is not enough, and the gap was found by mutation: a proxy
-  // whose body returns `undefined` keeps the suite green, Next falls back to a plain
-  // `NextResponse.next()`, every page renders, and session refresh silently never runs -
-  // the exact failure this file exists to prevent. Cheap to pin, so it is pinned.
-  const proxy = (rootProxy as { proxy: (r: NextRequest) => Promise<unknown> }).proxy;
-  return expect(proxy(requestCarrying())).resolves.toBeInstanceOf(NextResponse);
+it("the root proxy actually delivers the refreshed cookie to the browser", async () => {
+  // Found by mutation, twice. Asserting only `resolves.toBeInstanceOf(NextResponse)` is
+  // defeated by
+  //     void updateSession(request); return NextResponse.next();
+  // which passes every assertion in this file with eslint 0 and tsc 0. That proxy still
+  // mutates `request.cookies` in place, so the route sees a live token, but the response
+  // carrying `Set-Cookie` is thrown away - the browser never receives a refreshed token
+  // and the user is signed out mid-session. That is verbatim the failure this file exists
+  // to prevent, and asserting the RETURN TYPE cannot see it.
+  //
+  // So the refreshed Set-Cookie is asserted on the root proxy's OWN response, which is the
+  // only thing the browser actually receives.
+  const stale = encodeCookie({
+    ...decodeCookie(sharedCookie),
+    expires_at: Math.floor(Date.now() / 1000) - 60,
+  });
+  const request = requestCarrying(stale);
+  const proxy = (rootProxy as { proxy: (r: NextRequest) => Promise<NextResponse> }).proxy;
+
+  const response = await proxy(request);
+
+  expect(response).toBeInstanceOf(NextResponse);
+  const setCookie = response.headers.getSetCookie().join(";");
+  expect(setCookie, "the browser must actually receive the refreshed session cookie").not.toBe("");
+  expect(setCookie).toContain(AUTH_COOKIE);
+  // And what it received is the REFRESHED cookie, not the expired one that was sent.
+  const refreshed = request.cookies.get(AUTH_COOKIE)?.value ?? "";
+  expect(refreshed).not.toBe("");
+  expect(refreshed).not.toBe(stale);
+  expect(setCookie).toContain(refreshed);
+  expect(Number(decodeCookie(refreshed).expires_at)).toBeGreaterThan(Math.floor(Date.now() / 1000));
 });
 
 it("the proxy matcher skips static assets and anything with a file extension", () => {

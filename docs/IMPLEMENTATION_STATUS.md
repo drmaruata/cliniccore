@@ -2135,3 +2135,113 @@ exactly one refresh and emits one batch, across an expired token, an expired tok
 garbage access token, and an invalid refresh token. It is latent because `@supabase/ssr`
 chunks large sessions across cookies and a future bump could batch differently. Revisit if
 a second `getClaims`/`updateUser` call lands in one request.
+
+## Task 12 re-review: three "closed" findings that were closed in name only
+
+Re-review of `54308a2`. All seven substantive findings from round 1 were confirmed CLOSED -
+including the HIGH - and 40 mutations could not reinstate any of them. What it found instead
+was that the FIXES I added were themselves ratchets, plus a real flake.
+
+### N1 (HIGH) - the test I added for the root proxy could not see the root proxy
+
+I added "the root proxy actually returns the refresh result" and asserted only
+`resolves.toBeInstanceOf(NextResponse)`. MEASURED: this is defeated by
+
+```ts
+void updateSession(request);
+return NextResponse.next();
+```
+
+with eslint 0, tsc 0 and the whole suite green. That proxy still mutates `request.cookies`
+in place, so the route sees a live token - but the response carrying `Set-Cookie` is thrown
+away, the browser never receives a refreshed token, and the user is signed out mid-session.
+Verbatim the failure `lib/supabase/proxy.ts` exists to prevent, and asserting a RETURN TYPE
+cannot see it. Every other test in the file calls `updateSession` directly, so nothing
+observed the wiring at all.
+
+The test now drives `rootProxy.proxy(request)` with a stale cookie and asserts the refreshed
+`Set-Cookie` is on the proxy's OWN response. Both three-line defeats are now caught.
+
+### N2 - the rate-limit fallback covered the call it did not make
+
+The fallback handled a rate-limited `signUp` but then called `signInWithPassword`, which has
+its OWN per-IP limit and had no fallback at all. MEASURED: 6 of 8 consecutive runs of the
+two auth files failed, on an unmodified tree - a broken promise in the fixture's own
+documentation. The round-1 fix had also doubled the per-run signup count from 1 to 2 by
+adding a second file.
+
+Both calls now go through one bounded retry, with the final error naming the cause rather
+than surfacing as an unrelated infra failure. Verified 6/6 consecutive runs.
+
+### N3 - the primary boundary had no enforcing test
+
+`import "server-only"` as the first line of `lib/supabase/server.ts` is the only
+bundle-time defence against a Client Component importing the service-role client. MEASURED:
+deleting that line, or moving it below the imports, leaves the ENTIRE suite green - lint,
+typecheck, test and build all pass. `check-no-secrets` implements rules 1-4 and none
+inspects it, and its header comment claiming the boundary "cannot be bypassed by an alias
+this scanner does not model" became actively misleading once `vitest.config.ts` grew an
+alias for that exact specifier.
+
+`tests/unit/server-boundary.test.ts` now pins it, along with the alias not leaking into
+`next.config.ts`, `tsconfig.json` or `eslint.config.mjs`. The re-review independently
+confirmed by BUILD that the boundary fires when the import is present, so the import works;
+what was missing was anything checking that it stayed.
+
+### N4 - the Server-Component swallow was never exercised
+
+Removing the `catch {}` in `server.ts`'s `setAll` left the suite green, because the mocked
+`cookieStore.set` was a plain Map write that could never throw. In production it DOES throw
+inside a Server Component - `cookies()` is writable only from a Server Action or Route
+Handler - so the one thing standing between a token refresh and a 500 on every read-only
+render was untested. The mock can now be told to throw, and both helpers are asserted to
+survive it.
+
+### Prose that claimed enforcement which does not exist
+
+Three comments, corrected rather than left standing: the fixture said its fallback's
+narrowness "is asserted" (nothing asserts it - widening the regex to swallow every signup
+error stays green, now recorded as a known ratchet); a `__constructedWith` marker that
+recorded nothing and was read by nothing; and the cleanup helper's proof of its own work,
+which is self-referential by construction - a helper returning `[]` would satisfy every call
+site. That last one is inherent to putting the check inside the thing being checked, and is
+now said so.
+
+### CORRECTION to a mechanism I had recorded wrongly
+
+The latent `setAll`-called-twice item said it is unreachable today because "@supabase/ssr
+chunks large sessions across cookies and a future bump could batch differently". That
+mechanism is WRONG: `createChunks` returns an ARRAY consumed by a SINGLE `setAll` call, so
+chunking widens one batch and cannot create a second one. The re-review measured all four
+shapes against the live server - `getClaims`, `getClaims`+`getUser`, `2 x getClaims`,
+`2 x getUser` - and `setAll` fired exactly once every time. Recorded for the correct reason
+now: a second `getClaims`/`updateUser`/`onAuthStateChange` in one request, or a library bump
+emitting two batches.
+
+"Record it and move on" is still the right call for that item - it is genuinely unreachable
+
+- but for a reason that survived measurement.
+
+### Mutation matrix after the re-review fixes: 10 of 10, zero ratchets
+
+Both three-line defeats of the root proxy, the round-1 HIGH reintroduced, `getUser` swallowing
+every error, cookie options dropped, `secure` hard-coded, a response-only write, the rebuild
+omitted, `import "server-only"` deleted, and the Server-Component catch removed: **every one
+turns the suite red.**
+
+One correction to my own reporting: an earlier entry counted "dropping `await` on the proxy
+call" among the caught mutations and then listed it as a benign ratchet in the next sentence.
+It is benign - `async` unwraps the promise, so there is no behavioural difference - and the
+count was wrong.
+
+### Still open, deliberately
+
+- `setAll` called more than once still discards earlier cookies. Unreachable, now recorded
+  for the right reason.
+- The fixture's fallback narrowness is unasserted (known ratchet, noted above).
+- The cleanup proof is self-referential (inherent, noted above).
+- `secure` depends on deployment configuration: a TLS-terminating proxy that omits
+  `x-forwarded-proto` issues the production PHI session cookie without `Secure`, silently.
+  The tests pin the CODE's mapping, not Next's runtime derivation of `nextUrl.protocol`, so a
+  Next upgrade changing `initProtocol` would keep the suite green while production changed.
+  Worth a startup check or a runbook line before any self-hosted deployment.

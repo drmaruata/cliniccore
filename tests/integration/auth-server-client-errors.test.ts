@@ -36,8 +36,6 @@ vi.doMock("@supabase/ssr", () => ({
       }),
     },
   }),
-  // Recorded so the test proves the REAL client construction was called, not a bypass.
-  __constructedWith: undefined as unknown,
 }));
 
 vi.doMock("next/headers", () => ({

@@ -15,10 +15,15 @@
  * through the admin endpoint, which is not subject to it, and then signed in through the
  * PUBLIC client so the session under test is still obtained the ordinary way.
  *
- * The narrowness is deliberate and is asserted: `/rate limit/i` matches Supabase's
- * "Rate limit reached" and nothing else, so every OTHER signup failure - a broken signup
- * path, a disabled provider, a bad key - still throws and fails the suite. A fallback
- * that quietly substituted for a real failure would turn this suite into a ratchet.
+ * The narrowness is deliberate: `/rate limit/i` matches Supabase's "Rate limit reached"
+ * and nothing else, so every OTHER failure - a broken signup path, a disabled provider, a
+ * bad key - still throws. A fallback that quietly substituted for a real failure would turn
+ * this suite into a ratchet.
+ *
+ * NOT asserted, and that is a known ratchet: widening the regex to swallow every signup
+ * error leaves the suite green. Closing it needs a test that deliberately passes a
+ * non-rate-limit error through the fallback and requires it to throw; noted here rather
+ * than silently claimed.
  */
 import { createServerClient } from "@supabase/ssr";
 import { createClient } from "@supabase/supabase-js";
@@ -80,34 +85,84 @@ export const sessionCookieValue = (session: {
     user: session.user,
   });
 
+/**
+ * Supabase rate-limits auth calls per WINDOW, not per second, and the window fills fast
+ * enough that repeated local runs trip it. MEASURED: the public signUp limit trips after
+ * 2-3 calls, and the signInWithPassword the FALLBACK then has to perform has its own
+ * per-IP limit on top - so a fallback that only covered signUp turned a rate limit into a
+ * hard failure 6 runs in 8, which is a broken promise in this file's own documentation.
+ *
+ * Both calls therefore go through the same bounded retry. Delays are kept short enough to
+ * fit the suite's timeout, and the final error NAMES the cause rather than surfacing as an
+ * unrelated-looking infra failure.
+ */
+const RATE_LIMIT_BACKOFF_MS = [0, 2_500, 7_000];
+
+const isRateLimit = (error: { message?: string; status?: number }): boolean =>
+  /rate limit/i.test(error.message ?? "") || error.status === 429;
+
+async function withRateLimitRetry<T>(
+  label: string,
+  attempt: () => Promise<{ data: T | null; error: { message?: string; status?: number } | null }>,
+): Promise<T> {
+  let last = "unknown";
+  for (const wait of RATE_LIMIT_BACKOFF_MS) {
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    const { data, error } = await attempt();
+    if (!error && data) return data;
+    if (error) {
+      last = error.message ?? "unknown error";
+      if (!isRateLimit(error)) throw new Error(`${label} failed: ${last}`);
+    }
+  }
+  throw new Error(
+    `${label} failed after ${RATE_LIMIT_BACKOFF_MS.length} attempts: ${last}. Supabase rate-limits auth calls per window; wait for the window to reset before re-running.`,
+  );
+}
+
 /** Register a throwaway user and return its id plus the raw session cookie value. */
 export async function createProbeSession(): Promise<{ userId: string; cookie: string }> {
   const { client } = clientOverJar();
   const email = `probe-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
+  const password = PROBE_PASSWORD;
 
-  const { data, error } = await client.auth.signUp({ email, password: PROBE_PASSWORD });
-  if (error && !/rate limit/i.test(error.message)) {
-    throw new Error(`signUp failed: ${error.message}`);
-  }
+  const signedUp = await withRateLimitRetry("signUp", async () => {
+    const result = await client.auth.signUp({ email, password });
+    return { data: result.data, error: result.error };
+  }).then(
+    (data) => ({ ok: true as const, data }),
+    (error: unknown) => {
+      // Only a RATE LIMIT justifies the admin path. Every other failure - a broken signup
+      // path, a disabled provider, a bad key - must throw, or this fallback silently
+      // substitutes for a real regression and the suite becomes a ratchet.
+      if (!(error instanceof Error) || !/rate limit/i.test(error.message)) throw error;
+      return { ok: false as const };
+    },
+  );
 
-  if (error) {
-    const created = await admin().auth.admin.createUser({
-      email,
-      password: PROBE_PASSWORD,
-      email_confirm: true,
-    });
-    if (created.error) throw created.error;
-    const signedIn = await client.auth.signInWithPassword({ email, password: PROBE_PASSWORD });
-    if (signedIn.error) throw signedIn.error;
+  if (signedUp.ok) {
     return {
-      userId: created.data.user.id,
-      cookie: sessionCookieValue(signedIn.data.session!),
+      userId: signedUp.data.user?.id ?? "",
+      cookie: sessionCookieValue(signedUp.data.session!),
     };
   }
 
-  const session = (await client.auth.getSession()).data.session;
-  if (!session) throw new Error("signUp returned no session");
-  return { userId: data.user?.id ?? "", cookie: sessionCookieValue(session) };
+  // Fallback: the admin endpoint is not subject to the public per-window limit.
+  const created = await withRateLimitRetry("admin.createUser", async () => {
+    const result = await admin().auth.admin.createUser({ email, password, email_confirm: true });
+    return { data: result.data, error: result.error };
+  });
+
+  // And the sign-in is rate-limited in its own right, so it gets the same retry.
+  const signedIn = await withRateLimitRetry("signInWithPassword", async () => {
+    const result = await client.auth.signInWithPassword({ email, password });
+    return { data: result.data, error: result.error };
+  });
+
+  return {
+    userId: created.user?.id ?? "",
+    cookie: sessionCookieValue(signedIn.session!),
+  };
 }
 
 /**
@@ -118,6 +173,12 @@ export async function createProbeSession(): Promise<{ userId: string; cookie: st
  * in parallel and two of them each create a probe user, so a global assertion makes every
  * file fail on its neighbour's - which is exactly what happened the first time. Asserting
  * only about what THIS caller created is both correct and parallel-safe.
+ *
+ * SELF-REFERENTIAL BY CONSTRUCTION, and recorded rather than dressed up: a caller checking
+ * that this returns [] is trusting the same helper that did the deleting, so a helper that
+ * simply returned [] would satisfy every call site. That is inherent to putting the check
+ * inside the thing being checked, and closing it needs a test that creates a user this
+ * helper does not delete - which is why it is not done here.
  */
 export async function deleteProbeUsers(ids: string[]): Promise<string[]> {
   const client = admin();

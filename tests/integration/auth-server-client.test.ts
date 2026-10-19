@@ -30,11 +30,21 @@ type CookieEntry = { name: string; value: string } & Record<string, unknown>;
 /** The jar `next/headers` is mocked over; the tests seed and clear it directly. */
 const jar = new Map<string, CookieEntry>();
 
+/**
+ * When set, the mocked `cookieStore.set` throws, which is what really happens inside a
+ * Server Component: `cookies()` can be WRITTEN from a Server Action or Route Handler and
+ * can only be READ from a Server Component, so a refresh during a read-only render lands in
+ * a `set()` that throws.
+ */
+let cookieWritesThrow = false;
+
 vi.doMock("next/headers", () => ({
   cookies: async () => ({
     getAll: () => [...jar.values()],
     get: (name: string) => jar.get(name),
     set: (name: string, value: string, options?: Record<string, unknown>) => {
+      if (cookieWritesThrow)
+        throw new Error("Cookies can only be modified in a Server Action or Route Handler.");
       jar.set(name, { name, value, ...options });
     },
     delete: (name: string) => {
@@ -116,6 +126,23 @@ it("getUser returns the signed-in user", async () => {
   const user = await server.getUser();
   expect(user?.id).toBe(userId);
   expect(user?.email).toContain("@");
+});
+
+it("survives a cookie write that throws, which is what a Server Component does", async () => {
+  // Found by mutation: removing the `catch` in server.ts leaves the suite green, because
+  // the mocked `cookieStore.set` was a plain Map write that could never throw. So the one
+  // thing standing between a token refresh and a 500 on every read-only render - the
+  // swallowed write - was never exercised. In production `cookieStore.set` DOES throw
+  // inside a Server Component, and the proxy has already refreshed and written the cookie,
+  // so swallowing is correct here rather than merely convenient.
+  seed(cookie);
+  cookieWritesThrow = true;
+  try {
+    await expect(server.getUser()).resolves.not.toBeNull();
+    await expect(server.getClaims()).resolves.not.toBeNull();
+  } finally {
+    cookieWritesThrow = false;
+  }
 });
 
 it("the two helpers agree about who is signed in", async () => {
