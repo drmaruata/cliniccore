@@ -2037,3 +2037,101 @@ INSERT and DELETE are both closed and the membership row must be written by a de
 project's exact-pin convention. `tests/unit/design-tokens.test.ts` pins the number of code
 files under its scan root and correctly broke at 24 — `lib/supabase/{client,server,proxy}.ts`
 are under `lib/`; the ROOT `proxy.ts` is not counted because it is not under a scan root.
+
+## Task 12 review: a HIGH contract violation that zero-coverage shipped, and two ratchets my own mutation run missed
+
+Review of `211bcc1`.
+
+### HIGH - `getUser()` threw where its own signature promised `null`
+
+supabase-js delivers "there is no session" as an `AuthSessionMissingError` WITH
+`data.user` null. The shipped code did `if (error) throw error`, so that `data.user ?? null`
+on the next line was **unreachable**, and `Promise<User | null>` was a lie on the most common
+path in the product: every anonymous page render. A caller writing the obvious
+`if (!user) redirect("/login")` got an uncaught throw instead of a redirect.
+
+The stated intent - that "no user" and "could not ask" stay distinguishable - was not
+delivered either, because both threw the same thing. Now `instanceof AuthSessionMissingError`
+maps to `null` and only a genuine failure propagates.
+
+### WHY IT SHIPPED: `lib/supabase/server.ts` had ZERO coverage
+
+`server-only` THROWS on import outside a React Server Component bundler, which makes the
+module unimportable from a test at all. So the file carrying the repo's hardest boundary
+obligation, and three of the five interfaces the brief names, was never exercised - and a
+live contract violation sat inside it undetected.
+
+Fixed with a `server-only` alias to `tests/helpers/server-only-stub.ts` in
+`vitest.config.ts`. The production boundary is untouched; the package still fails a genuine
+client-component build, which is what it is for.
+
+### Two ratchets my mutation run did not report
+
+**Dropping the cookie `options`.** `response.cookies.set(name, value)` without the options
+argument keeps the suite green while silently losing `SameSite=lax` - a CSRF posture change
+on the session cookie of a PHI system. Every other assertion in the file reads
+`response.cookies.get(name)?.value`, which is the value and never the attributes.
+
+**The root `proxy()` body was never executed.** A `proxy()` returning `undefined` keeps the
+suite green; Next falls back to a plain `NextResponse.next()`, every page renders, and
+session refresh silently never runs - the exact failure the file exists to prevent. The
+test asserted only the export SHAPE.
+
+### And one I introduced with the fix
+
+Replacing `instanceof AuthSessionMissingError` with a bare `return null` also keeps the
+suite green, and that is the failure the JSDoc claims to prevent: an auth-server blip
+telling every caller "nobody is signed out", signing out a clinic that was working a
+moment ago, with no error anywhere. It cannot be provoked against the live server, so the
+branch is pinned in `tests/integration/auth-server-client-errors.test.ts` with the network
+replaced by two scripted errors. That file is fully mocked and performs no signup.
+
+### Cookie attributes, measured rather than assumed
+
+`@supabase/ssr` 0.12.7's `DEFAULT_COOKIE_OPTIONS` is
+`{ path: "/", sameSite: "lax", httpOnly: false, maxAge: 400d }`. Two consequences:
+
+- **`httpOnly: false` is DELIBERATE and must stay.** The browser client restores its session
+  by reading `document.cookie`; an HttpOnly cookie would break sign-in on a full page load.
+  My first assertion in this pass asserted HttpOnly was PRESENT, which was simply wrong, and
+  is now asserted absent so a library bump that flips it is visible rather than silent.
+- **`secure` was absent entirely**, which is a genuine weakness for a PHI session cookie: a
+  browser will also send it over plain HTTP. `updateSession` now derives it from the
+  request's own protocol. Hard-coding it would stop the cookie working at all over
+  `http://localhost`, which presents exactly like a broken session, so both branches are
+  pinned.
+
+### A correction to my own reasoning
+
+The sign-out test's ordering comment claimed `signOut()` defaults to scope `global` and
+"revokes EVERY refresh token for the user including the shared session". MEASUREMENT
+contradicts the consequence: the token IS revoked server-side, but a live client session
+survives it anyway, because `getClaims()` verifies the cached access token locally and never
+reaches for the refresh token. The ordering is still required - because the refresh test
+drives a cookie whose `expires_at` is in the past, which DOES force a network refresh, which
+DOES fail once the token is gone - but the next agent was being handed a false mechanism to
+reason from, and it is corrected.
+
+### A test bug of my own, worth naming
+
+The cleanup assertion originally asked "does ANY probe user exist?", which is wrong because
+vitest runs test FILES in parallel and two files each create one - so every file failed on
+its neighbour's user. It now asserts only about the ids that caller created.
+
+### Mutation matrix after the fixes - 10 of 10 caught
+
+Reverting the HIGH, swallowing every `getUser` error, swallowing every `getClaims` error,
+dropping cookie options, omitting `secure`, hard-coding `secure`, an empty proxy body, a
+response-only write, and omitting the rebuild: **every one turns the suite red.** The two
+benign ratchets remain recorded rather than forced: the initial response built without
+`{request}` (setAll replaces it whenever it matters), and dropping `await` on the proxy
+call (`async` unwraps the promise, so there is no behavioural difference).
+
+### Latent, recorded not fixed
+
+`setAll` called MORE THAN ONCE discards cookies written by the earlier call, because the
+rebuild constructs a fresh response. MEASURED unreachable today - `getClaims()` makes
+exactly one refresh and emits one batch, across an expired token, an expired token with a
+garbage access token, and an invalid refresh token. It is latent because `@supabase/ssr`
+chunks large sessions across cookies and a future bump could batch differently. Revisit if
+a second `getClaims`/`updateUser` call lands in one request.

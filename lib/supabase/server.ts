@@ -26,6 +26,7 @@ import "server-only";
  */
 import { createServerClient as createSsrServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { AuthSessionMissingError } from "@supabase/supabase-js";
 import type { User } from "@supabase/supabase-js";
 
 import type { Database } from "../../types/database.types";
@@ -60,18 +61,35 @@ export async function createServerClient() {
 /**
  * The authenticated user, re-fetched from the auth server, or null when signed out.
  *
- * Throws on a transport or auth failure rather than returning null, because "no user" and
- * "could not ask" are different answers and collapsing them would log a healthy clinic
- * out during an auth-server blip.
+ * WHY SIGNED-OUT IS NOT AN ERROR HERE, DESPITE BEING ONE IN THE LIBRARY. supabase-js
+ * delivers "there is no session" as an `AuthSessionMissingError` with `data.user` null.
+ * MEASURED. An earlier version of this function threw on any error, which made the
+ * `data.user ?? null` line below unreachable AND contradicted the declared
+ * `Promise<User | null>`: a caller writing the obvious `if (!user) redirect("/login")`
+ * got an uncaught throw on every anonymous page render instead of a redirect.
+ *
+ * So the signed-out case maps to null, and only a genuine failure - the auth server
+ * unreachable, a token rejected for a real reason - propagates. Those two must stay
+ * distinguishable: collapsing them turns an auth-server blip into "nobody is signed in",
+ * which is what this function exists to prevent.
  */
 export async function getUser(): Promise<User | null> {
   const supabase = await createServerClient();
   const { data, error } = await supabase.auth.getUser();
-  if (error) throw error;
+  if (error) {
+    if (error instanceof AuthSessionMissingError) return null;
+    throw error;
+  }
   return data.user ?? null;
 }
 
-/** The signed-in subject from the verified JWT, or null when signed out. Cheap and local. */
+/**
+ * The signed-in subject from the verified JWT, or null when signed out. Cheap and local.
+ *
+ * MEASURED: unlike `getUser`, this returns a clean null when signed out rather than
+ * raising, so it needs no error-class handling - but the symmetry is worth knowing if
+ * the library ever changes, so the behaviour is pinned by a test.
+ */
 export async function getClaims(): Promise<{ sub: string } | null> {
   const supabase = await createServerClient();
   const { data, error } = await supabase.auth.getClaims();

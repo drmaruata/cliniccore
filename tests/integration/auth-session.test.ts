@@ -1,44 +1,42 @@
 // @vitest-environment node
 /*
- * Task 12 - Supabase SSR clients, session refresh, and the root proxy.
+ * Task 12 - session refresh and the root proxy.
  *
  * WHY THIS RUNS AGAINST THE REAL AUTH SERVER rather than a mock. The whole point of Task
- * 12 is cookie wiring, and the failure the brief calls out is one a mock cannot
- * reproduce: `setAll` writing to only ONE of `request.cookies` and the response
- * desynchronises the browser from the server, and the symptom is sessions that die
- * silently hours later. Every assertion here drives the real `@supabase/ssr` client over
- * a real signed session.
+ * 12 is cookie wiring, and the failure the brief calls out is one a mock cannot reproduce:
+ * `setAll` writing to only ONE of `request.cookies` and the response desynchronises the
+ * browser from the server, and the symptom is sessions that die silently hours later.
+ * Every assertion here drives the real `@supabase/ssr` client over a real signed session.
  *
- * WHY ONE SIGNUP PER RUN, AND WHY THAT IS A HARD CONSTRAINT. Supabase rate-limits public
- * signUp per window. MEASURED: at three signups per run this file went green, green, then
- * one failure, then three, as the window filled - the signature of a rate limit, not of a
- * logic bug, and easy to misread as flakiness in the code under test. One user is created
- * in `beforeAll` and shared by every test that only needs to READ a session.
+ * WHY ONE SIGNUP PER RUN. Supabase rate-limits public signUp per window. MEASURED: at
+ * three signups per run this file went green, green, then one failure, then three as the
+ * window filled - the signature of a rate limit, not of a logic bug, and easy to misread
+ * as flakiness in the code under test. See tests/helpers/auth-session-fixture.ts, which
+ * also carries the narrow admin fallback for when the window IS full.
  *
- * WHY THE SIGN-OUT TEST IS DECLARED LAST. `signOut()` defaults to scope "global" and
- * revokes EVERY refresh token for the user, including the shared session. An earlier
- * version ran it first and every later test failed with "Invalid Refresh Token: Refresh
- * Token Not Found" - a fixture destroying itself, surfacing as three unrelated failures.
- * Vitest runs a file's tests in declaration order, so placing it last is deterministic;
- * if this file is ever made concurrent, this test needs its own user.
- *
- * WHAT IS CLEANED UP. Real auth users are created in the live project on every run. They
- * are deleted in `afterAll` with the service role, and the suite FAILS if any survive.
+ * WHY THE SIGN-OUT TEST IS DECLARED LAST - and the reason is NOT "global scope revokes
+ * every refresh token", which is what an earlier version of this comment claimed and
+ * which MEASUREMENT contradicts. The token IS revoked server-side, but a live client
+ * session survives that anyway: `getClaims()` verifies the cached access token locally and
+ * never reaches for the refresh token. The real dependency is the test above - it drives a
+ * cookie whose `expires_at` is in the past, which DOES force a network refresh, which DOES
+ * fail once the token is gone. Vitest runs a file's tests in declaration order, so placing
+ * this last is deterministic; if this file is ever made concurrent it needs its own user.
  */
-import { createServerClient } from "@supabase/ssr";
-import { createClient } from "@supabase/supabase-js";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { envValue } from "./helpers/database";
+import {
+  AUTH_COOKIE,
+  PUBLISHABLE_KEY,
+  SUPABASE_URL,
+  clientOverJar,
+  createProbeSession,
+  decodeCookie,
+  deleteProbeUsers,
+  encodeCookie,
+} from "../helpers/auth-session-fixture";
 
-const SUPABASE_URL = envValue("NEXT_PUBLIC_SUPABASE_URL") ?? "";
-const PUBLISHABLE_KEY = envValue("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY") ?? "";
-const SERVICE_ROLE_KEY = envValue("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-
-// The client modules read process.env at CALL time, so setting it here - rather than
-// relying on Vite's envPrefix - is enough, and matches how the database helper already
-// refuses to depend on that detail.
 beforeAll(() => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = SUPABASE_URL;
   process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY = PUBLISHABLE_KEY;
@@ -47,105 +45,43 @@ beforeAll(() => {
 const { updateSession } = await import("../../lib/supabase/proxy");
 const rootProxy = await import("../../proxy");
 
-const AUTH_COOKIE = `sb-${new URL(SUPABASE_URL).hostname.split(".")[0]}-auth-token`;
-const PASSWORD = "Pr0be-Passw0rd!x";
-
-const decodeCookie = (value: string): Record<string, unknown> =>
-  JSON.parse(Buffer.from(value.replace(/^base64-/, ""), "base64url").toString("utf8"));
-
-const encodeCookie = (value: Record<string, unknown>): string =>
-  `base64-${Buffer.from(JSON.stringify(value), "utf8").toString("base64url")}`;
-
-const admin = () =>
-  createClient(SUPABASE_URL, SERVICE_ROLE_KEY, { auth: { persistSession: false } });
-
-/** An SSR client over a plain in-memory cookie jar, seeded with `seed`. */
-function clientOverJar(seed?: Record<string, { name: string; value: string }>) {
-  const jar = new Map(seed ? Object.entries(seed) : []);
-  return {
-    jar,
-    client: createServerClient(SUPABASE_URL, PUBLISHABLE_KEY, {
-      cookies: {
-        getAll: () => [...jar.values()],
-        setAll: (list) => {
-          for (const cookie of list) jar.set(cookie.name, cookie);
-        },
-      },
-    }),
-  };
-}
-
 let sharedCookie = "";
-const createdUserIds: string[] = [];
+const createdIds: string[] = [];
 
 beforeAll(async () => {
-  const { client } = clientOverJar();
-  const email = `probe-${Date.now()}-${Math.floor(Math.random() * 1e6)}@example.test`;
-
-  // The PUBLIC signup path is what this suite is here to exercise, so it is tried first.
-  let session = null;
-  const { data, error } = await client.auth.signUp({ email, password: PASSWORD });
-
-  if (error) {
-    if (!/rate limit/i.test(error.message)) {
-      throw new Error(`signUp failed: ${error.message}`);
-    }
-    // Supabase rate-limits public signUp per window, and this suite is meant to be
-    // re-runnable. MEASURED: repeated local runs exhaust the window and the suite then
-    // fails on a rate limit rather than on anything it is testing. The admin endpoint is
-    // not subject to that limit, so create the user there and sign in through the PUBLIC
-    // client - the session under test is still a real one, obtained the ordinary way.
-    const created = await admin().auth.admin.createUser({
-      email,
-      password: PASSWORD,
-      email_confirm: true,
-    });
-    if (created.error) throw created.error;
-    createdUserIds.push(created.data.user.id);
-    const signedIn = await client.auth.signInWithPassword({ email, password: PASSWORD });
-    if (signedIn.error) throw signedIn.error;
-    session = signedIn.data.session;
-  } else {
-    createdUserIds.push(data.user?.id ?? "");
-    session = (await client.auth.getSession()).data.session;
-  }
-
-  sharedCookie = session
-    ? encodeCookie({
-        access_token: session.access_token,
-        token_type: session.token_type,
-        expires_in: session.expires_in,
-        expires_at: session.expires_at,
-        refresh_token: session.refresh_token,
-        user: session.user,
-      })
-    : "";
-  expect(sharedCookie, "the suite needs a real session for these tests to mean anything").not.toBe(
-    "",
-  );
+  const probe = await createProbeSession();
+  sharedCookie = probe.cookie;
+  createdIds.push(probe.userId);
 });
 
 afterAll(async () => {
-  if (createdUserIds.length === 0) return;
-  const client = admin();
-  for (const id of createdUserIds) {
-    const { error } = await client.auth.admin.deleteUser(id);
-    if (error) throw new Error(`cleanup failed for ${id}: ${error.message}`);
-  }
-  // Prove the cleanup rather than trusting it.
-  const { data } = await client.auth.admin.listUsers({ page: 1, perPage: 200 });
-  const leftovers = (data?.users ?? []).filter((user) => user.email?.startsWith("probe-"));
-  expect(leftovers.map((user) => user.email)).toEqual([]);
+  // Prove the cleanup rather than trusting it: an accumulating pile of probe users is
+  // the residue problem this repository has been bitten by more than once.
+  expect(await deleteProbeUsers(createdIds)).toEqual([]);
 });
+
+const requestCarrying = (value?: string) => {
+  const request = new NextRequest("https://cliniccore.test/dashboard");
+  if (value !== undefined) request.cookies.set(AUTH_COOKIE, value);
+  return request;
+};
 
 it("the root proxy exports a named `proxy` function, not `middleware`", () => {
   // Next.js 16 renamed the convention. A leftover `middleware` export is silently
   // ignored, so the session refresh would never run and users would be logged out at
   // random hours later.
-  // NOT named `module` - that identifier is reserved under @next/next rules.
   const exported = rootProxy as Record<string, unknown>;
   expect(typeof exported.proxy).toBe("function");
   expect(exported.middleware).toBeUndefined();
+});
+
+it("the root proxy actually returns the refresh result", () => {
+  // Asserting the export SHAPE is not enough, and the gap was found by mutation: a proxy
+  // whose body returns `undefined` keeps the suite green, Next falls back to a plain
+  // `NextResponse.next()`, every page renders, and session refresh silently never runs -
+  // the exact failure this file exists to prevent. Cheap to pin, so it is pinned.
+  const proxy = (rootProxy as { proxy: (r: NextRequest) => Promise<unknown> }).proxy;
+  return expect(proxy(requestCarrying())).resolves.toBeInstanceOf(NextResponse);
 });
 
 it("the proxy matcher skips static assets and anything with a file extension", () => {
@@ -168,11 +104,12 @@ it("updateSession refreshes a stale session into BOTH the request and the respon
   // A FRESH token is valid, so nothing calls `setAll` and the invariant is unobservable.
   // Rewinding `expires_at` inside the cookie - keeping the real refresh token - forces
   // the refresh path. MEASURED: `setAll` then fires and the cookie returns live.
-  const stale = { ...decodeCookie(sharedCookie), expires_at: Math.floor(Date.now() / 1000) - 60 };
+  const stale = {
+    ...decodeCookie(sharedCookie),
+    expires_at: Math.floor(Date.now() / 1000) - 60,
+  };
   const sent = encodeCookie(stale);
-
-  const request = new NextRequest("https://cliniccore.test/dashboard");
-  request.cookies.set(AUTH_COOKIE, sent);
+  const request = requestCarrying(sent);
 
   const response = await updateSession(request);
   const inResponse = response.cookies.get(AUTH_COOKIE)?.value;
@@ -203,11 +140,51 @@ it("updateSession refreshes a stale session into BOTH the request and the respon
   expect(forwarded).not.toContain(sent);
 });
 
+it("the refreshed cookie keeps its security attributes", async () => {
+  // Found by mutation: `response.cookies.set(name, value)` without the `options` argument
+  // keeps the suite green while SILENTLY dropping `SameSite=lax` and `Max-Age=0` - a CSRF
+  // posture change on the session cookie of a PHI system. Every other assertion in this
+  // file reads `response.cookies.get(name)?.value`, which is the value and never the
+  // attributes, so nothing else could have caught it.
+  const request = requestCarrying(
+    encodeCookie({ ...decodeCookie(sharedCookie), expires_at: Math.floor(Date.now() / 1000) - 60 }),
+  );
+  const response = await updateSession(request);
+  const setCookie = response.headers.getSetCookie().join(";");
+
+  expect(setCookie, "SameSite must survive - this is the CSRF control").toContain("SameSite=lax");
+  expect(setCookie).toContain("Path=/");
+  // The library sets no `secure` at all; updateSession adds it from the request protocol,
+  // and this request is https, so the cookie must not be sendable over plain HTTP.
+  expect(setCookie, "an https request must not produce a cookie that travels over http").toContain(
+    "Secure",
+  );
+
+  // Deliberately NOT HttpOnly, and asserted as such so a library bump that flips it is
+  // visible rather than silent. MEASURED: @supabase/ssr sets httpOnly:false on purpose,
+  // because the browser client restores its session by reading document.cookie. Making it
+  // HttpOnly would break sign-in on a full page load.
+  expect(setCookie).not.toContain("HttpOnly");
+});
+
+it("a plain-http request gets a cookie that is not Secure, so local dev still works", async () => {
+  // The counterpart to the assertion above, and the reason `secure` is derived from the
+  // request rather than hard-coded: hard-coding it would stop the cookie working at all
+  // over http://localhost, which looks exactly like a broken session.
+  const request = new NextRequest("http://localhost:3000/dashboard");
+  request.cookies.set(
+    AUTH_COOKIE,
+    encodeCookie({ ...decodeCookie(sharedCookie), expires_at: Math.floor(Date.now() / 1000) - 60 }),
+  );
+  const response = await updateSession(request);
+  expect(response.headers.getSetCookie().join(";")).not.toContain("Secure");
+});
+
 it("updateSession leaves a request with no session alone", async () => {
-  // The control for the test above. Without it, "both cookies are present and equal"
+  // The control for the refresh test. Without it, "both cookies are present and equal"
   // would also be satisfied by a proxy that invents a cookie for an anonymous visitor -
   // and by one that writes nothing at all, if it wrote the same absence to both sides.
-  const request = new NextRequest("https://cliniccore.test/dashboard");
+  const request = requestCarrying();
   const response = await updateSession(request);
 
   expect(response).toBeDefined();
@@ -223,9 +200,7 @@ it("keeps request and response in step when no refresh is needed", async () => {
   //
   // What must hold unconditionally is that they never DISAGREE when a cookie IS written,
   // and that the request never loses the session it arrived with.
-  const request = new NextRequest("https://cliniccore.test/dashboard");
-  request.cookies.set(AUTH_COOKIE, sharedCookie);
-
+  const request = requestCarrying(sharedCookie);
   const response = await updateSession(request);
   const inResponse = response.cookies.get(AUTH_COOKIE)?.value;
   const inRequest = request.cookies.get(AUTH_COOKIE)?.value;
@@ -239,8 +214,7 @@ it("keeps request and response in step when no refresh is needed", async () => {
 });
 
 it("sign-out clears the session", async () => {
-  // LAST, and deliberately so - see the file header. Also the brief's Step 1: claims
-  // present, signOut(), claims null.
+  // LAST, deliberately - see the file header for the measured reason.
   const { client } = clientOverJar({ [AUTH_COOKIE]: { name: AUTH_COOKIE, value: sharedCookie } });
 
   const before = await client.auth.getClaims();

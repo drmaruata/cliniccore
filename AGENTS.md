@@ -285,3 +285,12 @@ agent must not have to rediscover:
 - **The invitation-acceptance RPC must be a definer.** `organization_memberships` INSERT
   and DELETE are both closed by policy, so accepting an invitation cannot write the
   membership row as the caller.
+- **`lib/supabase/server.ts` can only be tested through the `server-only` alias in
+  `vitest.config.ts`.** The package's entry point THROWS on import outside a React Server
+  Component bundler — that is the real boundary, not a lint convention — so without the alias
+  to `tests/helpers/server-only-stub.ts` the module is unimportable from a test. It shipped
+  with zero coverage while `getUser()` contradicted its own `Promise<User | null>`. If you
+  add a server-side client and find it untestable, the alias is why, not a missing test.
+- **An assertion that any leftover probe user exists is wrong under parallel vitest.** Test
+  FILES run in parallel and two suites each create an auth user, so a global residue check
+  makes every file fail on its neighbour's. Scope it to the ids the caller created.

@@ -25,6 +25,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./", import.meta.url)),
+      // `server-only` THROWS on import outside a React Server Component bundler, which
+      // is the whole point of it in production. That also made lib/supabase/server.ts
+      // impossible to import from a test, and it shipped with zero coverage while
+      // getUser() contradicted its own declared return type. Aliasing it to a stub keeps
+      // the production boundary intact and lets the suite exercise the module.
+      "server-only": fileURLToPath(new URL("./tests/helpers/server-only-stub.ts", import.meta.url)),
     },
   },
 });

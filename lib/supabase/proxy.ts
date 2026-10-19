@@ -31,6 +31,19 @@ import type { Database } from "../../types/database.types";
 export async function updateSession(request: NextRequest): Promise<NextResponse> {
   let response = NextResponse.next({ request });
 
+  // The library's DEFAULT_COOKIE_OPTIONS are `{ path: "/", sameSite: "lax", httpOnly:
+  // false, maxAge: 400d }` - MEASURED in node_modules/@supabase/ssr. Two consequences.
+  //
+  // `httpOnly: false` is DELIBERATE and must stay: the browser client restores its
+  // session by reading document.cookie, so an HttpOnly cookie would break sign-in on a
+  // full page load. Do not "harden" this one.
+  //
+  // `secure` is absent entirely, which is a genuine weakness for a PHI session cookie -
+  // without it a browser will also send the cookie over plain HTTP. It is set here from
+  // the request's own protocol rather than hard-coded, because hard-coding it would stop
+  // the cookie working at all during local development over http://localhost.
+  const isHttps = request.nextUrl.protocol === "https:";
+
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "",
@@ -48,7 +61,7 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
           response = NextResponse.next({ request });
           // 3. and finally written to the response the browser receives
           for (const { name, value, options } of cookiesToSet) {
-            response.cookies.set(name, value, options);
+            response.cookies.set(name, value, { ...options, secure: isHttps });
           }
         },
       },
