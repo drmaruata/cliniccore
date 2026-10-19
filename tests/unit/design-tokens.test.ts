@@ -2208,13 +2208,19 @@ describe("the hex rule is not vacuous", () => {
     // Task 3 added lib/permissions/registry.ts, which is not UI surface but
     // lives under a scan root — the gate scans it rather than trusting the
     // directory a file happens to sit in. 16 -> 17 code files; measured.
-    expect(code.length + css.length).toBe(19);
-    expect(code.length).toBe(17);
+    // Task 11 added lib/utils/money.ts and lib/utils/datetime.ts on the same
+    // reasoning: neither is UI surface, but both sit under lib/, and a module
+    // that slipped past the gate would let a hard-coded hex into the codebase
+    // unnoticed. 17 -> 19 code files; measured.
+    expect(code.length + css.length).toBe(21);
+    expect(code.length).toBe(19);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was
     // invisible and the gate went quiet without failing.
     expect(files).toContain("lib/utils/cn.ts");
+    expect(files).toContain("lib/utils/money.ts");
+    expect(files).toContain("lib/utils/datetime.ts");
   });
 
   it("applies the colour-function rule to code only, and the other two to CSS too", () => {
