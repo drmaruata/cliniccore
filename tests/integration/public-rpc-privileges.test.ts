@@ -41,6 +41,7 @@ const PUBLIC_WRAPPERS = [
   "can",
   "create_organization_with_owner",
   "delete_organization",
+  "export_patients",
   "write_audit",
 ];
 

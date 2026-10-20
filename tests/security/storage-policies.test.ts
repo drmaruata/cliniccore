@@ -327,8 +327,13 @@ dbDescribe("storage buckets", () => {
       const wanted = EXPECTED_PERMISSION[key.replace(/_/g, "-")];
       expect(wanted, `${key} is not in the expected mapping`).toBeDefined();
       const want = command === "select" ? wanted?.read : wanted?.write;
-      const got = (row.text ?? "").match(/private\.can\([^,]+, '([^']+)'/)?.[1];
-      expect(got, `${row.policyname} must demand ${want}`).toBe(want);
+      // EVERY permission the policy demands, not just the first. The delete policies now
+      // demand the bucket write permission AND, as the administrative alternative,
+      // settings.manage - so taking the first match would assert the wrong thing.
+      const demanded = [...(row.text ?? "").matchAll(/private\.can\([^,]+, '([^']+)'/g)].map(
+        (match) => match[1],
+      );
+      expect(demanded, `${row.policyname} must demand ${want}`).toContain(want);
       // The bucket_id literal inside the predicate is what stops one bucket's policy
       // matching another bucket's rows. Asserting it here covers all twenty policies
       // in one place, where before it was pinned for two buckets by one behavioural
@@ -819,7 +824,7 @@ dbDescribe("suspension and the platform", () => {
   });
 });
 
-dbDescribe("uploader-only ownership is load-bearing", () => {
+dbDescribe("ownership is load-bearing, and an administrator may clean up after a departure", () => {
   // Operator-confirmed trade-off, and the third review found it defended by nothing:
   // stripping the owner clauses from every INSERT and DELETE policy left all 17 tests
   // green, because the fixture's other principals owned nothing of each other's.
@@ -831,12 +836,44 @@ dbDescribe("uploader-only ownership is load-bearing", () => {
       // clause is the only thing that can refuse him.
       await become(session, DAVE);
 
+      // DAVE holds ROLE_ADMIN_A, which includes settings.manage, so he is an ADMINISTRATOR
+      // and may now delete another user's object. The decision changed in Task 13: under
+      // uploader-only ownership, a clinician who LEFT left their documents undeletable by
+      // anyone - the uploader had gone and no other role could satisfy the ownership
+      // clause. For a PHI system that may have to erase a patient's documents on request,
+      // "nobody can delete this" is the worst available answer.
       const removed = await session.query<{ name: string }>(
         `delete from storage.objects
           where bucket_id = 'patient-documents' and name = $1 returning name`,
         [`${ORG_A}/${CLINIC_A1}/alice-report.pdf`],
       );
-      expect(removed).toEqual([]);
+      expect(removed.length).toBe(1);
+
+      // And the deletion is a TRAIL event. C4: a document removed through the Storage
+      // API - which is how the browser removes one - used to leave no record in the
+      // project's own audit log, and the table carries no foreign keys, so nothing else
+      // would have recorded it either.
+      // Read the trail as service_role. The audit_logs SELECT policy exposes a tenant's
+      // own events to its members, and the organization comes from the OBJECT PATH - so
+      // reading it as the member also proves the event was filed against the right tenant.
+      await session.query("set local role service_role");
+      const trail = await session.query<{
+        actor_user_id: string;
+        action: string;
+        organization_id: string;
+      }>(
+        `select actor_user_id, action, organization_id from public.audit_logs
+          where action = 'storage.object_deleted' and resource_type = 'patient-documents'`,
+      );
+      expect(trail.length).toBe(1);
+      expect(trail[0]?.actor_user_id).toBe(DAVE);
+      expect(
+        trail[0]?.organization_id,
+        "the event must name the tenant the object path belongs to",
+      ).toBe(ORG_A);
+      // Back to the member, or the next statement in this test would run with the wrong
+      // role and pass for the wrong reason.
+      await session.query("set local role authenticated");
 
       const renamed = await session.query<{ name: string }>(
         `update storage.objects set name = $1

@@ -3035,3 +3035,148 @@ check along with the setup.
 
 The arming now lives in a `beforeAll`, which no test can remove, and a separate test
 asserts it is present. MEASURED: with the grant insert removed, the suite goes red.
+
+## Closing the B and C groups: the public surface completed, and the limits put on it
+
+Every item in the B and C groups was RE-MEASURED before being touched, and two of the
+records turned out to be stale - A1 and A4 were already closed, and the stale record was
+the more dangerous kind, because a "known open risk" that is actually closed stops anyone
+checking, and a "closed" finding that is actually open gets trusted.
+
+### B4 - `patients.export` HAD NO ENFORCEMENT POINT ANYWHERE
+
+The registry carried it, the seed carried it, the role matrix carried it, and nothing
+required it. The plan's own note is the right diagnosis: "RLS is row-level and grants no
+column or aggregate control." A policy cannot distinguish a clinician reading one patient
+from an export of every patient, so the enforcement point for an EXPORT is a definer
+function, and there was none. `public.export_patients` is it, and because it is a definer
+the permission check inside it is the only gate.
+
+Reading one patient's identifiers is unchanged - a clinician who may read a patient may
+read that patient's identifiers, which is the clinical need. What is now bounded is the
+BULK read, and it is bounded by a permission that previously did nothing.
+
+### B5 - `roles.is_system` HAD THREE DESCRIPTIONS AND NO TWO AGREED
+
+The plan said "marks seeded roles". The generator's header said the same thing. The
+generator's CODE wrote `role.isPlatform` - so the column marks a PLATFORM role, and every
+tenant role is seeded too. The column is also write-only and INERT: nothing reads it,
+`01230` replaced its use with the real invariant (`not private.role_in_use(id)`), and
+`guard_role_identity` freezes it.
+
+The code and its comment now agree, and the meaning is stated ONCE, on the column itself,
+where anyone reading the schema finds it. The plan's sentence is a historical document and
+is not rewritten.
+
+### B6 - THE AUDIT FREE-TEXT SCREEN WAS A BLOCKLIST, AND THE BLOCKLIST HAD HOLES
+
+`summary` and `narrative` passed it. A MISSPELLED key passed it. A key with SURROUNDING
+WHITESPACE passed it, because the comparison was on the raw key. So the screen was not
+"clinical free text is refused" but "these three spellings are refused". Keys are now
+normalised - trimmed and lower-cased - before the check, and the blocklist is widened to
+the words that carry clinical prose. Still a blocklist, and still evadable by a word
+nobody thought of: the real closure is an ALLOWLIST of the keys the application emits,
+which cannot be written until the application defines that shape.
+
+### B7 - `setAll` CALLED MORE THAN ONCE DISCARDED EARLIER COOKIES
+
+The rebuild constructs a FRESH response, so a second batch's write would have thrown the
+first batch's cookies away - the browser keeping an expired token while the server
+believed it had refreshed. MEASURED unreachable today (`getClaims()` makes exactly one
+refresh and emits one batch, across an expired token, an expired token with a garbage
+access token, and an invalid refresh token), so this is defence against a change we do not
+control. The proxy now ACCUMULATES the cookies across calls and writes all of them on
+every rebuild.
+
+### C1 - ORGANIZATION CREATION WAS UNCAPED
+
+A signed-in user could create unbounded tenants, and each call re-upserted the
+twenty-one global `permissions` rows, taking row locks on them, so concurrent onboardings
+SERIALIZED. The cap is per USER over a rolling 24-hour window - a cap per organization
+would be no cap at all, because the user creates the organizations. The count is taken and
+the event recorded in the same transaction as the creation, so a creation that fails does not
+consume the allowance. `tenant_creation_events` is RLS deny-all and unwritable by any
+client, so a user cannot lift their own cap by deleting the evidence.
+
+### C2 - AN AUDIT EVENT COULD POINT AT ANOTHER TENANT'S ROW
+
+A tenant could file a row in its OWN trail referencing another tenant's row id. No
+disclosure - the trail is the caller's own and the actor is attributed correctly - but a
+trail that can be made to lie about what happened to whom is worth fixing. If the id
+matches a row in an organization-scoped table, that row must belong to the organization the
+event is filed under. Ids that match nothing are allowed: an event may refer to something
+that has since been deleted.
+
+### C3 - A DEPARTED USER'S DOCUMENTS WERE UNDELETABLE BY ANYONE
+
+A consequence of the uploader-only decision rather than a bug in it: every storage delete
+policy required `owner_id = auth.uid()::text`, so when a clinician LEFT, the documents they
+uploaded became undeletable by any role - the uploader had gone and no one else could
+satisfy the ownership clause. For a PHI system that may have to erase a patient's
+documents on request, "nobody can delete this" is the worst available answer.
+
+The fix keeps uploader-only ownership for the ordinary case and adds the one role that
+should be able to clean up after a departure: a holder of `settings.manage` in the
+organization the object belongs to - strictly NARROWER than the write permission each
+bucket's own policy already demands. The path is still checked and the organization is
+still derived from the PATH, so the relaxation cannot reach another tenant's objects.
+
+### C4 - A DOCUMENT REMOVED THROUGH THE STORAGE API LEFT NO TRAIL
+
+A PHI document removed through the Storage API - which is how the browser removes one -
+left no record in the project's own audit log, and the table carries no foreign keys, so
+nothing else would have recorded it either. An AFTER DELETE trigger on `storage.objects`
+now writes the row, with the organization derived from the object PATH and the actor from
+`auth.uid()`.
+
+A service-role deletion is recorded too, with a NULL actor: it says the platform did this
+and names nobody, which is honest. The first version SKIPPED those, on the reasoning that
+a platform erasure is recorded on the tenant's own row - and that skip was wrong, because
+the row it would have written has a NULL actor and is invisible to every tenant-scoped
+reader anyway. The skip bought nothing and cost the one case that mattered.
+
+### FOUR MISTAKES OF MINE, ALL CAUGHT BEFORE THEY SHIPPED
+
+**A migration applied with no file.** `20261014001696` was applied through the MCP and the
+file was never written, so the database had a row in its migration history that no source
+file described. `tenancy-schema.test.ts` caught it - the history had 42 rows and the
+directory 41 - and that is the test doing exactly its job. The file now exists.
+
+**`owner = auth.uid()::text` in a storage policy.** `storage.objects.owner` is a `uuid`
+and the deployed policies compare it to `auth.uid()` with no cast; my hand-typed version
+added `::text` and the database refused the migration with "operator does not exist: uuid =
+text". The policies in the file were then produced by taking the DEPLOYED expression
+verbatim and replacing only the ownership clause, so nothing else could drift - which is how
+the file first went wrong a second time, passing the raw object NAME to `clinic_ids` where
+the deployed policy passes the ORGANIZATION id.
+
+**A trigger that could not call the helper it needed.** My replacements of the three
+trigger functions dropped `security definer`, and a trigger that runs as its caller cannot
+call `role_in_use` or `is_platform_admin` - both of which were revoked from `authenticated`
+when the private surface was tightened. MEASURED: "permission denied for function
+role_in_use".
+
+**An exemption that could not fire.** The first attempt at exempting `service_role` from the
+status guard compared `current_user` - and inside a SECURITY DEFINER function `current_user`
+is the OWNER, not the caller, so the comparison was always true and the exemption never
+happened. The guard is now an INVOKER, like `guard_platform_admin`, with a precise privilege
+check: `service_role`, or a superuser, which is the platform's own administrative path and
+the owner that migrations run as.
+
+### A TEST OF MINE FAILED FOR THE WRONG REASON AND SAID NOTHING
+
+The suspended-organization test's SETUP stopped working - the guard refused the suspension -
+so the organization stayed active and the assertion below failed with "expected { ...(6) }
+to be null". It now asserts the suspension HAPPENED, which is the shape of control this
+repository has been insisting on for six tasks. The same pass found a test of mine whose
+`set local role service_role` leaked into the next statement and made it pass for the wrong
+reason.
+
+### AND MY OWN MEASUREMENT WAS WRONG TWICE
+
+The probe gave two principals the same role assignment and the same membership, so the
+"staff.manage" principal actually held `settings.manage` too and the "settings.manage"
+principal held nothing - and the results looked like findings. They were fixture bugs,
+caught by printing the PREDICATE each principal sees rather than trusting whether a command
+was accepted. A refused UPDATE raises; a filtered UPDATE succeeds with zero rows, so "the
+command ran" is not "the row changed".

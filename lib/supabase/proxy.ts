@@ -44,6 +44,24 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   // the cookie working at all during local development over http://localhost.
   const isHttps = request.nextUrl.protocol === "https:";
 
+  /**
+   * Every cookie this request wants written, accumulated across calls.
+   *
+   * WHY IT IS ACCUMULATED. The rebuild at step 2 constructs a FRESH response, so anything
+   * written to the previous one is discarded. With one `setAll` call that is invisible -
+   * but `setAll` is called once per batch, and the number of batches is the LIBRARY's
+   * business, not ours: `@supabase/ssr` chunks a large session across several cookies, and
+   * a future version could emit more than one batch. A second call would then silently
+   * DISCARD the first batch's cookies, and the browser would keep an expired token while
+   * the server believed it had been refreshed - the session-dies-mid-shift symptom.
+   *
+   * MEASURED as unreachable today - `getClaims()` makes exactly one refresh and emits one
+   * batch, across an expired token, an expired token with a garbage access token, and an
+   * invalid refresh token - so this is defence against a change we do not control, and the
+   * accumulation is what makes it harmless.
+   */
+  const pending = new Map<string, { value: string; options: Record<string, unknown> }>();
+
   const supabase = createServerClient<Database>(
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "",
@@ -53,15 +71,17 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          // 1. the request the route will run with
-          for (const { name, value } of cookiesToSet) {
+          for (const { name, value, options } of cookiesToSet) {
+            pending.set(name, { value, options: (options ?? {}) as Record<string, unknown> });
+            // 1. the request the route will run with
             request.cookies.set(name, value);
           }
           // 2. rebuilt from that request, so the refresh reaches the response
           response = NextResponse.next({ request });
-          // 3. and finally written to the response the browser receives
-          for (const { name, value, options } of cookiesToSet) {
-            response.cookies.set(name, value, { ...options, secure: isHttps });
+          // 3. and finally written to the response the browser receives - EVERY pending
+          //    cookie, not just this batch's, so a second batch cannot discard the first.
+          for (const [name, entry] of pending) {
+            response.cookies.set(name, entry.value, { ...entry.options, secure: isHttps });
           }
         },
       },
