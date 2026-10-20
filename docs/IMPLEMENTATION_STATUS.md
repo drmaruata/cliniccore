@@ -2556,3 +2556,122 @@ platform-key refusal removed (F5); stale cookie trusted; ambiguous choice picks 
 unauthenticated not short-circuited; userCan hard-coded true; requireActiveOrg returns null;
 the cookie made script-readable; toSafeResponse forwarding any Error message. **All ten
 caught, with the fixture states that make each observable.**
+
+## Task 13 third review: the code held, and the ledger of open items is now honest
+
+Third review of `53f20ee`. Verdict: **complete, not blocked.** All seven round-2 closures
+independently confirmed, the shipped mutation matrix 10/10 with no ratchets under the
+reviewer's own 34 mutations, and all six gates green on a clean tree.
+
+### The live database carried residue, and it is now gone
+
+The reviewer found 1 auth user, 9 organizations (one SUSPENDED), 4 memberships, 2 tenant
+roles and 2 role assignments left in the live project, timestamped to a run of the
+PRE-round-2 code - which had no cleanup. Purged: 0 organizations, 0 memberships, 0
+assignments, 0 auth users, 21 permissions, and the seeded `platform_super_admin` role
+intact. The database matches its migrations again.
+
+The shape of the residue is worth recording: a **suspended** tenant and a tenant role
+holding a `platform.tenants.read` grant. Neither is an escalation - `private.can` refuses
+platform keys and `guard_role_org_scope` forbids cross-org roles - but the live database
+did not match what its own migrations describe, which is exactly the class of drift F6 was
+created to make visible.
+
+### N2, the one unmet BRIEF obligation
+
+The brief says "assert that `requireActiveOrg()` throws `UnauthorizedError`". The class
+was never asserted - the test matched the MESSAGE, so a plain `Error` with the same text
+satisfied it. MEASURED. Now asserted on the class and on the `code` ("no_active_org"),
+because Task 15/17 branch on exactly that to decide between a sign-in prompt and a
+generic 500.
+
+### N3, a case-sensitivity divergence from private.can
+
+`private.can` compares `lower(p_permission) not like 'platform.%'` - case-INsensitive - and
+`PermissionKey` is an open template type, so `userCan("Platform.tenants.read")` is
+type-valid. The helper's check was case-sensitive. Not exploitable today (the write policy
+refuses platform keys and `permissions` holds only the 21 lowercase registry keys), but
+mirroring a rule is only worth doing if it cannot drift. Now `toLowerCase()`.
+
+And the test for it had to be given a TRAP to be discriminating: with only the lowercase
+grant, a case-sensitive check finds nothing to match and returns false for the wrong
+reason. The fixture now creates the adversarial capital-P permission row, asserts it
+exists, and then asserts the refusal suppresses it.
+
+### N7, a malformed AppError could produce a 200 OK
+
+`Object.create(AppError.prototype)` has no `status`, so `toSafeResponse` returned
+`status: undefined` - and `new Response(body, { status: undefined })` answers **200 OK**
+with an empty body. A success status for a failure. A NaN status threw a RangeError from
+INSIDE error handling, which is the one thing the module exists to prevent.
+
+The field reads are now guarded: an integer status or 500, a non-empty string code and
+message or the generic ones, and the whole read inside a try/catch so a throwing getter
+cannot escape. The residual - a Proxy wrapping a real AppError passes `instanceof` and
+controls the response - is unreachable from outside the process, and is recorded rather
+than fixed, because `instanceof` narrowing is what the boundary is built on and a stricter
+check breaks the subclasses.
+
+### N5, the rule that a database error must not become an AppError
+
+Unpinned, because a database failure is hard to provoke. So the CONSEQUENCE is pinned
+instead: a test states that an `AppError` built from a database message WOULD leak it, and
+that a database error thrown as-is does not. If `toSafeResponse` ever starts sanitising
+AppError messages too, that test fails and the rule becomes visibly unnecessary.
+
+### N8, N9, N10 - small, closed
+
+The cookie's `secure` flag was never asserted, so hard-coding `secure: false` kept the
+suite green; the plan says "secure in production", and it is now asserted by setting
+NODE_ENV. "A user with no memberships gets null" was true EMERGENTLY - the empty-array
+case fell through two other branches, and removing the guard changed nothing - so it is
+now stated by a fixture that leaves the probe user with no memberships at all. The
+platform-seed permission count is derived from the registry instead of hard-coded to 21,
+because a literal breaks CRYPTICALLY the moment a permission is added.
+
+### N4 and N6, and the single highest-leverage follow-up
+
+`userCan` answers a strictly weaker question than `private.can`: it is org-wide and
+CLINIC-BLIND, where `private.can` is not, and it costs FIVE round trips with two JWT
+re-validations.
+
+Both disappear the moment a `public.can(p_org_id, p_permission)` wrapper exists over
+`private.can`. That wrapper is the Task 12 obligation which was explicitly deferred by
+operator decision, and it is now the root cause of N3, N4, N6 and the blocker for Task
+17's onboarding - because `types/database.types.ts` still reads
+`Functions: { [_ in never]: never }`, so there is no RPC `userCan` could call.
+
+The deeper point: the PERMISSION RULE is implemented twice, in SQL and in TypeScript, and
+it has already drifted once (F5, the platform-key clause). It will drift again. A wrapper
+is the fix; a `public.can` that Task 17 needs anyway is the cheapest place to put it.
+
+### N14, a divergence from the plan's Review Focus 2 that was recorded nowhere
+
+The plan's global Review Focus 2 says a cookie naming an organization the user has left
+should "fall back to a valid membership or the picker". The implementation returns the
+PICKER - null - and never falls back. Task 13's Step 2 is explicit that the result must be
+null rather than B, and AGENTS.md says the brief is authoritative, so the implementation is
+right. But the divergence is now recorded, because the plan's Review Focus is annotated
+"-> Task 17" and the Task 17 author will read it.
+
+### N11, N12, N13 - the process findings, also closed
+
+AGENTS.md's "Current state" claimed Task 11 was next and that `lib/supabase/` did not exist,
+while a LATER section of the same file described it as landed: the file that tells the next
+agent what to do next was wrong about what to do next. Now corrected, with a note to
+believe the gates rather than the prose.
+
+The SDD ledger had no Task 11, 12 or 13 entries. Added.
+
+And `lib/errors.ts` overstated the `setPrototypeOf` need - it claimed `instanceof` would
+"silently [be] false in a production build", but this project targets ES2022 where
+`class extends Error` keeps the prototype chain natively, and removing the line leaves the
+suite green. The line stays, as a guard against a future downlevel; the justification is
+now accurate.
+
+### One honest non-result
+
+The "no memberships" guard in `getActiveOrg` is REDUNDANT - removing it changes no
+behaviour, because the empty case falls through to the same answer. The BEHAVIOUR is now
+pinned by a fixture; the guard cannot be, because it is not load-bearing. Recorded rather
+than dressed up.

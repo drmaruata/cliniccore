@@ -36,9 +36,10 @@ export class AppError extends Error {
     this.name = new.target.name;
     this.status = status;
     this.code = code;
-    // Restores the prototype chain, which TypeScript's ES5-era Error subclassing breaks
-    // and which would make `instanceof AppError` silently false in a production build -
-    // turning every typed error into a generic 500 at exactly the wrong moment.
+    // Restores the prototype chain, which is a no-op on this project's ES2022 target and
+    // exists purely as a guard against a future downlevel to ES5, where `class extends
+    // Error` loses it and `instanceof AppError` silently becomes false - turning every
+    // typed error into a generic 500 at exactly the wrong moment. Harmless, and cheap.
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -89,7 +90,27 @@ export interface SafeResponse {
  */
 export function toSafeResponse(error: unknown): SafeResponse {
   if (error instanceof AppError) {
-    return { status: error.status, body: { error: error.message, code: error.code } };
+    // The field reads are GUARDED, not just the narrowing. MEASURED: an AppError-shaped
+    // object with a missing `status` produced `status: undefined`, and
+    // `new Response(body, { status: undefined })` answers **200 OK** with an empty body -
+    // a success status for a failure. A NaN status throws a RangeError from INSIDE error
+    // handling, which is the one thing this module exists to prevent. And a getter that
+    // throws would do the same.
+    //
+    // The residual, recorded rather than fixed: a Proxy wrapping a real AppError passes
+    // `instanceof` and fully controls the response. That requires in-process access to the
+    // class, and no driver, PostgREST body or cross-realm error is an AppError - so the
+    // externally reachable boundary is solid, and the proxy shape is a trap for whoever
+    // writes the first route handler.
+    try {
+      const status = Number.isInteger(error.status) ? error.status : 500;
+      const code = typeof error.code === "string" && error.code !== "" ? error.code : GENERIC_CODE;
+      const message =
+        typeof error.message === "string" && error.message !== "" ? error.message : GENERIC_MESSAGE;
+      return { status, body: { error: message, code } };
+    } catch {
+      return { status: 500, body: { error: GENERIC_MESSAGE, code: GENERIC_CODE } };
+    }
   }
   return { status: 500, body: { error: GENERIC_MESSAGE, code: GENERIC_CODE } };
 }

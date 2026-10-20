@@ -63,6 +63,7 @@ beforeAll(() => {
 
 const activeOrg = await import("../../lib/auth/active-org");
 const { ACTIVE_ORG_COOKIE } = await import("../../lib/auth/session");
+const { UnauthorizedError } = await import("../../lib/errors");
 
 let userId = "";
 let authCookie = "";
@@ -81,6 +82,13 @@ let orgB = "";
  * requires to exist disappears silently.
  */
 const createdOrgIds: string[] = [];
+
+/**
+ * Permission keys this file created, so cleanup can remove exactly those. The
+ * adversarial "Platform.tenants.read" row is one: it is a global permission, and leaving
+ * it behind would put a platform key in the permissions table for every future test.
+ */
+const createdPermissionKeys: string[] = [];
 
 async function makeOrg(slug: string): Promise<string> {
   const { data, error } = await admin()
@@ -126,6 +134,10 @@ afterAll(async () => {
     await admin().from("organization_memberships").delete().in("organization_id", createdOrgIds);
     await admin().from("user_role_assignments").delete().in("organization_id", createdOrgIds);
     await admin().from("organizations").delete().in("id", createdOrgIds);
+  }
+  for (const key of createdPermissionKeys) {
+    await admin().from("role_permissions").delete().eq("permission_key", key);
+    await admin().from("permissions").delete().eq("key", key);
   }
 
   // Prove it, rather than trusting it - and prove it only about what this file created.
@@ -183,7 +195,11 @@ it("does NOT resolve an organization the cookie names once the membership is gon
     .eq("user_id", userId);
 
   expect(await activeOrg.getActiveOrg()).toBeNull();
-  await expect(activeOrg.requireActiveOrg()).rejects.toThrow("No active organization");
+  // The CLASS and the CODE, not the message. A plain Error with the same text satisfied
+  // the previous assertion, and the brief asks for the class specifically - Task 15/17
+  // branch on it to decide between a sign-in prompt and a generic 500.
+  await expect(activeOrg.requireActiveOrg()).rejects.toThrow(UnauthorizedError);
+  await expect(activeOrg.requireActiveOrg()).rejects.toMatchObject({ code: "no_active_org" });
 });
 
 it("never falls back to another organization when the cookie named a real one that died", async () => {
@@ -288,6 +304,21 @@ it("returns null with no cookie and several memberships, rather than picking one
   expect(await activeOrg.getActiveOrg()).toBeNull();
 });
 
+it("returns null for a user with NO memberships at all", async () => {
+  // The brief's "a user with no memberships gets null". It was true EMERGENTLY - the
+  // empty-array case fell through two other branches - and MEASURED: removing the
+  // `memberships.length === 0` guard changed nothing, so no test could see it. A
+  // membership the user does not have is not a different code path; it is the same
+  // answer, and it is worth stating.
+  await admin().from("organization_memberships").delete().eq("user_id", userId);
+  selectOrg(orgA);
+  expect(await activeOrg.getActiveOrg()).toBeNull();
+  await expect(activeOrg.requireActiveOrg()).rejects.toThrow(UnauthorizedError);
+
+  await join(orgA);
+  await join(orgB);
+});
+
 it("returns null for a cookie naming an organization the user was never in", async () => {
   const stranger = await makeOrg(`stranger-${Date.now()}`);
   selectOrg(stranger);
@@ -298,7 +329,7 @@ it("returns null when signed out", async () => {
   setAuth("");
   selectOrg(orgA);
   expect(await activeOrg.getActiveOrg()).toBeNull();
-  await expect(activeOrg.requireActiveOrg()).rejects.toThrow();
+  await expect(activeOrg.requireActiveOrg()).rejects.toThrow(UnauthorizedError);
 });
 
 describe("setActiveOrg", () => {
@@ -318,6 +349,25 @@ describe("setActiveOrg", () => {
       written?.maxAge,
       "a session cookie that dies on browser close is the wrong default",
     ).toBeGreaterThan(0);
+  });
+
+  it("marks the cookie Secure in production", async () => {
+    // The plan says "secure in production", and the flag was never asserted - so
+    // hard-coding `secure: false` left the suite green. Derived from NODE_ENV rather
+    // than hard-coded, because a hard-coded true would stop the cookie being set at all
+    // during local development over http://localhost.
+    // NODE_ENV is typed read-only by Next's ambient types, hence the cast.
+    const env = process.env as Record<string, string | undefined>;
+    const previous = env.NODE_ENV;
+    env.NODE_ENV = "production";
+    try {
+      cookieWrites.length = 0;
+      await activeOrg.setActiveOrg(orgA);
+      const written = cookieWrites.find((c) => c.name === ACTIVE_ORG_COOKIE);
+      expect(written?.secure, "a production session cookie must be Secure").toBe(true);
+    } finally {
+      env.NODE_ENV = previous;
+    }
   });
 });
 
@@ -441,6 +491,36 @@ describe("userCan", () => {
     selectOrg(orgA);
     expect(await activeOrg.userCan("platform.tenants.read")).toBe(false);
     expect(await activeOrg.userCan("platform.tenants.manage")).toBe(false);
+    // The CASE variant. private.can compares `lower(p_permission)`, and PermissionKey is
+    // an open template type, so "Platform.tenants.read" is type-valid and a
+    // case-sensitive check here would let it through.
+    //
+    // The fixture creates the ADVERSARIAL row - a permission key spelled with a capital
+    // P - because a case-sensitive check would otherwise find nothing to match and
+    // return false for the wrong reason. The lowercase grant alone cannot tell the two
+    // implementations apart, which is why this test needed a real trap to be
+    // discriminating.
+    const { error: permError } = await admin()
+      .from("permissions")
+      .insert({ key: "Platform.tenants.read", description: "Adversarial case variant" });
+    if (permError) throw new Error(`permissions insert: ${permError.message}`);
+    const { error: grantError } = await admin()
+      .from("role_permissions")
+      .insert({ role_id: roleA, permission_key: "Platform.tenants.read" });
+    if (grantError) throw new Error(`role_permissions insert: ${grantError.message}`);
+    createdPermissionKeys.push("Platform.tenants.read");
+
+    expect(await activeOrg.userCan("Platform.tenants.read")).toBe(false);
+
+    // And the trap really was armed: remove the refusal and this WOULD answer true.
+    const heldVariant = await admin()
+      .from("role_permissions")
+      .select("permission_key")
+      .eq("role_id", roleA)
+      .eq("permission_key", "Platform.tenants.read");
+    expect(heldVariant.data?.length ?? 0).toBe(1);
+    expect(await activeOrg.userCan("Platform.tenants.read")).toBe(false);
+    expect(await activeOrg.userCan("PLATFORM.TENANTS.READ")).toBe(false);
   });
 
   it("is false with no active organization", async () => {

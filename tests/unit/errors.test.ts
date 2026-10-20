@@ -139,6 +139,62 @@ describe("toSafeResponse does not leak", () => {
   });
 });
 
+describe("a malformed AppError cannot produce a success", () => {
+  // MEASURED, and the consequences were worse than "a bit off". A status of undefined
+  // became `new Response(body, { status: undefined })`, which answers **200 OK** with
+  // an empty body - a success status for a failure. A NaN status threw a RangeError from
+  // INSIDE error handling, which is the one thing this module exists to prevent.
+  it("refuses a status that is not an integer", () => {
+    const malformed = Object.create(AppError.prototype) as AppError;
+    Object.assign(malformed, { message: "something", code: "x" });
+    const response = toSafeResponse(malformed);
+    expect(response.status).toBe(500);
+    expect(response.body.error).not.toBe("");
+    expect(response.body.code).not.toBe("");
+  });
+
+  it("refuses a status that is not a number at all", () => {
+    const malformed = Object.create(AppError.prototype) as AppError;
+    Object.assign(malformed, { message: "something", code: "x", status: Number.NaN });
+    expect(() => toSafeResponse(malformed)).not.toThrow();
+    expect(toSafeResponse(malformed).status).toBe(500);
+  });
+
+  it("survives a message getter that throws", () => {
+    const hostile = Object.create(AppError.prototype) as AppError;
+    Object.assign(hostile, { status: 400, code: "x" });
+    Object.defineProperty(hostile, "message", {
+      get() {
+        throw new Error("getter exploded");
+      },
+    });
+    let response: ReturnType<typeof toSafeResponse> | undefined;
+    expect(() => {
+      response = toSafeResponse(hostile);
+    }).not.toThrow();
+    expect(response?.status).toBe(500);
+  });
+});
+
+describe("why a database error must not become an AppError", () => {
+  // The rule in lib/auth/active-org.ts - a PostgREST failure is re-thrown as-is, never
+  // translated into an AppError - is unpinned by any test that exercises the code, because
+  // a database failure is hard to provoke. So the CONSEQUENCE is pinned here instead, and
+  // this states plainly why the rule exists.
+  it("an AppError built from a database message WOULD leak it", () => {
+    // This is the hazard the rule prevents. If it ever stops being true - because
+    // toSafeResponse starts sanitising AppError messages too - the rule becomes
+    // unnecessary, and a future author may safely "helpfully" translate DB errors.
+    const fromDatabase = new AppError(`select failed: ${SECRET}`, 500, "db_error");
+    expect(wire(fromDatabase)).toContain(SECRET);
+  });
+
+  it("and a database error thrown as-is does not", () => {
+    const fromDatabase = new Error(`select failed: ${SECRET}`);
+    expect(wire(fromDatabase)).not.toContain(SECRET);
+  });
+});
+
 describe("the leak assertions can themselves fail", () => {
   it("detects a leak that is present", () => {
     // A guard on a guard. If `expect(...).not.toContain(SECRET)` were vacuous, this fails.

@@ -34,7 +34,11 @@ dbDescribe("the platform seed", () => {
       const row = rows[0];
       expect(Number(row?.role), "the seeded platform role must EXIST").toBe(1);
       expect(Number(row?.grants), "and carry exactly its four platform grants").toBe(4);
-      expect(Number(row?.permissions)).toBe(21);
+      // DERIVED, not a literal. The sibling assertion below already derives its
+      // expectation from the registry; a hard-coded 21 would break CRYPTICALLY - no
+      // message, just a number - the moment a permission is added.
+      const { PERMISSIONS } = await import("../../lib/permissions/registry");
+      expect(Number(row?.permissions)).toBe(PERMISSIONS.length);
     } finally {
       await session.rollback();
     }

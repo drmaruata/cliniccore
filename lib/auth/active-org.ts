@@ -146,7 +146,15 @@ export async function userCan(permission: PermissionKey): Promise<boolean> {
   // is one global table with no scope column, and a tenant can attach a platform key to its
   // own role. The database would refuse the request; a helper that answered `true` would
   // render a control that does nothing when clicked.
-  if (permission.startsWith("platform.")) return false;
+  //
+  // CASE-INSENSITIVE, because private.can's is: it compares `lower(p_permission) not like
+  // 'platform.%'`, and `PermissionKey` is an open template type - `${string}.${string}` -
+  // so `userCan("Platform.tenants.read")` is type-valid and would otherwise slip past a
+  // case-sensitive check and match a grant row spelled with a capital P. Not reachable
+  // today (the write policy refuses it and the permissions table holds only the 21
+  // lowercase registry keys), but the whole point of mirroring the rule is that it cannot
+  // drift.
+  if (permission.toLowerCase().startsWith("platform.")) return false;
 
   const supabase = await createServerClient();
   const {

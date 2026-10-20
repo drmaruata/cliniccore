@@ -21,9 +21,17 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1–10 of 20 are complete** (Task 10 = storage buckets and object policies). Task 11 is
-  next. Run `git log --oneline` and `git status` before you start. Briefs, reports and review
-  packages are in `.superpowers/sdd/cliniccore-foundation/`.
+  **Tasks 1–13 of 20 are complete** (13 = typed errors, validation schemas, and the
+  revalidating active-org resolution). **Task 14 is next.** Run `git log --oneline` and
+  `git status` before you start. Briefs, reports and review packages are in
+  `.superpowers/sdd/cliniccore-foundation/`.
+
+  A third review found this section claiming Task 11 was next and that `lib/supabase/`
+  and `proxy.ts` “do not exist yet” — while a LATER section of this same file described
+  them as landed. The file that tells the next agent what to do next was wrong about what
+  to do next. If you find a contradiction here, believe the gates and `git log`, not this
+  section.
+
 - **A clean tree on this branch should be green on all six gates.** If you are not sure,
   run them rather than trusting a summary — including this one:
   `npm run typecheck && npm run lint && npm run check:secrets && npm run test &&
@@ -46,7 +54,7 @@ npm run build && npm run format:check`.
   `prescription-documents`), all `public = false`, 20 policies on `storage.objects` all `to
 authenticated`, and `allowed_mime_types` = PDF/JPEG/PNG/DICOM/text. Object tenancy is the
   object NAME (`<org>/<clinic>/<file>`, `<org>/<file>` for org-assets) because a text path cannot
-  carry a foreign key ? so the project's composite-tenant-FK rule is satisfied here BY POLICY,
+  carry a foreign key — so the project's composite-tenant-FK rule is satisfied here BY POLICY,
   not by constraint.
 - **Task 9 was reviewed and fixed (`01220`). Four lessons bind later tasks.**
   (1) **A permissive `USING` is a hole even when the `WITH CHECK` is tight** — a review probe
