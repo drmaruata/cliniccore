@@ -254,12 +254,13 @@ const ALL_TABLES = [
   "profiles",
   "role_permissions",
   "roles",
+  "tenant_creation_events",
   "tenant_sequences",
   "user_role_assignments",
 ];
 
 dbDescribe("the policy catalogue", () => {
-  it("enables row-level security on all fifteen tables", async () => {
+  it("enables row-level security on every public table", async () => {
     const rows = await query<{ relname: string; rls: boolean }>(
       `select c.relname, c.relrowsecurity as rls
          from pg_catalog.pg_class c

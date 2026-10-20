@@ -364,6 +364,116 @@ dbDescribe("the authorization gaps", () => {
     }
   });
 
+  it("B2: an administrator can delete their own organization", async () => {
+    const { session } = await stage();
+    try {
+      await become(session, ADMIN);
+      const rows = await session.query<{ deleted: boolean }>(
+        `select public.delete_organization($1) as deleted`,
+        [ORG],
+      );
+      expect(rows[0]?.deleted).toBe(true);
+      const left = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.organizations where id = $1`,
+        [ORG],
+      );
+      expect(left[0]?.n).toBe("0");
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("B2: a staff.manage holder cannot delete the organization", async () => {
+    const { session } = await stage();
+    try {
+      await become(session, STAFF);
+      await expectRejection(
+        session,
+        `select public.delete_organization($1)`,
+        [ORG],
+        /only an administrator|42501/,
+      );
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("C1: a user cannot create more than five organizations in a day", async () => {
+    const { session } = await stage();
+    try {
+      await become(session, ADMIN);
+      let created = 0;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          await session.query(
+            `select public.create_organization_with_owner('Cap', $1, 'Clinic', 'UTC')`,
+            [`cap-${Date.now()}-${attempt}`],
+          );
+          created += 1;
+        } catch (error) {
+          expect(String(error)).toMatch(/too many organizations/);
+          break;
+        }
+      }
+      // The cap is five in a rolling 24-hour window, and the count is taken in the same
+      // transaction as the creation, so a REFUSED creation does not consume allowance.
+      expect(created).toBe(5);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("C2: an audit event may not point at another organization's row", async () => {
+    const { session } = await stage();
+    try {
+      // A patient in the OTHER organization, owned by nobody the caller can see.
+      await session.query("set local role service_role");
+      const clinic = await session.query<{ id: string }>(
+        `insert into public.clinics (organization_id, name) values ($1, 'Foreign clinic') returning id`,
+        [ORG_B],
+      );
+      const patient = await session.query<{ id: string }>(
+        `insert into public.patients (organization_id, clinic_id, first_name, mrn)
+         values ($1, $2, 'Foreign', $3) returning id`,
+        [ORG_B, clinic[0]?.id, `mrn-${Date.now()}`],
+      );
+      await session.query("set local role authenticated");
+
+      await become(session, ADMIN);
+      await expectRejection(
+        session,
+        `select public.write_audit($1, 'patient.updated', 'patient', $2, '{}'::jsonb)`,
+        [ORG, patient[0]?.id],
+        /another organization|42501/,
+      );
+
+      // The control: a resource in the CALLER'S OWN organization is fine, and a resource
+      // that matches nothing is fine - an event may refer to something since deleted.
+      await session.query("set local role service_role");
+      const ownClinic = await session.query<{ id: string }>(
+        `insert into public.clinics (organization_id, name) values ($1, 'Own clinic') returning id`,
+        [ORG],
+      );
+      const own = await session.query<{ id: string }>(
+        `insert into public.patients (organization_id, clinic_id, first_name, mrn)
+         values ($1, $2, 'Own', $3) returning id`,
+        [ORG, ownClinic[0]?.id, `mrn-own-${Date.now()}`],
+      );
+      await session.query("set local role authenticated");
+      await session.query(
+        `select public.write_audit($1, 'patient.updated', 'patient', $2, '{}'::jsonb)`,
+        [ORG, own[0]?.id],
+      );
+      const invented = await session.query<{ id: string }>(`select gen_random_uuid() as id`);
+      await session.query(
+        `select public.write_audit($1, 'patient.deleted', 'patient', $2, '{}'::jsonb)`,
+        [ORG, invented[0]?.id],
+      );
+    } finally {
+      await session.rollback();
+    }
+  });
+
   it("B3: a clinic with no time zone inherits its organization's", async () => {
     const { session } = await stage();
     try {

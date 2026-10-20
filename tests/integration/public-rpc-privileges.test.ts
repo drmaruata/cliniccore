@@ -37,7 +37,23 @@ const POLICY_REFERENCED = [
   "storage_path_is_safe",
 ];
 
-const PUBLIC_WRAPPERS = ["can", "create_organization_with_owner", "write_audit"];
+const PUBLIC_WRAPPERS = [
+  "can",
+  "create_organization_with_owner",
+  "delete_organization",
+  "write_audit",
+];
+
+/**
+ * The wrappers that DELEGATE to a private original, and so must mirror its signature
+ * exactly - defaults included.
+ *
+ * `public.delete_organization` is deliberately not among them: it has no private original
+ * because it performs the delete itself, so there is no signature to mirror. That is a
+ * real difference, not an oversight, and lumping the two lists together would assert a
+ * parity that does not exist.
+ */
+const DELEGATING_WRAPPERS = ["can", "create_organization_with_owner", "write_audit"];
 
 /** No policy, no trigger, and called by nothing. */
 const HARDENED = ["write_audit", "next_sequence_value", "create_organization_with_owner"];
@@ -150,9 +166,9 @@ dbDescribe("the public RPC surface", () => {
            join pg_namespace n2 on n2.oid = priv.pronamespace and n2.nspname = 'private'
           where n.nspname = 'public' and pub.proname = any($1::text[])
           order by pub.proname`,
-        [PUBLIC_WRAPPERS],
+        [DELEGATING_WRAPPERS],
       );
-      expect(rows.length).toBe(PUBLIC_WRAPPERS.length);
+      expect(rows.length).toBe(DELEGATING_WRAPPERS.length);
       for (const row of rows) {
         expect(
           row.pub_args,
