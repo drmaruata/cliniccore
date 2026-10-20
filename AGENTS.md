@@ -329,3 +329,37 @@ landed with it.
   offboarding and for a PHI system that may have to erase a tenant outright. The fix is to
   make the guard distinguish a cascade from a deliberate role deletion - a change to a
   security trigger, and therefore a separate piece of work with its own review.
+- **The `public` RPC surface is the browser's only door into the authorization primitives.**
+  `public.can`, `public.create_organization_with_owner` and `public.write_audit` are thin
+  wrappers over the `private` originals. The permission rule lives in ONE place:
+  `userCan` asks `public.can` rather than reimplementing the check in TypeScript, which is
+  how it came to exist twice and drift once. `private.write_audit`,
+  `private.next_sequence_value` and `private.create_organization_with_owner` no longer have
+  EXECUTE for `authenticated` - nothing calls them, and PostgREST's schema setting was the
+  only thing containing them.
+- **Do not widen the `private` surface by accident.** Ten `private` functions are called by
+  RLS policies and are evaluated as the QUERYING role, so revoking their EXECUTE would
+  make every row INVISIBLE rather than every row denied - a silent total failure.
+  `tests/integration/public-rpc-privileges.test.ts` asserts both the withheld set and the
+  untouched set, because that distinction is invisible until it breaks.
+- **Tenant creation validates at the door AND in the table.** The slug is the tenant key
+  used in URLs, so a slash in it breaks routing "far from here" - and the browser is now
+  the only path that creates a tenant. CHECK constraints on `organizations` and `clinics`,
+  plus a zone check in the public wrapper, because an unknown IANA zone makes
+  `Intl.DateTimeFormat` THROW inside `clinicDayBounds`.
+- **`userCan`'s clinic parameter is named `assignmentClinicId` because that is what it
+  asks.** It answers whether a GRANT of a permission exists for a clinic, NOT whether the
+  caller can reach that clinic - `private.clinic_ids` is the access half, and RLS enforces
+  it. MEASURED: a user restricted to one clinic, holding an org-wide grant, answers true
+  for a clinic they cannot read.
+- **`private.next_sequence_value` has no public wrapper, and that is deliberate.** A raw
+  counter BUMPER is an abuse vector. It matters because `patient_identifiers` INSERT is
+  granted to `authenticated` and the column has no default calling the counter, so
+  whoever builds patient registration must settle how the number is obtained.
+- **An organization that has roles cannot be deleted.** `private.guard_role_delete`
+  refuses to delete a role that still has grants or assignments, and it fires on a CASCADE
+  delete of the organization too. MEASURED: every org the onboarding RPC creates has
+  fourteen roles, so every org the product creates is undeletable - and the PUBLIC RPC
+  makes undeletable tenants cheap to create. The fix is to make the guard distinguish a
+  cascade from a deliberate role deletion - a change to a security trigger, and therefore
+  a separate piece of work with its own review.

@@ -20,6 +20,23 @@ import {
 const TENANT_DATA = read("20261014000700_tenant_data.sql");
 const AUDIT = read("20261014000800_audit_and_platform.sql");
 
+/**
+ * The LAST privilege statement about a function, in migration order.
+ *
+ * Migrations are append-only and a historical grant must STAY in its own file - so the
+ * fact that the old `grant ... to authenticated` line is still in 00600/00700/00800 is
+ * correct, and asserting that it is absent would be asserting that history was rewritten.
+ * What matters is which statement comes LAST, because that is the one in force.
+ */
+function lastPrivilege(all: string, signature: string): "grant" | "revoke" | "none" {
+  const grant = `grant execute on function private.${signature} to authenticated;`;
+  const revoke = `revoke execute on function private.${signature} from authenticated;`;
+  const g = all.lastIndexOf(grant);
+  const r = all.lastIndexOf(revoke);
+  if (g < 0 && r < 0) return "none";
+  return r > g ? "revoke" : "grant";
+}
+
 describe("tenant data schema", () => {
   it("declares the three tenant-data tables and enables RLS on each", () => {
     for (const table of ["patients", "patient_identifiers", "tenant_sequences"]) {
@@ -73,9 +90,15 @@ describe("tenant data schema", () => {
     expect(ALL).toContain(
       "revoke execute on function private.next_sequence_value(uuid, text) from public;",
     );
+    // 01600 REVOKED this grant: private.next_sequence_value is in no policy and no
+    // trigger, so it must not be directly callable by a signed-in role. The public
+    // wrapper reaches it as the owner instead. Asserting the OLD grant here documented a
+    // posture that no longer holds - which is how a revocation can be undone in the
+    // SOURCE while the live database still shows it revoked.
     expect(ALL).toContain(
-      "grant execute on function private.next_sequence_value(uuid, text) to authenticated;",
+      "revoke execute on function private.next_sequence_value(uuid, text) from authenticated;",
     );
+    expect(lastPrivilege(ALL, "next_sequence_value(uuid, text)")).toBe("revoke");
   });
 });
 
@@ -112,9 +135,13 @@ describe("audit log and platform settings", () => {
     expect(ALL).toContain(
       "revoke execute on function private.write_audit(uuid, text, text, uuid, jsonb) from public;",
     );
+    // 01600 REVOKED this grant, for the same reason: private.write_audit is in no
+    // policy and no trigger, and a signed-in role must not be able to write fabricated
+    // rows into its own tenant's audit trail.
     expect(ALL).toContain(
-      "grant execute on function private.write_audit(uuid, text, text, uuid, jsonb) to authenticated;",
+      "revoke execute on function private.write_audit(uuid, text, text, uuid, jsonb) from authenticated;",
     );
+    expect(lastPrivilege(ALL, "write_audit(uuid, text, text, uuid, jsonb)")).toBe("revoke");
   });
 
   it("refuses to write another tenant's trail, but admits a platform administrator", () => {
@@ -178,8 +205,14 @@ describe("onboarding RPC", () => {
     expect(ALL).toContain(
       "revoke execute on function private.create_organization_with_owner(text, text, text, text) from public;",
     );
+    // 01600 REVOKED this grant too. The browser reaches onboarding through
+    // public.create_organization_with_owner, which is SECURITY DEFINER and validates its
+    // input; the private original is now reachable only through it.
     expect(ALL).toContain(
-      "grant execute on function private.create_organization_with_owner(text, text, text, text) to authenticated;",
+      "revoke execute on function private.create_organization_with_owner(text, text, text, text) from authenticated;",
+    );
+    expect(lastPrivilege(ALL, "create_organization_with_owner(text, text, text, text)")).toBe(
+      "revoke",
     );
   });
 

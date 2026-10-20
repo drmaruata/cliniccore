@@ -2796,3 +2796,116 @@ denied for function ..." the moment the EXECUTE was revoked. That is the revocat
 its job: those calls were exactly the capability being withdrawn. Both suites now call the
 PUBLIC surface - the path the product uses - and the private functions are reachable only
 through it.
+
+## The public RPC surface, reviewed: the write path was unvalidated, and the private surface is now unreachable by accident
+
+Review of `f4484fc`. Verdict: "not blocked - safe to ship, with two medium findings to close
+before Task 17 puts this in front of users." The security change itself was confirmed sound
+and, unusually, backed by measurement rather than assertion.
+
+### The hardening was MEASURED, not asserted
+
+The review called the three hardened functions and got "permission denied for function
+write_audit", "permission denied for function next_sequence_value" and "permission denied for
+function create_organization_with_owner" - by calling them as `authenticated`, which is
+exactly the scenario the hardening exists for. And the reverse: every one of the TEN
+policy-referenced private functions was exercised by a live RLS read that returned the
+expected rows, because a revoked function makes rows INVISIBLE rather than denied, so a
+mistake there would look like an empty table rather than an error.
+
+A full privilege table of all twenty `private` functions now exists in
+`tests/integration/public-rpc-privileges.test.ts`, asserted on both sides: the three that
+are withheld, the ten that must stay executable, and the six trigger-referenced ones -
+two of which are deliberately NOT executable, so the assertion is per function rather than
+a blanket value.
+
+### MEDIUM, and it was the most important finding: the new write path had NO validation
+
+The review measured, over real HTTPS as `authenticated`:
+
+    p_slug = 'a/b/../1792483964879'   -> 200, stored VERBATIM
+    p_timezone = 'Not/AZone'            -> 200, stored
+    p_name of 2 000 000 characters      -> 200, stored
+
+And in the catalogue: `organizations.slug` had NO CHECK constraint - only UNIQUE - and
+`timezone` was bare text. So the DATABASE enforced nothing, and the zod schema was the only
+validation in the system, on the client, which is exactly where validation does not belong.
+
+The application's own comment says the slug "is the tenant key used in URLs, so it is
+constrained to lowercase kebab-case rather than left free - a slug containing a slash or an
+uppercase letter breaks routing later, far from here." That was true only while the CLIENT
+was the only way in. The public RPC made it false, and Task 17 is the task that builds the
+routes.
+
+Fixed in 20261014001630_public_rpc_input_validation.sql, at BOTH levels:
+
+- **CHECK constraints on the tables**, so the rule holds for every write path - a migration,
+  service_role, anything - not just the one the browser uses. The slug format, the slug
+  length, and the name lengths.
+- **A timezone check in the public wrapper**, because a CHECK constraint may not call a
+  function that reads a table and the zone list lives in `pg_catalog.pg_timezone_names`. An
+  unknown zone is not cosmetic either: `Intl.DateTimeFormat` THROWS on an unknown zone, so
+  such a tenant would break `clinicDayBounds` inside billing-window code.
+
+The validation lives in the WRAPPER rather than in the private function for a practical
+reason: the private body is long, and replacing it wholesale to add four guards is a large
+hard-to-review diff. The private function is no longer reachable by `authenticated`, so
+validating at the public door is sufficient - and the constraints cover the table anyway.
+
+### MEDIUM: the clinic dimension is the ASSIGNMENT's scope, and the name said otherwise
+
+`private.can` matches `a.clinic_id is null or a.clinic_id = p_clinic_id`: it asks whether a
+GRANT of a permission exists for a clinic. It does NOT consult `private.clinic_ids`, which
+is the separate conjunct RLS adds to every clinic-scoped policy.
+
+MEASURED: a user whose MEMBERSHIP is restricted to clinic CA1, holding an ORG-WIDE grant,
+answers `true` for CA2 - a clinic they cannot read. The database still refuses them the
+rows, so it is safe; but a helper answering "may I access this clinic's data" is answering
+a different question, and one careless `if (await userCan("patients.read",
+patient.clinic_id))` would disclose another clinic's data to the UI.
+
+So the parameter is now named `assignmentClinicId`, the doc says plainly that it asks about
+a grant's scope and that `private.clinic_ids` - which RLS enforces and the helper does not
+model - is the access half, and there is a test that a clinic-scoped grant answers true for
+its clinic, false org-wide and false for a clinic it was never granted for. Previously the
+parameter had NO test at all, so it was indistinguishable from a no-op.
+
+### The other findings, all closed or recorded
+
+**A vacuous control, found and armed.** The platform-key assertion in `public-rpc.test.ts`
+was exactly the standing failure in this repository: the probe role held only
+`patients.read`, so "false" was the answer with or without the platform clause. The fixture
+now creates a REAL `platform.tenants.read` grant, asserts the user holds it, and only then
+asserts the refusal. (The permission row already exists - it is one of the twenty-one
+seeded keys - so it is reused rather than created, and it is not deleted on cleanup.)
+
+**The SOURCE no longer documented a posture that no longer held.**
+`tests/unit/tenant-data-sql.test.ts` still asserted that the migrations GRANT
+`authenticated` EXECUTE on the three hardened functions - which 01600 revoked. The test
+passed, because the historical grant lines legitimately remain in their own files, and that
+is exactly the problem: a source-level test can document a posture the database no longer
+has. It now asserts the REVOKE, and - because migrations are append-only and the old
+grant must stay in 00600/00700/00800 - it asserts that the LAST privilege statement about
+each function is the revoke.
+
+**"Exactly three functions in public" was imprecise.** PostgREST's OpenAPI lists a fourth:
+`public.rls_auto_enable`, which is Supabase's own, SECURITY DEFINER, and carries a PUBLIC
+grant, so it is anon-callable - it errors harmlessly. The test excludes it explicitly and
+the wording now says "the three wrappers, and nothing else of OURS".
+
+**Recorded, not fixed:** a signed-in user can create an unbounded number of tenants, and
+each call re-upserts the twenty-one global `permissions` rows, taking row locks on them
+(the values are constants, so nothing is corrupted - it is write amplification and a global
+serialisation point). `public.write_audit` accepts an arbitrary `p_resource_id`, so a
+tenant can file rows in its own trail referencing another tenant's row ids - low impact,
+and pre-existing in `private.write_audit`.
+
+### The deferral's cost changed, and the note says so
+
+The finding that an organization with roles CANNOT be deleted is pre-existing - the review
+confirmed it independently, over HTTP, with "role accountant is still in use" - but the
+PUBLIC RPC changes its cost: before, only a server-side call could create a tenant; now
+any signed-in browser can, so undeletable tenants went from a rare administrative act to
+something a user can do at will. The deferral note says so, and the fix - making the guard
+distinguish a cascade from a deliberate role deletion - remains a change to a security
+trigger, and therefore its own piece of work with its own review.

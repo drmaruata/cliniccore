@@ -43,7 +43,7 @@ const PUBLIC_WRAPPERS = ["can", "create_organization_with_owner", "write_audit"]
 const HARDENED = ["write_audit", "next_sequence_value", "create_organization_with_owner"];
 
 dbDescribe("the public RPC surface", () => {
-  it("exposes exactly the three wrappers, and nothing else, in public", async () => {
+  it("exposes the three wrappers, and nothing else of OURS, in public", async () => {
     const session = await beginSession();
     try {
       const rows = await session.query<{ fn: string }>(
@@ -55,6 +55,13 @@ dbDescribe("the public RPC surface", () => {
                where d.classid = 'pg_proc'::regclass and d.objid = p.oid
                  and d.deptype = 'e'
             )
+            -- rls_auto_enable is Supabase's own, and is deliberately EXCLUDED here
+            -- rather than counted: it is not ours, it is SECURITY DEFINER, and it carries
+            -- a PUBLIC grant, so it is anon-callable. Calling it over HTTP is harmless -
+            -- it errors with "cannot display a value of type event_trigger" - but the
+            -- claim "the public schema exposes exactly three functions" would be false
+            -- because of it, and a false claim in a test's name is worse than a precise
+            -- one.
             and p.proname <> 'rls_auto_enable'
           order by p.proname`,
       );
@@ -151,6 +158,46 @@ dbDescribe("the public RPC surface", () => {
           row.pub_args,
           `public.${row.pub} must have the same arguments AND defaults as private.${row.pub}`,
         ).toBe(row.priv_args);
+      }
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("leaves the trigger-referenced private functions as they were", async () => {
+    // Six more functions are referenced by TRIGGERS, which fire as their table's owner.
+    // Two of them are deliberately NOT executable by `authenticated` - they were never
+    // granted (01230 and 01240 revoked the PUBLIC grant and did not re-grant to
+    // `authenticated`), and the trigger still fires for an `authenticated` caller because
+    // a trigger's EXECUTE privilege is checked when the trigger is CREATED, not at fire
+    // time.
+    //
+    // Asserted per function, because the expected values DIFFER - a blanket "all true"
+    // would be wrong for two of them, and a blanket "all false" for the other four.
+    const expected: Record<string, boolean> = {
+      create_profile_for_new_user: true,
+      guard_platform_admin: true,
+      guard_role_delete: false,
+      guard_role_identity: false,
+      guard_role_org_scope: true,
+      set_updated_at: true,
+    };
+    const session = await beginSession();
+    try {
+      const rows = await session.query<{ fn: string; auth: boolean }>(
+        `select p.proname as fn,
+                has_function_privilege('authenticated', p.oid, 'execute') as auth
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'private' and p.proname = any($1::text[])
+          order by p.proname`,
+        [Object.keys(expected)],
+      );
+      expect(rows.length).toBe(Object.keys(expected).length);
+      for (const row of rows) {
+        expect(
+          row.auth,
+          `private.${row.fn} is called by a trigger and its privilege must not drift`,
+        ).toBe(expected[row.fn] ?? false);
       }
     } finally {
       await session.rollback();

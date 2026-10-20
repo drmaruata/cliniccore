@@ -83,6 +83,16 @@ let orgB = "";
  */
 const createdOrgIds: string[] = [];
 
+/** Clinics this file created, so cleanup removes exactly those. */
+const createdClinicIds: string[] = [];
+
+/**
+ * Roles this file created, so cleanup removes exactly those. A role left holding a grant
+ * is "in use", and private.guard_role_delete then refuses the organization's delete -
+ * which is the defect this change records, biting the cleanup of the test that records it.
+ */
+const createdRoleIds: string[] = [];
+
 /**
  * Permission keys this file created, so cleanup can remove exactly those. The
  * adversarial "Platform.tenants.read" row is one: it is a global permission, and leaving
@@ -128,16 +138,30 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // The roles FIRST, and this is not tidiness.
+  //
+  // private.guard_role_delete refuses to delete a role that still holds grants or
+  // assignments, and it fires on a CASCADE delete of the organization just the same - so
+  // an organization that still has a role in use CANNOT be deleted. That is the defect this
+  // change records, and it bites the cleanup of the test that records it: a single delete
+  // statement covering every organization is ABORTED IN FULL if one of them still has an
+  // in-use role, so all of them survive.
+  for (const roleId of createdRoleIds) {
+    await admin().from("user_role_assignments").delete().eq("role_id", roleId);
+    await admin().from("role_permissions").delete().eq("role_id", roleId);
+    await admin().from("roles").delete().eq("id", roleId);
+  }
+  for (const key of createdPermissionKeys) {
+    await admin().from("role_permissions").delete().eq("permission_key", key);
+    await admin().from("permissions").delete().eq("key", key);
+  }
+
   // Children before parents, or the delete is refused by its own foreign keys. Scoped to
   // the ids this file created - never a sweep.
   if (createdOrgIds.length > 0) {
     await admin().from("organization_memberships").delete().in("organization_id", createdOrgIds);
     await admin().from("user_role_assignments").delete().in("organization_id", createdOrgIds);
     await admin().from("organizations").delete().in("id", createdOrgIds);
-  }
-  for (const key of createdPermissionKeys) {
-    await admin().from("role_permissions").delete().eq("permission_key", key);
-    await admin().from("permissions").delete().eq("key", key);
   }
 
   // Prove it, rather than trusting it - and prove it only about what this file created.
@@ -470,6 +494,67 @@ describe("userCan", () => {
       .insert({ organization_id: orgA, user_id: userId, role_id: roleA });
     if (restore.error) throw new Error(`restore: ${restore.error.message}`);
     expect(await activeOrg.userCan(IN_A)).toBe(true);
+  });
+
+  it("answers about a GRANT's scope, not the caller's access", async () => {
+    // The parameter is named `assignmentClinicId` because that is what it asks: whether a
+    // GRANT of this permission exists for that clinic. It does NOT ask whether the caller
+    // can REACH that clinic - private.can does not consult private.clinic_ids, which is
+    // the separate conjunct RLS adds to every clinic-scoped policy.
+    //
+    // MEASURED, and the reason the name matters: a user whose MEMBERSHIP is restricted to
+    // one clinic, holding an ORG-WIDE grant, answers true for a clinic they cannot read.
+    // The database still refuses them the rows; but a helper answering "may I access this
+    // clinic's data" would be answering a different question, and a careless caller
+    // `if (await userCan("patients.read", patient.clinic_id))` would disclose another
+    // clinic's data to the UI.
+    //
+    // So a permission granted ONLY for one clinic answers true for that clinic, false
+    // org-wide, and false for a clinic it was never granted for.
+    const { data: clinic, error: clinicError } = await admin()
+      .from("clinics")
+      .insert({ organization_id: orgA, name: "Grant scope clinic", timezone: "Asia/Kolkata" })
+      .select("id")
+      .single();
+    if (clinicError) throw new Error(`clinics insert: ${clinicError.message}`);
+    const clinicId = clinic.id as string;
+    createdClinicIds.push(clinicId);
+
+    const { data: other, error: otherError } = await admin()
+      .from("clinics")
+      .insert({ organization_id: orgA, name: "Other clinic", timezone: "Asia/Kolkata" })
+      .select("id")
+      .single();
+    if (otherError) throw new Error(`clinics insert: ${otherError.message}`);
+    const otherClinicId = other.id as string;
+    createdClinicIds.push(otherClinicId);
+
+    const { data: role, error: roleError } = await admin()
+      .from("roles")
+      .insert({ key: "scoped_grant_role", name: "Scoped grant", organization_id: orgA })
+      .select("id")
+      .single();
+    if (roleError) throw new Error(`roles insert: ${roleError.message}`);
+    // Registered for cleanup: a role left holding a grant is "in use", and the role guard
+    // then refuses the organization's delete - which is the very defect this change
+    // records, biting the cleanup of the test that records it.
+    createdRoleIds.push(role.id as string);
+    const { error: grantError } = await admin()
+      .from("role_permissions")
+      .insert({ role_id: role.id, permission_key: "appointments.manage" });
+    if (grantError) throw new Error(`role_permissions insert: ${grantError.message}`);
+    const { error: assignError } = await admin()
+      .from("user_role_assignments")
+      .insert({ organization_id: orgA, user_id: userId, role_id: role.id, clinic_id: clinicId });
+    if (assignError) throw new Error(`user_role_assignments insert: ${assignError.message}`);
+
+    selectOrg(orgA);
+    // The grant's own clinic: true.
+    expect(await activeOrg.userCan("appointments.manage", clinicId)).toBe(true);
+    // The organization-wide question: false - the grant is not org-wide.
+    expect(await activeOrg.userCan("appointments.manage")).toBe(false);
+    // A clinic the grant was never given for: false.
+    expect(await activeOrg.userCan("appointments.manage", otherClinicId)).toBe(false);
   });
 
   it("never reports a platform-scoped permission, even one the database really grants", async () => {

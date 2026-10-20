@@ -168,13 +168,26 @@ export async function setActiveOrg(orgId: string): Promise<void> {
  * cannot disagree. The cost is one RPC instead of two queries, and the benefit is that
  * there is no second copy of the rule to keep in step.
  *
- * The clinic dimension is available because the rule already models it: a permission held
- * only for one clinic is not held for the whole organization, and `private.can` says so.
+ * THE CLINIC DIMENSION IS THE ASSIGNMENT'S SCOPE, NOT THE CALLER'S ACCESS, and the
+ * parameter is named for it. `private.can` matches `a.clinic_id is null or a.clinic_id =
+ * p_clinic_id`: it asks whether a GRANT of this permission exists for that clinic. It does
+ * NOT consult `private.clinic_ids`, which is the separate conjunct RLS adds to every
+ * clinic-scoped policy.
+ *
+ * MEASURED, and this is why the name matters: a user whose MEMBERSHIP is restricted to
+ * clinic CA1, holding an ORG-WIDE grant, answers `true` for CA2 - a clinic they cannot
+ * read. The RLS policy still refuses them the CA2 rows, so the DATABASE is safe; but a
+ * helper answering "may I access this clinic's data" would be answering a different
+ * question, and a careless `if (await userCan("patients.read", patient.clinic_id))` would
+ * disclose another clinic's data to the UI.
+ *
+ * So `assignmentClinicId` asks about a GRANT's scope. Whether the caller can REACH that
+ * clinic is `private.clinic_ids`, which RLS enforces and this helper does not model.
  * Passing no clinic asks the organization-wide question.
  */
 export async function userCan(
   permission: PermissionKey,
-  clinicId?: string | null,
+  assignmentClinicId?: string | null,
 ): Promise<boolean> {
   const supabase = await createServerClient();
   const {
@@ -194,7 +207,7 @@ export async function userCan(
     p_org_id: org.id,
     p_permission: permission,
   };
-  if (clinicId) args.p_clinic_id = clinicId;
+  if (assignmentClinicId) args.p_clinic_id = assignmentClinicId;
 
   const { data, error } = await supabase.rpc("can", args);
   if (error) return false;

@@ -38,6 +38,15 @@ let accessToken = "";
 let orgId = "";
 const createdOrgIds: string[] = [];
 
+/**
+ * The adversarial rows this file creates, so cleanup removes exactly those. A blanket
+ * delete by key or by permission would strip other organizations' grants - which an
+ * earlier version of this file's cleanup did, and which would have been a data-loss bug
+ * in the test suite.
+ */
+const createdPermissionKeys: string[] = [];
+const createdRoleIds: string[] = [];
+
 const rpc = async (
   fn: string,
   body: unknown,
@@ -105,6 +114,19 @@ afterAll(async () => {
   // hand, and the fact that they can be is itself the point.
   await client.from("audit_logs").delete().eq("action", "rpc_probe");
 
+  // The adversarial rows this file created, and ONLY those. A blanket delete by key or by
+  // permission would strip other organizations' grants - which an earlier version of this
+  // cleanup did, and which would have been a data-loss bug in the test suite.
+  for (const id of createdRoleIds) {
+    await client.from("user_role_assignments").delete().eq("role_id", id);
+    await client.from("role_permissions").delete().eq("role_id", id);
+    await client.from("roles").delete().eq("id", id);
+  }
+  for (const key of createdPermissionKeys) {
+    await client.from("role_permissions").delete().eq("permission_key", key);
+    await client.from("permissions").delete().eq("key", key);
+  }
+
   if (createdOrgIds.length > 0) {
     // The roles have to be UNUSED before the organization can go, because
     // private.guard_role_delete refuses to delete a role that still has grants or
@@ -164,9 +186,43 @@ describe("the browser can reach the authorization rule", () => {
     expect(response.text).toBe("false");
   });
 
-  it("refuses a platform-scoped key, in any case", async () => {
+  it("refuses a platform-scoped key, in any case, EVEN WHEN THE ROLE REALLY HOLDS ONE", async () => {
     // private.can compares lower(p_permission), so the public wrapper must too - or the
     // rule drifts again the moment it is exposed a second way.
+    //
+    // The fixture must ARM the trap, or the assertion is vacuous: the probe role held
+    // only patients.read, so "false" was the answer with or without the platform clause.
+    // That is the standing failure in this repository - a control whose expected value is
+    // identical for a permitted and an unpermitted principal - and the previous version of
+    // this test was exactly that. The grant is created here, asserted to exist, and only
+    // then is the refusal asserted.
+    // NOTE: "platform.tenants.read" is already one of the twenty-one seeded
+    // permissions, so the row exists and must NOT be inserted - and must not be deleted
+    // on cleanup either, or the next run would find a missing permission.
+    const { data: platformRole, error: platformRoleError } = await admin()
+      .from("roles")
+      .insert({ key: "rpc_probe_platform", name: "RPC platform probe", organization_id: orgId })
+      .select("id")
+      .single();
+    if (platformRoleError) throw new Error(`roles insert: ${platformRoleError.message}`);
+    createdRoleIds.push(platformRole.id as string);
+
+    const { error: grantError } = await admin()
+      .from("role_permissions")
+      .insert({ role_id: platformRole.id, permission_key: "platform.tenants.read" });
+    if (grantError) throw new Error(`role_permissions insert: ${grantError.message}`);
+    const { error: assignError } = await admin()
+      .from("user_role_assignments")
+      .insert({ organization_id: orgId, user_id: userId, role_id: platformRole.id });
+    if (assignError) throw new Error(`user_role_assignments insert: ${assignError.message}`);
+
+    // The trap is armed: the user REALLY holds the key.
+    const held = await admin()
+      .from("role_permissions")
+      .select("permission_key")
+      .eq("role_id", platformRole.id);
+    expect(held.data?.map((r) => r.permission_key)).toContain("platform.tenants.read");
+
     for (const permission of [
       "platform.tenants.read",
       "Platform.tenants.read",
@@ -223,6 +279,47 @@ describe("the browser can onboard", () => {
       .select("key")
       .eq("organization_id", newOrgId);
     expect(roles?.map((r) => r.key)).toContain("organization_owner");
+  });
+
+  it("refuses a slug that would break routing, and lengths that would break the table", async () => {
+    // The application's own schema says the slug "is the tenant key used in URLs, so it
+    // is constrained to lowercase kebab-case rather than left free - a slug containing a
+    // slash or an uppercase letter breaks routing later, far from here." That comment was
+    // true only while the CLIENT was the only way in. MEASURED against the public RPC
+    // before the fix: a slug of 'a/b/../1792483964879' was accepted and stored VERBATIM,
+    // a 2 000 000-character name was accepted, and an unknown time zone was accepted - and
+    // an unknown zone makes Intl.DateTimeFormat THROW, so it would break clinicDayBounds
+    // inside billing-window code.
+    const bad = [
+      { label: "a path separator in the slug", slug: `a/b/${Date.now()}` },
+      { label: "an uppercase slug", slug: `Northside-${Date.now()}` },
+      { label: "an underscore in the slug", slug: `north_side_${Date.now()}` },
+      { label: "a two-character slug", slug: "ab" },
+      { label: "a 100 000-character slug", slug: "a".repeat(100000) },
+    ];
+    for (const item of bad) {
+      const response = await rpc("create_organization_with_owner", {
+        p_name: "Should not exist",
+        p_slug: item.slug,
+        p_clinic_name: "Clinic",
+        p_timezone: "Asia/Kolkata",
+      });
+      expect(response.status, item.label).toBeGreaterThanOrEqual(400);
+    }
+
+    for (const item of [
+      { label: "an unknown time zone", p_timezone: "Not/AZone" },
+      { label: "a two-million-character name", p_name: "x".repeat(2000000) },
+      { label: "a two-million-character clinic name", p_clinic_name: "x".repeat(2000000) },
+    ]) {
+      const response = await rpc("create_organization_with_owner", {
+        p_name: item.p_name ?? "Clinic",
+        p_slug: `ok-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+        p_clinic_name: item.p_clinic_name ?? "Clinic",
+        p_timezone: item.p_timezone ?? "Asia/Kolkata",
+      });
+      expect(response.status, item.label).toBeGreaterThanOrEqual(400);
+    }
   });
 
   it("is refused to an anonymous caller", async () => {
