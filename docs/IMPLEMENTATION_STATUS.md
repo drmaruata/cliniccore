@@ -2675,3 +2675,124 @@ The "no memberships" guard in `getActiveOrg` is REDUNDANT - removing it changes 
 behaviour, because the empty case falls through to the same answer. The BEHAVIOUR is now
 pinned by a fixture; the guard cannot be, because it is not load-bearing. Recorded rather
 than dressed up.
+
+## The public RPC surface: the browser's only door into the authorization primitives
+
+The plan carried a note that was explicitly UNRESOLVED and had to be settled before Task 12:
+"`authenticated` holds USAGE on `private` with EXECUTE granted per function ... whether
+PostgREST exposes `private` could not be measured. Supabase's default exposed set is
+`public, graphql_public`. If that default holds, none of these functions is callable from the
+browser and Task 12 needs `public` wrappers."
+
+**IT IS NOW SETTLED, AND THE DEFAULT HOLDS.** MEASURED twice, and `types/database.types.ts`
+recorded the consequence exactly: `Functions: { [_ in never]: never }`. A signed-in browser
+could not ask the database whether it held a permission, could not create its own
+organization, and could not write an audit row. Task 17's onboarding was blocked outright.
+
+### Three wrappers, and the reason there are exactly three
+
+`public.can`, `public.create_organization_with_owner` and `public.write_audit`. Each is a
+THIN wrapper: every rule - the platform-key refusal, the membership check, the clinic scope,
+the audit metadata caps - stays in `private`, where it already is. A wrapper that
+reimplemented the rule would drift from it again, which is exactly what happened on the
+client side.
+
+The permission rule existed TWICE - in SQL and in TypeScript - and had already drifted once
+(the platform-key clause was case-sensitive in TypeScript, case-insensitive in SQL). Asking
+the database removes the second copy, and `userCan` now calls `public.can` instead of
+reading `user_role_assignments` and `role_permissions` itself.
+
+### The hardening, which is the part that matters if PostgREST's set ever changes
+
+MEASURED: of the twenty functions in `private`, ten are referenced by RLS POLICIES and must
+stay executable by `authenticated`, because a policy's expression is evaluated as the
+QUERYING role. Six more are referenced by TRIGGERS, which fire as their table's owner.
+
+That left exactly three: `write_audit`, `next_sequence_value` and
+`create_organization_with_owner` - in no policy, in no trigger, and called by nothing. They
+were reachable by any signed-in role over SQL, and PostgREST's schema setting was the ONLY
+thing containing them. One configuration change away from audit forgery: a member of a
+tenant could write fabricated rows into that tenant's audit trail, or burn its identifier
+space. `private.write_audit` and `private.next_sequence_value` already check membership
+internally, so the blast radius was "your own tenant" - which is still a tampered audit
+trail.
+
+Their EXECUTE is now revoked from `authenticated`, and the public wrappers still reach them
+because the wrappers are SECURITY DEFINER. `tests/integration/public-rpc-privileges.test.ts`
+asserts BOTH sides: the three are withheld, and the ten policy-referenced ones are still
+executable - because revoking one of those would make every row invisible rather than
+every row denied, which is a silent, total failure rather than a loud one.
+
+### The proof that matters is over real HTTPS
+
+`tests/integration/public-rpc.test.ts` calls the wrappers through PostgREST with the
+publishable key and a real signed-in user's JWT, because that is the only path a browser
+has. A `pg` connection is not the product, and a function that exists but is unreachable
+from a browser is exactly the bug that was being fixed - for seven tasks. The RED state
+before the migration was PGRST202 "Could not find the function public.can in the schema
+cache", which is the bug stated in the server's own words.
+
+### Two things the work turned up
+
+**PostgREST matches a function on the exact set of supplied parameter names.** A four-key
+body could not match a five-parameter function even when the missing parameter had a
+default - PGRST202 again, with a hint naming the other signature. So `public.write_audit`
+gained a default on `p_resource_id` (migration 01610), and the app omits the key rather
+than passing a null, because the generated type says `p_clinic_id?: string` and sending a
+key the caller has no value for is how the first PGRST202 happened.
+
+**AN ORGANIZATION THAT HAS ROLES CANNOT BE DELETED.** The cleanup in the new test failed
+with "role rpc_probe_role is still in use": `private.guard_role_delete` refuses to delete a
+role that still has grants or assignments, and it fires on a CASCADE delete of the
+organization just the same. MEASURED, and it is a real defect rather than a test artefact -
+`private.create_organization_with_owner` creates fourteen roles, so every org the product
+creates is undeletable, which matters for tenant offboarding and for a PHI system that may
+have to erase a tenant outright. **OPEN, and not fixed here**: the guard needs to
+distinguish a cascade from a deliberate role deletion, and that is a change to a security
+trigger, which is a separate piece of work. The test works around it by removing the roles
+first, which is what the guard is asking for.
+
+### Still open, recorded
+
+`private.next_sequence_value` deliberately has NO public wrapper: a raw counter BUMPER is
+an abuse vector, and a client that could increment a tenant's identifier space could
+exhaust it. The right public shape, if a later task needs one, returns the next value for
+the caller's own tenant rather than incrementing on demand. It matters because
+`patient_identifiers` INSERT is granted to `authenticated` and the column has no default
+that calls the counter - so whoever builds patient registration must settle how the number
+is obtained. It is not a Task 12 obligation.
+
+### A wrapper must mirror the signature it wraps, DEFAULTS INCLUDED
+
+Two corrections, both found by running the existing suites against the new surface rather
+than by reading the code.
+
+**`public.write_audit` could not be called with four arguments.** PostgREST matches a
+function on the exact set of supplied parameter NAMES, so a four-key body could not match a
+five-parameter function even where the missing parameter had a default - PGRST202 again,
+with a hint naming the other signature. `p_resource_id` gained a default
+(20261014001610_public_rpc_wrapper_signature.sql), and the app OMITS the key rather than
+passing a null, because sending a key the caller has no value for is what caused the first
+PGRST202.
+
+**`public.create_organization_with_owner` was a DIFFERENT, stricter API than the function it
+wraps.** It declared `p_timezone text` with no default while
+`private.create_organization_with_owner` declares
+`p_timezone text DEFAULT 'Asia/Kolkata'`. Every caller that relied on the default broke
+with "function public.create_organization_with_owner(unknown, unknown, unknown) does not
+exist". Fixed by 20261014001620_public_rpc_wrapper_defaults.sql, and pinned by a
+GENERAL assertion in `public-rpc-privileges.test.ts` that compares the defaulted argument
+strings of every wrapper against its private original - so the next wrapper cannot drift the
+same way.
+
+The general rule, and it is the one worth carrying: a DEFAULT is part of a function's
+contract, not an optional extra. A wrapper that drops one is not a thin wrapper.
+
+### The revocation broke two suites, and that was the correct outcome
+
+`onboarding-rpc.test.ts` and `audit-log.test.ts` called `private.create_organization_with_owner`
+and `private.write_audit` DIRECTLY, as `authenticated`, and both failed with "permission
+denied for function ..." the moment the EXECUTE was revoked. That is the revocation doing
+its job: those calls were exactly the capability being withdrawn. Both suites now call the
+PUBLIC surface - the path the product uses - and the private functions are reachable only
+through it.

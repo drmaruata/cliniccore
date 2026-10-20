@@ -279,17 +279,17 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
-## Task 13+ : Supabase clients exist, but the browser still cannot onboard
+## Task 13+ : Supabase clients exist, and the browser CAN now onboard
 
-`lib/supabase/` and the root `proxy.ts` landed in Task 12. Two consequences the next
-agent must not have to rediscover:
+`lib/supabase/` and the root `proxy.ts` landed in Task 12. Task 13 added typed errors, the
+validation schemas, the revalidating active-org resolution, and the public RPC surface.
+Consequences the next agent must not have to rediscover:
 
-- **There is no browser-callable RPC.** `types/database.types.ts` has
-  `Functions: { [_ in never]: never }`, because PostgREST exposes only the `public` schema
-  and every helper — including `create_organization_with_owner` — lives in `private`.
-  Measured, not inferred. Until `public` wrappers exist, a signed-in browser cannot create
-  an organization at all. The wrappers are the smaller change and keep the authorization
-  primitives in one place; add them as a migration, never by editing an applied one.
+- **The browser CAN create an organization.** `public.create_organization_with_owner` was
+  added as a thin wrapper over the `private` original, and PostgREST exposes the `public`
+  schema, so a signed-in browser can call it. This is what unblocks Task 17's onboarding.
+  `types/database.types.ts` is regenerated after every migration, so its `Functions` section
+  is the list of what the browser can actually call.
 - **The invitation-acceptance RPC must be a definer.** `organization_memberships` INSERT
   and DELETE are both closed by policy, so accepting an invitation cannot write the
   membership row as the caller.
@@ -302,3 +302,30 @@ agent must not have to rediscover:
 - **An assertion that any leftover probe user exists is wrong under parallel vitest.** Test
   FILES run in parallel and two suites each create an auth user, so a global residue check
   makes every file fail on its neighbour's. Scope it to the ids the caller created.
+
+## Task 14+ : the browser has an RPC surface now, and one tenant cannot be deleted
+
+`lib/supabase/` and the root `proxy.ts` landed in Task 12. Task 13 added typed errors, the
+validation schemas, and the revalidating active-org resolution. The public RPC surface
+landed with it.
+
+- **The browser CAN call RPCs.** `public.can`, `public.create_organization_with_owner` and
+  `public.write_audit` are thin wrappers over the `private` originals, and the browser can
+  reach them because PostgREST exposes the `public` schema. Measured over real HTTPS with a
+  real user's JWT, in `tests/integration/public-rpc.test.ts`. The rule stays in ONE place:
+  `userCan` asks `public.can` rather than reimplementing the permission check in
+  TypeScript, which is how the rule came to exist twice and drift once.
+
+- **Do not widen the `private` surface by accident.** Ten `private` functions are called by
+  RLS policies and are evaluated as the QUERYING role, so revoking their EXECUTE would
+  make every row INVISIBLE rather than every row denied - a silent total failure.
+  `tests/integration/public-rpc-privileges.test.ts` asserts both the withheld set and the
+  untouched set, because that distinction is invisible until it breaks.
+
+- **An organization that has roles cannot be deleted.** `private.guard_role_delete`
+  refuses to delete a role that still has grants or assignments, and it fires on a CASCADE
+  delete of the organization too. MEASURED: every org the onboarding RPC creates has
+  fourteen roles, so every org the product creates is undeletable. That matters for tenant
+  offboarding and for a PHI system that may have to erase a tenant outright. The fix is to
+  make the guard distinguish a cascade from a deliberate role deletion - a change to a
+  security trigger, and therefore a separate piece of work with its own review.

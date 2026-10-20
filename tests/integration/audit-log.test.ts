@@ -83,7 +83,7 @@ const write = (
   action = "patient.read",
   resourceType = "patient",
 ) =>
-  session.query(`select private.write_audit($1::uuid, $2, $3, gen_random_uuid(), $4::jsonb)`, [
+  session.query(`select public.write_audit($1::uuid, $2, $3, gen_random_uuid(), $4::jsonb)`, [
     orgId,
     action,
     resourceType,
@@ -133,7 +133,7 @@ dbDescribe("write_audit", () => {
       // are not. Both must be refused, because the caller is not the operator.
       await expectRejection(
         session,
-        `select private.write_audit($1::uuid, 'exported all patients', 'organization', null, '{"ok":1}')`,
+        `select public.write_audit($1::uuid, 'exported all patients', 'organization', null, '{"ok":1}')`,
         [ORG_A],
         OWN_MISMATCH,
       );
@@ -183,7 +183,7 @@ dbDescribe("write_audit", () => {
       await become(session, TENANT);
       await expectRejection(
         session,
-        `select private.write_audit(null, 'platform.tenants.manage', 'organization', null, '{}')`,
+        `select public.write_audit(null, 'platform.tenants.manage', 'organization', null, '{}')`,
         [],
         NOT_PLATFORM_ADMIN,
       );
@@ -191,7 +191,7 @@ dbDescribe("write_audit", () => {
       await session.resetRole();
       await become(session, OPERATOR);
       await session.query(
-        `select private.write_audit(null, 'platform.tenants.manage', 'organization', null, '{}')`,
+        `select public.write_audit(null, 'platform.tenants.manage', 'organization', null, '{}')`,
       );
       await session.resetRole();
       expect(
@@ -215,21 +215,21 @@ dbDescribe("write_audit", () => {
       // Nested object.
       await expectRejection(
         session,
-        `select private.write_audit($1::uuid, 'x', 'y', null, '{"diff":{"before":{"note":"free text"}}}'::jsonb)`,
+        `select public.write_audit($1::uuid, 'x', 'y', null, '{"diff":{"before":{"note":"free text"}}}'::jsonb)`,
         [ORG_B],
         FREE_TEXT,
       );
       // Inside an ARRAY - the case a jsonpath wildcard silently skipped.
       await expectRejection(
         session,
-        `select private.write_audit($1::uuid, 'x', 'y', null, '{"items":[{"CONTENT":"free text"}]}'::jsonb)`,
+        `select public.write_audit($1::uuid, 'x', 'y', null, '{"items":[{"CONTENT":"free text"}]}'::jsonb)`,
         [ORG_B],
         FREE_TEXT,
       );
       // Buried 33 levels down - the case the old `depth < 32` bound let through.
       await expectRejection(
         session,
-        `select private.write_audit($1::uuid, 'x', 'y', null,
+        `select public.write_audit($1::uuid, 'x', 'y', null,
            (repeat('{"x":', 35) || '{"note":"buried"}' || repeat('}', 35))::jsonb)`,
         [ORG_B],
         FREE_TEXT,
@@ -237,7 +237,7 @@ dbDescribe("write_audit", () => {
       // Positive control: the same depth with an approved key is accepted, so the
       // refusals above are the screen working rather than everything failing.
       await session.query(
-        `select private.write_audit($1::uuid, 'x', 'y', null,
+        `select public.write_audit($1::uuid, 'x', 'y', null,
            (repeat('{"x":', 35) || '{"safe":"buried"}' || repeat('}', 35))::jsonb)`,
         [ORG_B],
       );
@@ -260,19 +260,19 @@ dbDescribe("write_audit", () => {
       await become(session, TENANT);
       await expectRejection(
         session,
-        `select private.write_audit($1::uuid, repeat('a', 200), 'organization', null, '{}')`,
+        `select public.write_audit($1::uuid, repeat('a', 200), 'organization', null, '{}')`,
         [ORG_B],
         TOO_LONG,
       );
       await expectRejection(
         session,
-        `select private.write_audit($1::uuid, 'ok', repeat('r', 100), null, '{}')`,
+        `select public.write_audit($1::uuid, 'ok', repeat('r', 100), null, '{}')`,
         [ORG_B],
         TOO_LONG,
       );
       await expectRejection(
         session,
-        `select private.write_audit($1::uuid, 'ok', 'y', null, jsonb_build_object('blob', repeat('x', 9000)))`,
+        `select public.write_audit($1::uuid, 'ok', 'y', null, jsonb_build_object('blob', repeat('x', 9000)))`,
         [ORG_B],
         TOO_BIG,
       );

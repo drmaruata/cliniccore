@@ -48,7 +48,7 @@ dbDescribe("create_organization_with_owner", () => {
     const { session } = await actAsFreshUser();
     try {
       const created = await session.query<{ org: string }>(
-        `select private.create_organization_with_owner('Probe Org', 'probe-org', 'Probe Clinic') as org`,
+        `select public.create_organization_with_owner('Probe Org', 'probe-org', 'Probe Clinic') as org`,
       );
       const orgId = created[0]?.org;
       expect(orgId).toMatch(/^[0-9a-f-]{36}$/);
@@ -121,7 +121,7 @@ dbDescribe("create_organization_with_owner", () => {
     const { session } = await actAsFreshUser();
     try {
       const created = await session.query<{ org: string }>(
-        `select private.create_organization_with_owner('Probe Org 2', 'probe-org-2', 'Clinic') as org`,
+        `select public.create_organization_with_owner('Probe Org 2', 'probe-org-2', 'Clinic') as org`,
       );
       const orgId = created[0]?.org as string;
 
@@ -152,11 +152,11 @@ dbDescribe("create_organization_with_owner", () => {
     const { session } = await actAsFreshUser();
     try {
       await session.query(
-        `select private.create_organization_with_owner('First', 'duplicate-slug', 'Clinic')`,
+        `select public.create_organization_with_owner('First', 'duplicate-slug', 'Clinic')`,
       );
       await expect(
         session.query(
-          `select private.create_organization_with_owner('Second', 'duplicate-slug', 'C2')`,
+          `select public.create_organization_with_owner('Second', 'duplicate-slug', 'C2')`,
         ),
       ).rejects.toThrow(/duplicate key value violates unique constraint/);
     } finally {
@@ -171,7 +171,7 @@ dbDescribe("create_organization_with_owner", () => {
       // an anon request.
       await session.query("set local role authenticated");
       await expect(
-        session.query(`select private.create_organization_with_owner('X', 'x-slug', 'C')`),
+        session.query(`select public.create_organization_with_owner('X', 'x-slug', 'C')`),
       ).rejects.toThrow(/onboarding requires an authenticated user/);
     } finally {
       await session.rollback();

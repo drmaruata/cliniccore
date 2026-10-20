@@ -24,6 +24,9 @@ import type { PermissionKey } from "../permissions/registry";
 import { UnauthorizedError } from "../errors";
 import { readActiveOrgId, writeActiveOrgId } from "./session";
 import { createServerClient } from "../supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+
+import type { Database } from "../../types/database.types";
 
 /** Everything the UI needs to render a tenant, and nothing it does not. */
 export interface ActiveOrg {
@@ -62,19 +65,18 @@ const toActiveOrg = (row: MembershipRow): ActiveOrg | null => {
 };
 
 /**
- * The organization the user is acting in, or null.
+ * The shared core of `getActiveOrg` and `userCan`.
  *
- * Null means: signed out, or belonging to nothing, or the chosen organization is no longer
- * one they belong to, or the choice is ambiguous. All four are "do not assume a tenant", and
- * Task 17 renders that state.
+ * Extracted so that `userCan` does not ask the auth server WHO the user is a second time:
+ * it already knows, and each of those questions is a JWT re-validation over the network.
+ * Before the extraction, `userCan` cost FIVE round trips - an auth validation, another auth
+ * validation inside `getActiveOrg`, a memberships query, an assignments query and a grants
+ * query - and two of them were the expensive kind.
  */
-export async function getActiveOrg(): Promise<ActiveOrg | null> {
-  const supabase = await createServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
-
+async function resolveActiveOrg(
+  supabase: SupabaseClient<Database>,
+  userId: string,
+): Promise<ActiveOrg | null> {
   const cookieOrgId = await readActiveOrgId();
 
   // One query answers "which orgs may this user act in", and RLS decides the rows. An
@@ -83,7 +85,7 @@ export async function getActiveOrg(): Promise<ActiveOrg | null> {
   const { data, error } = await supabase
     .from("organization_memberships")
     .select("organization_id, organizations(id, name, slug, timezone, currency, locale, status)")
-    .eq("user_id", user.id);
+    .eq("user_id", userId);
 
   if (error) {
     // Deliberately NOT translated into a typed error. `toSafeResponse` turns anything it
@@ -104,6 +106,23 @@ export async function getActiveOrg(): Promise<ActiveOrg | null> {
 
   if (memberships.length === 1) return toActiveOrg(memberships[0] as MembershipRow);
   return null;
+}
+
+/**
+ * The organization the user is acting in, or null.
+ *
+ * Null means: signed out, or belonging to nothing, or the chosen organization is no longer
+ * one they belong to, or the choice is ambiguous. All four are "do not assume a tenant", and
+ * Task 17 renders that state.
+ */
+export async function getActiveOrg(): Promise<ActiveOrg | null> {
+  const supabase = await createServerClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  return resolveActiveOrg(supabase, user.id);
 }
 
 /** As `getActiveOrg`, for callers that cannot proceed without a tenant. */
@@ -134,52 +153,50 @@ export async function setActiveOrg(orgId: string): Promise<void> {
  *
  * THIS IS ADVISORY, NOT ENFORCEMENT. It exists so a UI can hide a control the user cannot
  * use. It must never gate access, because it is answerable from the client side and RLS is
- * the real boundary - see the Task 5 ruling on there being no unforgeable service-role check.
- * A `false` here does not stop a request; an RLS policy does.
+ * the real boundary - see the Task 5 ruling on there being no unforgeable service-role
+ * check. A `false` here does not stop a request; an RLS policy does.
  *
- * Note the consequence: because the permission set comes from `role_permissions` rows the
- * user can themselves read, this reflects the DATABASE, including anything a platform admin
- * changed since the app shipped. It does not consult a compiled-in list.
+ * THE RULE IS ASKED OF THE DATABASE, NOT REIMPLEMENTED HERE. This used to answer the
+ * question itself, by reading `user_role_assignments` and `role_permissions` and
+ * comparing the keys in TypeScript. That is how the permission rule came to exist TWICE -
+ * in SQL and in TypeScript - and how it drifted once already: the SQL refuses a
+ * `platform.`-prefixed key CASE-INSENSITIVELY, the TypeScript copy did not, and
+ * `PermissionKey` being an open template type made the capitalised spelling type-valid.
+ *
+ * `public.can` is a thin wrapper over `private.can`, which is where the rule has always
+ * lived, and it is the same function the RLS policies call - so the UI and the database
+ * cannot disagree. The cost is one RPC instead of two queries, and the benefit is that
+ * there is no second copy of the rule to keep in step.
+ *
+ * The clinic dimension is available because the rule already models it: a permission held
+ * only for one clinic is not held for the whole organization, and `private.can` says so.
+ * Passing no clinic asks the organization-wide question.
  */
-export async function userCan(permission: PermissionKey): Promise<boolean> {
-  // Mirrors private.can's platform refusal, for the same reason it has one: `permissions`
-  // is one global table with no scope column, and a tenant can attach a platform key to its
-  // own role. The database would refuse the request; a helper that answered `true` would
-  // render a control that does nothing when clicked.
-  //
-  // CASE-INSENSITIVE, because private.can's is: it compares `lower(p_permission) not like
-  // 'platform.%'`, and `PermissionKey` is an open template type - `${string}.${string}` -
-  // so `userCan("Platform.tenants.read")` is type-valid and would otherwise slip past a
-  // case-sensitive check and match a grant row spelled with a capital P. Not reachable
-  // today (the write policy refuses it and the permissions table holds only the 21
-  // lowercase registry keys), but the whole point of mirroring the rule is that it cannot
-  // drift.
-  if (permission.toLowerCase().startsWith("platform.")) return false;
-
+export async function userCan(
+  permission: PermissionKey,
+  clinicId?: string | null,
+): Promise<boolean> {
   const supabase = await createServerClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return false;
 
-  const org = await getActiveOrg();
+  const org = await resolveActiveOrg(supabase, user.id);
   if (!org) return false;
 
-  const { data: assignments, error: assignmentError } = await supabase
-    .from("user_role_assignments")
-    .select("role_id")
-    .eq("user_id", user.id)
-    .eq("organization_id", org.id);
-  if (assignmentError) return false;
+  // The clinic is OMITTED rather than passed as null. The generated type says
+  // `p_clinic_id?: string`, and PostgREST matches a function on the exact set of supplied
+  // parameter names - so sending a key the caller does not have a value for is how the
+  // four-key-body PGRST202 happened in the first place. Omitting it is both correct and
+  // what the database's own default means.
+  const args: { p_org_id: string; p_permission: string; p_clinic_id?: string } = {
+    p_org_id: org.id,
+    p_permission: permission,
+  };
+  if (clinicId) args.p_clinic_id = clinicId;
 
-  const roleIds = [...new Set((assignments ?? []).map((row) => row.role_id as string))];
-  if (roleIds.length === 0) return false;
-
-  const { data: granted, error: grantError } = await supabase
-    .from("role_permissions")
-    .select("permission_key")
-    .in("role_id", roleIds);
-  if (grantError) return false;
-
-  return (granted ?? []).some((row) => row.permission_key === permission);
+  const { data, error } = await supabase.rpc("can", args);
+  if (error) return false;
+  return data === true;
 }

@@ -568,7 +568,29 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
-      [_ in never]: never;
+      can: {
+        Args: { p_clinic_id?: string; p_org_id: string; p_permission: string };
+        Returns: boolean;
+      };
+      create_organization_with_owner: {
+        Args: {
+          p_clinic_name: string;
+          p_name: string;
+          p_slug: string;
+          p_timezone?: string;
+        };
+        Returns: string;
+      };
+      write_audit: {
+        Args: {
+          p_action: string;
+          p_metadata?: Json;
+          p_org_id: string;
+          p_resource_id?: string;
+          p_resource_type: string;
+        };
+        Returns: undefined;
+      };
     };
     Enums: {
       [_ in never]: never;
