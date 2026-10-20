@@ -32,7 +32,7 @@ const OPERATOR = "1d3c5b7a-9e2f-4d6c-8b0a-2c4e6f8a0b1c";
 
 const OWN_MISMATCH = /may only be written for your own organization/;
 const NOT_PLATFORM_ADMIN = /or by a platform administrator/;
-const FREE_TEXT = /clinical free-text keys/;
+const FREE_TEXT = /clinical free text/;
 const TOO_LONG = /exceeds 128 bytes/;
 const TOO_BIG = /exceeds 8 KiB/;
 
@@ -255,6 +255,54 @@ dbDescribe("write_audit", () => {
           )[0]?.n,
         ),
       ).toBe(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses a PROSE VALUE under an innocent key, which is what a key-name screen cannot see", async () => {
+    // THE CLOSURE. The old screen was a KEY-NAME blocklist, so a key that did not happen
+    // to be on the list carried anything it liked. The harm is in the PROSE, not in the
+    // key name - a misspelling does not leak because it is misspelled, it leaks because it
+    // carries a sentence. So the value is screened: a string value with whitespace in it
+    // is refused whatever the key is called.
+    const session = await stage();
+    try {
+      await become(session, TENANT);
+      for (const metadata of [
+        `{"code":"patient complains of chest pain since Monday"}`,
+        `{"summary":"ok"}`,
+        `{"narrative":"ok"}`,
+        `{"summry":"short but prose"}`,
+        `{" note ":"short but prose"}`,
+      ]) {
+        await expectRejection(
+          session,
+          `select public.write_audit($1::uuid, 'x', 'y', null, $2::jsonb)`,
+          [ORG_B, metadata],
+          /audit metadata rejected/,
+        );
+      }
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("accepts identifier-shaped values under keys that are not on the list", async () => {
+    // The positive control, and the reason the rule is a VALUE rule: a key nobody listed,
+    // carrying a token, is fine. Without this the screen could be satisfied by refusing
+    // everything, which is not a screen.
+    const session = await stage();
+    try {
+      await become(session, TENANT);
+      await session.query(
+        `select public.write_audit($1::uuid, 'x', 'y', null, '{"code":"ok"}'::jsonb)`,
+        [ORG_B],
+      );
+      await session.query(
+        `select public.write_audit($1::uuid, 'x', 'y', null, '{"whatever":"42"}'::jsonb)`,
+        [ORG_B],
+      );
     } finally {
       await session.rollback();
     }

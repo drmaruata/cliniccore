@@ -3180,3 +3180,78 @@ principal held nothing - and the results looked like findings. They were fixture
 caught by printing the PREDICATE each principal sees rather than trusting whether a command
 was accepted. A refused UPDATE raises; a filtered UPDATE succeeds with zero rows, so "the
 command ran" is not "the row changed".
+
+## The audit free-text screen, closed properly: screen the VALUE, not only the key name
+
+The open finding was exact: "The free-text screen remains a key-name blocklist: summary,
+narrative, a misspelling, or a key with surrounding whitespace all pass it. Recorded as a
+speed bump, not a guarantee." And it was right: a blocklist screens KEYS, but the harm is in
+the VALUE.
+
+### WHY A KEY-NAME SCREEN CANNOT BE THE WHOLE FIX
+
+MEASURED, each of these really did pass the old screen:
+
+    {"summary": "..."}     - the key is not on the list
+    {"summry": "..."}      - a MISSPELLING is not on the list
+    {" note ": "..."}      - surrounding whitespace made it a different key
+    {"narrative": "..."}    - likewise
+
+A misspelled key does not leak anything BY BEING MISSPELLED. It leaks because it carries a
+sentence, and a key-name screen cannot see that. So the same hole that lets a misspelling
+through also lets ANY key through, however innocent it looks.
+
+### THE RULE: A STRING VALUE MUST BE IDENTIFIER-SHAPED
+
+No whitespace anywhere, and at most 64 characters. Audit metadata describes what HAPPENED -
+a count, an id, a code, a status, a boolean - and every one of those is a token. Prose is
+not, because prose has spaces in it.
+
+That single rule closes the whole family of key-name holes at once: a misspelled key
+carrying prose is refused, a padded key carrying prose is refused, and "summary" and
+"narrative" are refused because what they carry is prose rather than because their names
+were guessed at. The key blocklist STAYS, normalised and widened, and is now the SECONDARY
+screen: it catches the case a value rule cannot - a key NAMED for free text carrying a short
+value, such as `{"note": "x"}` - and the refusal names the key it objected to.
+
+MEASURED, each of these is now refused, with the reason:
+
+    {"code":"patient complains of chest pain since Monday"}
+      -> the value of "code" contains whitespace, which no identifier-shaped value does
+    {"summary":"ok"}    -> the key "summary" names clinical free text
+    {"narrative":"ok"}  -> the key "narrative" names clinical free text
+    {"summry":"short but prose"}
+      -> the value of "summry" contains whitespace, which no identifier-shaped value does
+    {" note ":"short but prose"}
+      -> the key "note" names clinical free text
+
+And the positive control, without which a screen that refuses everything would also "pass":
+`{"code":"ok"}` and `{"whatever":"42"}` are both ACCEPTED - a key nobody listed, carrying a
+token, is fine.
+
+### WHAT A LEGITIMATE CALLER DOES, AND WHY
+
+It records identifiers and codes, not phrases. A human phrase in an audit trail is a clinical
+free text by another name, and refusing it is the point: `audit_logs` has no foreign keys
+precisely so a trail cannot be erased along with the record it describes, which also means a
+note that lands there OUTLIVES the patient row it came from. And because a tenant's trail is
+invisible to a platform operator, a stray note is not even visible to the people who would
+spot it. Where a phrase is genuinely wanted, the caller records a code and resolves it.
+
+### THE RESIDUAL, STATED PLAINLY
+
+A single-word value that is not on the key list is indistinguishable from a code, and
+passes. `{"kind":"summary"}` is accepted, because "summary" has no whitespace and "kind" is
+not a free-text key name. No shape-based rule can separate "ok" from "summary" - that
+needs a vocabulary, and the vocabulary is the application''s own. It is a ONE-WORD residue
+rather than a paragraph, and it is recorded rather than papered over.
+
+### A BOUND, NOT A SCREEN, WAS PREEMPTED
+
+The 8 KiB metadata cap is a distinct bound with its own message, and the new value rule was
+refusing a 9 000-character value FIRST - so the test that was proving the 8 KiB cap was
+proving the wrong thing. The size check now runs before the value rule, and both bounds are
+asserted.
+
+The refusal is LOUD, which is the other half of why a value rule beats a key blocklist here:
+a blocklist fails silently, and this fails with a message naming the key and the reason.

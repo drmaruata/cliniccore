@@ -367,3 +367,11 @@ landed with it.
   The fix is to make `clinics.timezone` NOT NULL with a default, the way
   `organizations.timezone` already is; that is a nullability change and therefore a
   product decision, not a validation detail.
+- **Audit metadata must be identifiers and codes, not phrases.** A string value with
+  whitespace in it, or a key that names clinical free text, is refused - and the refusal
+  names the key and the reason. This is a VALUE rule, not a key-name screen: the harm is in
+  the prose, and a key-name screen cannot see it, so a misspelled key carrying a sentence
+  used to pass. Audit metadata describes what HAPPENED, and a note that lands in
+  `audit_logs` outlives the patient row it came from - the table has no foreign keys on
+  purpose. Record an id or a code and resolve it. One residual: a single-word value that is
+  not a free-text key name is indistinguishable from a code and passes.
