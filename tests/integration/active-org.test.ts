@@ -301,6 +301,17 @@ it("returns null for a SUSPENDED organization, however the cookie points at it",
   expect((await activeOrg.getActiveOrg())?.id).toBe(suspended);
 
   await admin().from("organizations").update({ status: "suspended" }).eq("id", suspended);
+  // POSITIVE CONTROL: the suspension must have HAPPENED. Without this, a guard that
+  // silently refused the update would leave the organization active and the assertion
+  // below would fail for the wrong reason. MEASURED: private.guard_organization_status
+  // refused the suspension when it ran as service_role, because service_role carries no
+  // user JWT, and this test failed on the wrong assertion with no explanation.
+  const check = await admin()
+    .from("organizations")
+    .select("status")
+    .eq("id", suspended)
+    .maybeSingle();
+  expect(check.data?.status, "the organization must really be suspended").toBe("suspended");
 
   expect(await activeOrg.getActiveOrg()).toBeNull();
 });
