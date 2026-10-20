@@ -100,7 +100,11 @@ beforeAll(async () => {
   if (roleError) throw roleError;
   await client
     .from("role_permissions")
-    .insert({ role_id: role.id, permission_key: "patients.read" });
+    .insert({ role_id: role.id, permission_key: "patients.read" })
+    .select();
+  await client
+    .from("role_permissions")
+    .insert({ role_id: role.id, permission_key: "settings.manage" });
   await client
     .from("user_role_assignments")
     .insert({ organization_id: orgId, user_id: userId, role_id: role.id });
@@ -181,24 +185,27 @@ describe("the browser can reach the authorization rule", () => {
   });
 
   it("says no for a permission the user does not hold", async () => {
-    const response = await rpc("can", { p_org_id: orgId, p_permission: "settings.manage" });
+    const response = await rpc("can", { p_org_id: orgId, p_permission: "billing.manage" });
     expect(response.status).toBe(200);
     expect(response.text).toBe("false");
   });
 
-  it("refuses a platform-scoped key, in any case, EVEN WHEN THE ROLE REALLY HOLDS ONE", async () => {
-    // private.can compares lower(p_permission), so the public wrapper must too - or the
-    // rule drifts again the moment it is exposed a second way.
-    //
-    // The fixture must ARM the trap, or the assertion is vacuous: the probe role held
-    // only patients.read, so "false" was the answer with or without the platform clause.
-    // That is the standing failure in this repository - a control whose expected value is
-    // identical for a permitted and an unpermitted principal - and the previous version of
-    // this test was exactly that. The grant is created here, asserted to exist, and only
-    // then is the refusal asserted.
-    // NOTE: "platform.tenants.read" is already one of the twenty-one seeded
-    // permissions, so the row exists and must NOT be inserted - and must not be deleted
-    // on cleanup either, or the next run would find a missing permission.
+  // The ARMING lives in a beforeAll, not in an `it`. That is the whole point:
+  // MEASURED, with the arming inside a test, removing that test left the suite green -
+  // the control had quietly become vacuous again, because the test both CREATED the
+  // grant and ASSERTED it, so deleting the test deleted the check along with the setup.
+  // A beforeAll cannot be removed by removing a test, so a test that asserts the arming
+  // is present now actually holds the refusal below to account.
+  //
+  // NOTE: "platform.tenants.read" is already one of the twenty-one seeded permissions,
+  // so the row exists and must NOT be inserted - and must not be deleted on cleanup
+  // either, or the next run would find a missing permission.
+  beforeAll(async () => {
+    const { error: permError } = await admin()
+      .from("permissions")
+      .upsert({ key: "platform.tenants.read", description: "Adversarial platform key" });
+    if (permError) throw new Error(`permissions upsert: ${permError.message}`);
+
     const { data: platformRole, error: platformRoleError } = await admin()
       .from("roles")
       .insert({ key: "rpc_probe_platform", name: "RPC platform probe", organization_id: orgId })
@@ -215,14 +222,32 @@ describe("the browser can reach the authorization rule", () => {
       .from("user_role_assignments")
       .insert({ organization_id: orgId, user_id: userId, role_id: platformRole.id });
     if (assignError) throw new Error(`user_role_assignments insert: ${assignError.message}`);
+  });
 
-    // The trap is armed: the user REALLY holds the key.
-    const held = await admin()
-      .from("role_permissions")
-      .select("permission_key")
-      .eq("role_id", platformRole.id);
+  it("the fixture REALLY holds a platform key, so the refusal is the rule and not the absence of a grant", async () => {
+    // The arming, asserted. Without this the refusal below is satisfied by a user who
+    // simply holds no platform key - a control whose expected value is identical for a
+    // permitted and an unpermitted principal, which is the standing failure in this
+    // repository.
+    const { data: platformRole } = await admin()
+      .from("roles")
+      .select("id")
+      .eq("key", "rpc_probe_platform")
+      .eq("organization_id", orgId)
+      .maybeSingle();
+    const held = platformRole
+      ? await admin()
+          .from("role_permissions")
+          .select("permission_key")
+          .eq("role_id", platformRole.id)
+      : { data: [] };
     expect(held.data?.map((r) => r.permission_key)).toContain("platform.tenants.read");
+  });
 
+  it("refuses a platform-scoped key, in any case, EVEN WHEN THE ROLE REALLY HOLDS ONE", async () => {
+    // private.can compares lower(p_permission), so the public wrapper must too - or the
+    // rule drifts again the moment it is exposed a second way. The arming is the test
+    // above, and it comes first on purpose.
     for (const permission of [
       "platform.tenants.read",
       "Platform.tenants.read",
@@ -334,6 +359,89 @@ describe("the browser can onboard", () => {
       null,
     );
     expect(response.status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe("the SETTINGS path validates too, not only the create path", () => {
+  // 01630 validated the time zone only in the CREATE wrapper, and the review found the
+  // gap by MEASUREMENT: a settings UPDATE accepted anything.
+  //
+  //   PATCH /rest/v1/organizations?id=eq.<org>  {"timezone":"Not/AZone"}  ->  200, stored
+  //
+  // A CHECK constraint cannot close it - the zone list is a view, and a check may not call
+  // a function that reads a table - so 01640 adds a TRIGGER, which fires on every write
+  // path. The consequence of leaving it open was concrete: clinicDayBounds and
+  // formatInClinicTz THROW on an unknown zone, inside billing-window code.
+  it("refuses an unknown time zone on an update", async () => {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/organizations?id=eq.${orgId}`, {
+      method: "PATCH",
+      headers: {
+        apikey: PUBLISHABLE_KEY,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ timezone: "Not/AZone" }),
+    });
+    expect(response.status, await response.text()).toBeGreaterThanOrEqual(400);
+  });
+
+  it("refuses a time zone ICU does not know, on an update", async () => {
+    // MEASURED over the full zone list: of the 598 names in pg_timezone_names, ICU accepts
+    // 597 and rejects exactly one - 'Factory', PostgreSQL's own placeholder for a machine
+    // with no configured zone. So "the database knows the name" is NOT the same as "the
+    // application can use it".
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/organizations?id=eq.${orgId}`, {
+      method: "PATCH",
+      headers: {
+        apikey: PUBLISHABLE_KEY,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ timezone: "Factory" }),
+    });
+    expect(response.status, await response.text()).toBeGreaterThanOrEqual(400);
+  });
+
+  it("refuses a zone abbreviation, which is ambiguous for a billing day", async () => {
+    // 'CST' is Central or China Standard; 'IST' is India or Israel. A clinic whose BILLING
+    // DAY is computed in that zone cannot afford an abbreviation, and a legacy alias
+    // ('Cuba', 'Zulu', 'Universal') is no better.
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/organizations?id=eq.${orgId}`, {
+      method: "PATCH",
+      headers: {
+        apikey: PUBLISHABLE_KEY,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ timezone: "CST" }),
+    });
+    expect(response.status, await response.text()).toBeGreaterThanOrEqual(400);
+  });
+
+  it("POSITIVE CONTROL: accepts a valid update, so the refusals above are the guard and not RLS", async () => {
+    // Without this, every refusal above would also be satisfied by an RLS policy that
+    // refuses all updates - which is exactly the vacuous control this repository keeps
+    // catching.
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/organizations?id=eq.${orgId}`, {
+      method: "PATCH",
+      headers: {
+        apikey: PUBLISHABLE_KEY,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ timezone: "Asia/Kolkata" }),
+    });
+    expect(response.status, await response.text()).toBe(204);
+  });
+
+  it("refuses a hostile slug even for service_role, because the constraint is on the table", async () => {
+    // The constraint, not the wrapper. A service_role insert is not the browser's path, and
+    // it is the path a careless migration or script would take.
+    const { error } = await admin()
+      .from("organizations")
+      .insert({ name: "Hostile", slug: `a/b/${Date.now()}`, timezone: "Asia/Kolkata" });
+    expect(error, "the table constraint must refuse a hostile slug whoever writes it").toBeTruthy();
+    expect(error?.code).toBe("23514");
   });
 });
 

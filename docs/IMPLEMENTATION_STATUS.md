@@ -2909,3 +2909,129 @@ any signed-in browser can, so undeletable tenants went from a rare administrativ
 something a user can do at will. The deferral note says so, and the fix - making the guard
 distinguish a cascade from a deliberate role deletion - remains a change to a security
 trigger, and therefore its own piece of work with its own review.
+
+## The public RPC surface, final review: the write path was validated at ONE door, and the rules were pinned nowhere
+
+Final review of `2ecf501`. Verdict: "safe to ship, but NOT COMPLETE, and F1 must not be
+recorded as closed." The security posture was confirmed sound and measured rather than
+asserted - no cross-tenant disclosure, no privilege escalation, no bypass of the
+constraints - but the validation covered one of the two doors through which a tenant's
+fields are written.
+
+### F1 was only half closed: the SETTINGS path accepted anything
+
+01630 validated the time zone in the public wrapper - the CREATE door. MEASURED over real
+HTTPS, as the tenant owner:
+
+    PATCH /rest/v1/organizations?id=eq.<org>  {"timezone":"Not/AZone"}  ->  200, stored
+    PATCH /rest/v1/clinics?id=eq.<clinic>     {"timezone":"Not/AZone"}  ->  200, stored
+
+Neither `organizations.timezone` nor `clinics.timezone` had a CHECK, and
+`organizations_update` / `clinics_update` let any `settings.manage` holder write it. The
+consequence was the same one 01630 was written to prevent: `clinicDayBounds` and
+`formatInClinicTz` throw `RangeError` inside billing-window code for that tenant.
+
+A CHECK CONSTRAINT CANNOT DO THIS - a check may not call a function that reads a table,
+and the zone list is a view. So 20261014001640_timezone_guard.sql adds a TRIGGER, which
+fires on every INSERT and every UPDATE regardless of the door.
+
+### The rule is stricter than "the name exists", and deliberately so
+
+MEASURED over the whole list: `pg_timezone_names` has 598 entries, 553 of them canonical
+IANA names containing a slash, and 45 that do not. ICU accepts 44 of those 45 and rejects
+exactly ONE: `Factory`, PostgreSQL's own placeholder for a machine with no configured
+zone. So "the database knows the name" is NOT the same as "the application can use it", and
+a check against `pg_timezone_names` alone would have admitted it.
+
+The rule applied is therefore STRICTER, and stricter on purpose: the zone must be a
+CANONICAL IANA name - it contains a slash - or be exactly `UTC` or `GMT`. That rejects
+`Factory` because it is rejected, and it also rejects the 42 other zone-less names, which
+are legacy aliases and abbreviations. For a clinic whose BILLING DAY is computed in that
+zone, an abbreviation is not merely inelegant: `CST` is ambiguous between Central and
+China Standard, and `IST` between India and Israel. A canonical name is the only form
+that cannot be misread. It also means the rule does not depend on which ICU build is
+deployed, because every canonical name is accepted by every ICU.
+
+### F3: NONE of the new rules was pinned in source, and the table constraints had no test at all
+
+MEASURED: with the four CHECK constraints removed from 01630, or the time zone guard
+removed from 01640, or the wrapper's own validation removed, THE ENTIRE SUITE STAYED
+GREEN. There is no applied-versus-source checksum anywhere in the repository -
+`npm run migrations:check` validates filenames and emptiness only.
+
+`tests/unit/public-rpc-sql.test.ts` now pins all of it in the SOURCE: the four constraints,
+the trigger on both tables, the wrapper's own validation, the wrapper's default matching
+the private original, the revocations (and that the LAST privilege statement about each
+function is the revoke), and that every public wrapper is SECURITY DEFINER with an empty
+search path. Plus one behavioural assertion: a `service_role` insert with a hostile slug
+is refused with 23514, because the constraint is on the TABLE and not on the door.
+
+### F4: the arming of the platform-key control was not itself protected
+
+The control was arming the trap by creating a real `platform.tenants.read` grant, and
+asserting the user held it - inside the same test. MEASURED: removing that test left the
+suite green, because the test both CREATED the grant and ASSERTED it, so deleting the test
+deleted the check along with the setup. The arming now lives in a `beforeAll`, which no
+test can remove, and a separate test asserts it. MEASURED: with the grant insert removed,
+the suite goes red.
+
+### F5: a cross-file race in the suite, which produced FALSE verdicts
+
+`audit-log.test.ts` asserted a GLOBAL `count(*) from public.audit_logs` while
+`public-rpc.test.ts` COMMITS two rows into the same table in parallel. The review
+reproduced it four times, and it produced three false "mutation caught" verdicts in its
+first matrix pass. Both counts are now scoped to the organization under test.
+
+This is the same shape as everything else in this task: a count that depended on state the
+test did not own.
+
+### F8, recorded: the public surface has a create and no way back
+
+There is no public counterpart for deleting or deactivating a tenant, and a created tenant
+is undeletable anyway - MEASURED, over HTTP: `DELETE /rest/v1/organizations?id=eq.<org>`
+as `service_role` returns 400 "role accountant is still in use". So a user who creates a
+tenant by mistake has no product-level remedy, and the platform remedy is a fourteen-role
+delete per tenant. The deferral note now says so, and the deferred defect is pre-existing
+rather than caused by this work - but the public RPC makes it cheap to trigger.
+
+### The guard I wrote was wrong, and the tests were right
+
+The first version of the guard (01640) refused a NULL time zone on BOTH tables. MEASURED
+against the catalogue:
+
+    organizations.timezone   NOT NULL, DEFAULT 'Asia/Kolkata'
+    clinics.timezone         NULLABLE, no default
+
+`clinics.timezone` is NULLABLE BY DESIGN - migration 00300 created it that way - so refusing
+a NULL there refused a state the schema permits, and 50 tests in
+`tests/security/rls-policies.test.ts` and `tests/security/storage-policies.test.ts` failed
+with "a time zone is required". They insert clinics without a zone.
+
+So the guard was wrong, not the tests. A validation rule that refuses a state the database
+is designed to hold is not a stricter rule; it is a broken one, and it shows up as fifty
+unrelated failures. 20261014001650_timezone_guard_nullable_clinics.sql corrects it: NULL is
+refused for organizations, whose column is NOT NULL, and permitted for clinics, whose column
+is nullable. A zone that is PRESENT and invalid is still refused on both tables, on every
+write path - which is the defect 01640 was written to close, and it stays closed.
+
+### Still open, and pre-existing: a clinic with NO zone is a landmine
+
+`clinics.timezone` is nullable, and `clinicDayBounds` and `formatInClinicTz` take a zone
+string. MEASURED: `new Intl.DateTimeFormat("en-CA", { timeZone: null })` does NOT throw -
+it silently uses the RUNTIME's zone. So a clinic with no zone would bill in the server's
+day rather than its own, which is worse than a loud failure.
+
+The correct fix is to make `clinics.timezone` NOT NULL with a default, the way
+`organizations.timezone` already is. That is a nullability change and therefore a product
+decision about what a clinic is, not a validation detail - so it is recorded here rather
+than smuggled into a guard migration.
+
+### The arming of the platform-key control, protected properly
+
+The control armed its trap by creating a real `platform.tenants.read` grant and asserting
+the user held it - inside the same test. MEASURED: removing that test left the suite green,
+because the test both CREATED the grant and ASSERTED it, so deleting the test deleted the
+check along with the setup.
+
+The arming now lives in a `beforeAll`, which no test can remove, and a separate test
+asserts it is present. MEASURED: with the grant insert removed, the suite goes red.

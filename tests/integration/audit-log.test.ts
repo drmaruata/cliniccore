@@ -143,7 +143,10 @@ dbDescribe("write_audit", () => {
       expect(
         Number(
           (
-            await session.query<{ n: string }>(`select count(*)::text as n from public.audit_logs`)
+            await session.query<{ n: string }>(
+              `select count(*)::text as n from public.audit_logs where organization_id = $1`,
+              [ORG_B],
+            )
           )[0]?.n,
         ),
       ).toBe(1);
@@ -245,7 +248,10 @@ dbDescribe("write_audit", () => {
       expect(
         Number(
           (
-            await session.query<{ n: string }>(`select count(*)::text as n from public.audit_logs`)
+            await session.query<{ n: string }>(
+              `select count(*)::text as n from public.audit_logs where organization_id = $1`,
+              [ORG_B],
+            )
           )[0]?.n,
         ),
       ).toBe(1);

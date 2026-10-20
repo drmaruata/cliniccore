@@ -363,3 +363,25 @@ landed with it.
   makes undeletable tenants cheap to create. The fix is to make the guard distinguish a
   cascade from a deliberate role deletion - a change to a security trigger, and therefore
   a separate piece of work with its own review.
+- **Tenant creation validates at the door AND in the table, on EVERY write path.** The
+  slug is the tenant key used in URLs, so a slash in it breaks routing "far from here" -
+  and the browser is now the only path that creates a tenant. CHECK constraints on
+  `organizations` and `clinics`, plus a time zone TRIGGER on both tables, because a CHECK
+  may not call a function that reads a table and the zone list is a view.
+- **A clinic's time zone must be a CANONICAL IANA name, or `UTC`/`GMT`.** Not an
+  abbreviation: `CST` is Central or China Standard, `IST` is India or Israel, and a
+  clinic's BILLING DAY is computed in that zone. It is also the only form that is stable
+  across tzdata releases. MEASURED: of the 598 names in `pg_timezone_names`, ICU rejects
+  exactly one - `Factory`, PostgreSQL's own placeholder - so "the database knows the name"
+  is not the same as "the application can use it".
+- **The public surface can CREATE a tenant but cannot delete or deactivate one**, and a
+  created tenant is undeletable anyway. `DELETE /rest/v1/organizations` as `service_role`
+  returns 400 "role accountant is still in use" - `private.guard_role_delete` fires on the
+  CASCADE too. So a user who creates a tenant by mistake has no product-level remedy.
+- **A clinic with NO time zone is a landmine, and the column is still nullable.**
+  `clinics.timezone` is nullable by design (migration 00300), and
+  `Intl.DateTimeFormat` treats a nullish zone as "use the runtime's zone" rather than
+  throwing - MEASURED. So such a clinic would bill in the SERVER's day.
+  The fix is to make `clinics.timezone` NOT NULL with a default, the way
+  `organizations.timezone` already is; that is a nullability change and therefore a
+  product decision, not a validation detail.
