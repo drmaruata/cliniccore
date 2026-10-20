@@ -23,14 +23,24 @@
  * a second, lossy translation layer, and the interpretation belongs to the subscription
  * state machine that Phase 8 adds.
  *
+ * WHY THE INTERFACE MEMBERS ARE PROPERTIES AND NOT METHODS. `strictFunctionTypes` does
+ * not check the parameters of a METHOD declaration, so an implementation could narrow
+ * `verifyWebhook(payload: string | Uint8Array, ...)` to `string` and still typecheck -
+ * which is precisely the mistake the raw-body contract exists to prevent. As a property
+ * of function type, the parameter is checked contravariantly and the narrowing is a
+ * compile error.
+ *
  * WHY MONEY IS THE HOUSE `Minor` TYPE. The standing rule for this project is money in
  * minor units as bigint, with no floating point anywhere in a money path. `Minor` is
  * that type, so the seam cannot describe an amount in anything but paise, and a provider
  * that speaks in floats is not a provider this seam can describe.
  *
- * WHY THE MODULE IS SERVER-ONLY. A configured provider holds a secret key, and a client
- * component that imported this would eventually ship that key to a browser.
- * `import "server-only"` makes that a build error rather than a review comment.
+ * WHY THE MODULE IS SERVER-ONLY, AND THE TRAP THAT COMES WITH IT. A configured provider
+ * holds a secret key, and a client component that imported this would eventually ship
+ * that key to a browser. `import "server-only"` makes that a build error rather than a
+ * review comment. The trap: `verbatimModuleSyntax` is on, so `import { type X } from
+ * "@/lib/billing/provider"` still EMITS a runtime import and still trips the guard - a
+ * client component must use a top-level `import type { X }`.
  */
 
 import "server-only";
@@ -39,7 +49,7 @@ import type { Minor } from "@/lib/utils/money";
 
 import { unconfiguredProvider } from "./unconfigured";
 
-export { PaymentNotConfiguredError } from "@/lib/errors";
+export { PaymentNotConfiguredError, PaymentVerificationError } from "@/lib/errors";
 
 /** A checkout request. Every field is the server's resolution, never a client-supplied one. */
 export interface CheckoutInput {
@@ -65,6 +75,12 @@ export interface CheckoutInput {
 export interface CheckoutSession {
   /** The provider's identifier for this checkout. */
   providerSessionId: string;
+  /**
+   * The provider's identifier for the PAYMENT behind the checkout, and the thing a
+   * refund is against - a provider refunds a payment, not a checkout. It is null until
+   * the payer has paid, and the webhook that says so is what carries it.
+   */
+  providerPaymentId: string | null;
   /** The provider's identifier for the order behind it, where the provider has one. */
   providerOrderId: string | null;
   /**
@@ -92,16 +108,18 @@ export interface WebhookEvent {
   occurredAt: string;
   /** The checkout the event is about, where it names one. */
   providerSessionId: string | null;
+  /** The payment the event is about, where it names one. */
+  providerPaymentId: string | null;
   /** The amount involved, in minor units, where the event carries one. */
   amountMinor: Minor | null;
   /** ISO 4217 currency code, where the event carries one. */
   currency: string | null;
 }
 
-/** A request to refund part or all of a checkout. */
+/** A request to refund part or all of a payment. */
 export interface RefundInput {
-  /** The checkout the refund is against. */
-  providerSessionId: string;
+  /** The payment being refunded. */
+  providerPaymentId: string;
   /** How much to refund, in minor units. */
   amountMinor: Minor;
   /** A code for why, not a sentence. */
@@ -117,8 +135,8 @@ export interface RefundInput {
 export interface RefundResult {
   /** The provider's identifier for this refund. */
   refundId: string;
-  /** The checkout the refund was against. */
-  providerSessionId: string;
+  /** The payment the refund was against. */
+  providerPaymentId: string;
   /** How much was refunded, in minor units. */
   amountMinor: Minor;
   /** ISO 4217 currency code. */
@@ -140,7 +158,7 @@ export interface PaymentProvider {
   /** Whether this provider can actually take money. False for the unconfigured stub. */
   readonly configured: boolean;
   /** Start a checkout and return where the payer goes to pay. */
-  createCheckout(input: CheckoutInput): Promise<CheckoutSession>;
+  createCheckout: (input: CheckoutInput) => Promise<CheckoutSession>;
   /**
    * Authenticate a webhook payload against its signature and return what it means.
    *
@@ -148,10 +166,15 @@ export interface PaymentProvider {
    * bytes, so a payload that has been parsed and re-serialised is a different byte
    * sequence and will fail the check for reasons that look like a forgery. The union
    * exists because a framework may hand over either the bytes or the text.
+   *
+   * A signature that does not verify MUST reject with `PaymentVerificationError`, and
+   * MUST NOT resolve to an event. A provider that is unreachable is a DIFFERENT failure
+   * and must not be reported as a verification failure: one is an attack, the other is
+   * an outage, and an operator reads them differently.
    */
-  verifyWebhook(payload: string | Uint8Array, signature: string): Promise<WebhookEvent>;
-  /** Refund a checkout. */
-  refund(input: RefundInput): Promise<RefundResult>;
+  verifyWebhook: (payload: string | Uint8Array, signature: string) => Promise<WebhookEvent>;
+  /** Refund a payment. */
+  refund: (input: RefundInput) => Promise<RefundResult>;
 }
 
 /**

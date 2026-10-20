@@ -398,9 +398,11 @@ next agent must not have to rediscover:
   `unconfigured.ts` and a new file appearing in `lib/billing/`.
 - **THE TEST IS SPLIT BY GUARANTEE, AND EACH TEST SAYS WHAT PHASE 8 MUST DO TO IT.** The
   first version carried several guarantees in one test, so a later phase that changed one
-  of them would have taken the others with it. The factory-bound refusal test is the one
-  Phase 8 replaces; the stub's own refusal, the export pins, the file-list pin and the
-  import whitelist are NOT.
+  of them would have taken the others with it. Phase 8 **REPLACES** the factory-bound
+  refusal test, because a real provider stops refusing. The other guarantees **SURVIVE**,
+  but Phase 8 must **EXTEND** three lists to add a provider: the seam's file list, the
+  per-module export list, and the seam's import whitelist. Extending a list is how a
+  real provider is added deliberately - a fake cannot be added without a list changing.
 - **ONBOARDING MUST NOT PRESENT A PAYMENT STEP** while only the seam exists. Where the
   chosen plan supports a trial, onboarding continues straight to clinic setup. This
   binds Task 17.
@@ -443,3 +445,29 @@ next agent must not have to rediscover:
   `WebhookEvent.eventType` stays the provider's own vocabulary, because a seam that
   translated every provider's event names would be a second, lossy translation layer.
   The interpretation belongs to the subscription state machine that Phase 8 adds.
+- **THE INTERFACE MEMBERS ARE PROPERTIES, NOT METHODS, ON PURPOSE.** `strictFunctionTypes`
+  does not check the parameters of a METHOD declaration, so an implementation could
+  narrow `verifyWebhook(payload: string | Uint8Array, ...)` to `string` and still
+  typecheck - which is exactly the mistake the raw-body contract exists to prevent. As a
+  property of function type, the parameter is checked contravariantly and the narrowing
+  is a compile error.
+- **A REFUND IS AGAINST A PAYMENT, NOT A CHECKOUT.** `CheckoutSession` and
+  `WebhookEvent` carry `providerPaymentId`, and `RefundInput` names the payment being
+  refunded. A provider refunds a payment, and a seam with no way to name the payment is
+  a seam Phase 8 would have had to extend.
+- **`PaymentVerificationError` IS THE FAILURE CONTRACT FOR A FORGED SIGNATURE.** A
+  signature that does not verify must reject with it and must never resolve to an event.
+  A provider that is UNREACHABLE is a different failure and must not be reported as this
+  one - one is an attack, the other is an outage, and an operator reads them differently.
+- **A CLIENT COMPONENT MUST USE A TOP-LEVEL `import type`.** `verbatimModuleSyntax` is
+  on, so `import { type X } from "@/lib/billing/provider"` still EMITS a runtime import
+  and still trips the server-only guard.
+- **THE FAKE THE DESIGN SPEC ASKS FOR LIVES IN `tests/fixtures/`, NOT IN `lib/billing/`.**
+  The spec wants subscription state "unit-tested against a fake"; the seam's pins forbid
+  a fake inside `lib/billing/`, and that is deliberate - the fake belongs where the pins
+  do not apply.
+- **`lib/` MAY IMPORT ONLY THE PACKAGES ON A SHORT LIST.** `@supabase/ssr` and
+  `@supabase/supabase-js` ARE HTTP clients, and they are on it deliberately - they are
+  the sanctioned way for this application to talk to Supabase. The rule is that there is
+  no OTHER way, so a new HTTP client in `lib/` is a test failure rather than a review
+  comment.

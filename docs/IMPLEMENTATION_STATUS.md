@@ -3361,3 +3361,82 @@ still pass, and it did not until the prototype-chain and `constructor` fixes wer
   guarantee is `import "server-only"` plus the fact that the seam holds no key yet.
 - **`reasonCode` IS A CONVENTION, NOT AN ENFORCED RULE.** Nothing in the seam screens it,
   and the audit-metadata screen applies to `audit_logs`, not here.
+
+## Task 14, second review round: the controls had holes in them, and the holes were all evasions
+
+The first round closed nine gaps. The second round found no blocker and seven gaps, and
+every one of them was an EVASION of a control the first round had added. That is the
+shape of the finding: a deny-list of known-bad packages only catches the packages
+somebody thought of, and a scan for one spelling of an access only catches that spelling.
+
+### THE SEVEN, AND WHAT EACH WAS
+
+1. **THE IMPORT WHITELIST DID NOT MATCH RE-EXPORTS, AND A RELATIVE IMPORT COULD LEAVE
+   THE SEAM.** `importSpecifiers` matched `import` and `require` but not `export ... from`,
+   so a re-export of a network client into the seam was invisible; and every relative
+   specifier was allowed unconditionally, so `import { c } from "../supabase/server"`
+   passed - a module that reads the environment and imports `@supabase/ssr`. Now a
+   re-export counts as a dependency, and a relative import must RESOLVE INSIDE
+   `lib/billing/`.
+2. **THE PROVIDER-LIKE SCAN WAS BLIND TO A CLASS.** `isProviderLike` required
+   `typeof value === "object"`, and a class is a FUNCTION. So a class-shaped fake - the
+   exact shape the implementer's own positive control used - would have been judged
+   harmless. The scan now inspects a function's prototype as well as an object's own
+   methods.
+3. **THE ENVIRONMENT SCAN CAUGHT ONE SPELLING.** `process.env` yes; `process["env"]` and
+   `const { env } = process` no. MEASURED, all three were missed. Three access patterns
+   now, and prose about "the process environment" deliberately does not trip them,
+   because a rule that fires on English is a rule that gets switched off.
+4. **AGENTS.md CONTRADICTED THE TEST FILE** about what Phase 8 replaces. It said the
+   file-list pin and the import whitelist are NOT replaced; the test file said PHASE 8
+   REVISES THIS, and adding a provider module does make the file-list pin fail. The
+   wording is now REPLACES one test, EXTENDS three lists - and the point of extending a
+   list is that a fake cannot be added without a list changing.
+5. **THE REVIEW PACKAGE WAS STALE** and there was no task report, so the SDD record
+   contradicted the code. Both written.
+6. **METHOD SYNTAX MADE THE INPUT TYPES ADVISORY.** `strictFunctionTypes` does not check
+   the parameters of a METHOD declaration, so a Phase 8 implementation could narrow
+   `verifyWebhook(payload: string | Uint8Array, ...)` to `string` and still typecheck -
+   which is exactly the mistake the raw-body contract exists to prevent. The interface
+   members are now properties of function type, so the parameter is checked
+   contravariantly and the narrowing is a compile error.
+7. **FOUR PHASE 8 TRAPS.** A refund had no payment to name - a provider refunds a
+   PAYMENT, and the seam had no `providerPaymentId` anywhere, so `RefundInput` named a
+   checkout session. A forged signature had no failure contract. `import { type X }` under
+   `verbatimModuleSyntax` still emits a runtime import, so a client component must use a
+   top-level `import type`. And the design spec wants subscription state unit-tested
+   against a fake, which the seam's pins forbid inside `lib/billing/` - so the fake
+   belongs in `tests/fixtures/`.
+
+### THE HTTP-CLIENT RULE IS NOW A WHITELIST, AND THAT IS THE GENERAL LESSON
+
+The rule used to be "no import matches a list of known-bad HTTP clients". That list is
+now the OTHER way round: `lib/` may import NOTHING that is not on a short, explicit list
+of eight packages, two of which (`@supabase/ssr` and `@supabase/supabase-js`) are HTTP
+clients and are there on purpose - they are the sanctioned way for this application to
+talk to Supabase, and the rule is that there is no OTHER way. A new HTTP client in
+`lib/` is now a test failure rather than a review comment.
+
+### EIGHTEEN MUTATIONS, EACH CAUGHT, AND ONE THAT WAS A POSITIVE CONTROL
+
+The first round's twelve, plus six aimed at the second round's holes: a re-export of a
+payment SDK in the seam; the seam importing a module outside itself; the seam reading
+`process["env"]`; the seam destructuring `env` off `process`; a class-shaped fake
+provider exported; and an unsanctioned package imported outside the seam. Each is caught
+by the specific assertion, not by a collateral failure.
+
+The positive control is still the informative one: a provider rewritten as a CLASS must
+make the suite PASS, and it did not until the prototype-chain walk and the `constructor`
+exclusion were both in. That is a bug in the FINDER rather than in the code, and it was
+found only because a control was required to move in the positive direction.
+
+### WHAT IS STILL OPEN, AND IS NOT
+
+- The scans are TEXTUAL. They catch the three environment spellings and the four import
+  shapes; a computed specifier would evade them. The structural guarantee is
+  `import "server-only"` plus the fact that the seam holds no key yet.
+- The sanctioned package list is a whitelist, so adding a legitimate library to `lib/` is
+  a deliberate act and a test failure until it is sanctioned. That is the intended
+  behaviour, and it is worth saying so before someone reads it as an obstacle.
+- `reasonCode` is a CONVENTION, not an enforced rule. Nothing in the seam screens it,
+  and the audit-metadata screen applies to `audit_logs`, not here.

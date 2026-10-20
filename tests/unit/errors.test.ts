@@ -20,6 +20,7 @@ import {
   ForbiddenError,
   NotFoundError,
   PaymentNotConfiguredError,
+  PaymentVerificationError,
   UnauthorizedError,
   ValidationError,
   toSafeResponse,
@@ -43,6 +44,10 @@ describe("AppError subclasses", () => {
     // other test in the repository green.
     expect(new PaymentNotConfiguredError("x").status).toBe(500);
     expect(new PaymentNotConfiguredError("x").code).toBe("payment_not_configured");
+    // 401: the caller presented something it could not prove. A provider that is merely
+    // UNREACHABLE is a different failure and must not be reported as this one.
+    expect(new PaymentVerificationError("x").status).toBe(401);
+    expect(new PaymentVerificationError("x").code).toBe("payment_verification_failed");
   });
 
   it("answer a payment that cannot be taken with our own message", () => {

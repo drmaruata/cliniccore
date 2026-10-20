@@ -89,6 +89,22 @@ export class PaymentNotConfiguredError extends AppError {
   }
 }
 
+/**
+ * Raised when a payment webhook's signature does not verify.
+ *
+ * 401: the caller presented something it could not prove. A provider that is merely
+ * UNREACHABLE is a different failure and must not be reported as this one - one is an
+ * attack, the other is an outage, and an operator reads them differently.
+ */
+export class PaymentVerificationError extends AppError {
+  constructor(
+    message = "The payment webhook signature did not verify.",
+    code = "payment_verification_failed",
+  ) {
+    super(message, 401, code);
+  }
+}
+
 export interface SafeResponse {
   status: number;
   body: { error: string; code: string };
