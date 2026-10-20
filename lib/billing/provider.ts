@@ -23,10 +23,10 @@
  * a second, lossy translation layer, and the interpretation belongs to the subscription
  * state machine that Phase 8 adds.
  *
- * WHY MONEY IS bigint. The standing rule for this project is money in minor units as
- * bigint, with no floating point anywhere in a money path. `amountMinor` is therefore
- * bigint paise, and a provider that speaks in floats is not a provider this seam can
- * describe.
+ * WHY MONEY IS THE HOUSE `Minor` TYPE. The standing rule for this project is money in
+ * minor units as bigint, with no floating point anywhere in a money path. `Minor` is
+ * that type, so the seam cannot describe an amount in anything but paise, and a provider
+ * that speaks in floats is not a provider this seam can describe.
  *
  * WHY THE MODULE IS SERVER-ONLY. A configured provider holds a secret key, and a client
  * component that imported this would eventually ship that key to a browser.
@@ -34,6 +34,8 @@
  */
 
 import "server-only";
+
+import type { Minor } from "@/lib/utils/money";
 
 import { unconfiguredProvider } from "./unconfigured";
 
@@ -46,11 +48,17 @@ export interface CheckoutInput {
   /** The plan being bought, as the plan registry names it. */
   planCode: string;
   /** What to charge, in minor units (paise). */
-  amountMinor: bigint;
+  amountMinor: Minor;
   /** ISO 4217 currency code. */
   currency: string;
   /** The line item shown to the payer. */
   description: string;
+  /**
+   * A stable key for THIS attempt to charge, so that a retry maps to the same provider
+   * order rather than creating a second one. A caller that generates a fresh key on
+   * every retry gets a second charge.
+   */
+  idempotencyKey: string;
 }
 
 /** A checkout the payer can be sent to. */
@@ -59,10 +67,15 @@ export interface CheckoutSession {
   providerSessionId: string;
   /** The provider's identifier for the order behind it, where the provider has one. */
   providerOrderId: string | null;
-  /** Where the payer is sent to complete payment. */
+  /**
+   * Where the payer is sent to complete payment. This is a HOSTED page on the provider's
+   * own domain, not a client-side SDK payload: the seam is server-only, and describing
+   * an in-page checkout would put provider vocabulary into the browser. A provider that
+   * cannot offer a hosted page is not a provider this seam can describe.
+   */
   url: string;
   /** What is being charged, in minor units. */
-  amountMinor: bigint;
+  amountMinor: Minor;
   /** ISO 4217 currency code. */
   currency: string;
   /** ISO 8601 instant at which the checkout expires, where the provider expires it. */
@@ -80,7 +93,7 @@ export interface WebhookEvent {
   /** The checkout the event is about, where it names one. */
   providerSessionId: string | null;
   /** The amount involved, in minor units, where the event carries one. */
-  amountMinor: bigint | null;
+  amountMinor: Minor | null;
   /** ISO 4217 currency code, where the event carries one. */
   currency: string | null;
 }
@@ -90,9 +103,14 @@ export interface RefundInput {
   /** The checkout the refund is against. */
   providerSessionId: string;
   /** How much to refund, in minor units. */
-  amountMinor: bigint;
+  amountMinor: Minor;
   /** A code for why, not a sentence. */
   reasonCode: string;
+  /**
+   * A stable key for THIS attempt to refund, so that a retry maps to the same provider
+   * refund rather than refunding twice. See `CheckoutInput.idempotencyKey`.
+   */
+  idempotencyKey: string;
 }
 
 /** The outcome of a refund request. */
@@ -102,7 +120,7 @@ export interface RefundResult {
   /** The checkout the refund was against. */
   providerSessionId: string;
   /** How much was refunded, in minor units. */
-  amountMinor: bigint;
+  amountMinor: Minor;
   /** ISO 4217 currency code. */
   currency: string;
   /** Where the refund has got to. */
@@ -112,17 +130,26 @@ export interface RefundResult {
 /**
  * What a payment provider must be able to do.
  *
- * `configured` is a PROPERTY rather than a method on purpose. The contract says every
- * method refuses, so a method that answered "am I configured?" would have to refuse as
- * well - a contradiction. A property cannot refuse.
+ * `configured` is a PROPERTY rather than a method on purpose. The contract is that every
+ * METHOD of a provider refuses, so a method that answered "am I configured?" would have
+ * to do one of two things: answer with a boolean, which breaks the contract, or refuse,
+ * which answers nothing. A property cannot do either, so the boolean lives beside the
+ * contract rather than inside it.
  */
 export interface PaymentProvider {
   /** Whether this provider can actually take money. False for the unconfigured stub. */
   readonly configured: boolean;
   /** Start a checkout and return where the payer goes to pay. */
   createCheckout(input: CheckoutInput): Promise<CheckoutSession>;
-  /** Authenticate a webhook payload against its signature and return what it means. */
-  verifyWebhook(payload: string, signature: string): Promise<WebhookEvent>;
+  /**
+   * Authenticate a webhook payload against its signature and return what it means.
+   *
+   * The payload is the RAW BODY, exactly as it arrived. A signature is computed over
+   * bytes, so a payload that has been parsed and re-serialised is a different byte
+   * sequence and will fail the check for reasons that look like a forgery. The union
+   * exists because a framework may hand over either the bytes or the text.
+   */
+  verifyWebhook(payload: string | Uint8Array, signature: string): Promise<WebhookEvent>;
   /** Refund a checkout. */
   refund(input: RefundInput): Promise<RefundResult>;
 }

@@ -279,7 +279,7 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
-## Task 13+ : Supabase clients exist, and the browser CAN now onboard
+## Task 12/13+ : Supabase clients exist, and the browser CAN now onboard
 
 `lib/supabase/` and the root `proxy.ts` landed in Task 12. Task 13 added typed errors, the
 validation schemas, the revalidating active-org resolution, and the public RPC surface.
@@ -303,7 +303,7 @@ Consequences the next agent must not have to rediscover:
   FILES run in parallel and two suites each create an auth user, so a global residue check
   makes every file fail on its neighbour's. Scope it to the ids the caller created.
 
-## Task 14+ : the browser has an RPC surface now, and one tenant cannot be deleted
+## Task 13+ : the browser has an RPC surface now, and one tenant cannot be deleted
 
 `lib/supabase/` and the root `proxy.ts` landed in Task 12. Task 13 added typed errors, the
 validation schemas, and the revalidating active-org resolution. The public RPC surface
@@ -385,15 +385,22 @@ next agent must not have to rediscover:
 - **BILLING IS NOT FUNCTIONAL, AND MUST NOT BE PRESENTED AS THOUGH IT IS.** Every method
   of the provider refuses with `PaymentNotConfiguredError`, `isPaymentConfigured()` is
   `false`, and there is no provider SDK, no HTTP client and no environment variable
-  anywhere in `lib/`. MEASURED and pinned by `tests/unit/payment-provider.test.ts`, which
-  also proves the test itself can fail: five mutations (a method returning a fake
-  session, a method removed, an HTTP client imported, a global `fetch` called, a fake
-  provider exported) are each caught.
-- **THERE IS NO "TEST MODE", AND THERE MUST NEVER BE ONE.** The design spec forbids a
-  mode that returns a successful fake payment, because a caller would then believe a
-  clinic had been charged. The test pins the module's runtime exports to exactly
-  `PaymentNotConfiguredError`, `getPaymentProvider` and `isPaymentConfigured`, so a fake
-  cannot be added without the test noticing.
+  **in `lib/billing/`**. (Scoped to the seam, deliberately: `lib/supabase/server.ts` does
+  import an HTTP client, `@supabase/ssr`, so the wider claim would have been false.)
+  Pinned by `tests/unit/payment-provider.test.ts`.
+- **THERE IS NO "TEST MODE", AND THERE MUST NEVER BE ONE - AND THAT IS NOW ENFORCED, NOT
+  JUST DOCUMENTED.** The design spec forbids a mode that returns a successful fake
+  payment, because a caller would then believe a clinic had been charged. The suite
+  pins the seam's FILE LIST, each module's RUNTIME EXPORTS, the fact that every
+  provider-like export is unconfigured and refuses, the fact that the seam reads no
+  `process.env`, and a DENY-BY-DEFAULT IMPORT WHITELIST for the seam. A fake cannot be
+  added without a test failing - MEASURED by mutation, including a fake exported from
+  `unconfigured.ts` and a new file appearing in `lib/billing/`.
+- **THE TEST IS SPLIT BY GUARANTEE, AND EACH TEST SAYS WHAT PHASE 8 MUST DO TO IT.** The
+  first version carried several guarantees in one test, so a later phase that changed one
+  of them would have taken the others with it. The factory-bound refusal test is the one
+  Phase 8 replaces; the stub's own refusal, the export pins, the file-list pin and the
+  import whitelist are NOT.
 - **ONBOARDING MUST NOT PRESENT A PAYMENT STEP** while only the seam exists. Where the
   chosen plan supports a trial, onboarding continues straight to clinic setup. This
   binds Task 17.
@@ -405,17 +412,28 @@ next agent must not have to rediscover:
   idempotency key. Never record Razorpay as complete.
 - **`isPaymentConfigured()` ASKS THE PROVIDER**, because a second source of truth about
   whether payments work is a second thing to get out of step with the first. The
-  provider's `configured` is a PROPERTY, not a method, and that is deliberate: the
-  contract says every METHOD refuses, so a method answering "am I configured?" would
-  have to refuse too. A property cannot refuse.
-- **MONEY IS bigint PAISE IN THE SEAM TOO.** `amountMinor` is `bigint`, per the standing
-  rule, and a provider that speaks in floats is not a provider this seam can describe.
-  `reasonCode` is a code and not a sentence, for the same reason the audit metadata
-  screen refuses prose.
+  DERIVATION is pinned by a source-text check, not just the answer: a hardcoded
+  `return false` passes every other test in the suite, because the provider and the
+  answer would both be false.
+- **`configured` IS A PROPERTY, NOT A METHOD**, so the boolean answer lives BESIDE the
+  refusal contract rather than inside it. A method answering "am I configured?" would
+  have to either break the contract (by answering) or answer nothing (by refusing).
+- **MONEY IS THE HOUSE `Minor` TYPE** (`lib/utils/money.ts`), so the seam cannot describe
+  an amount in anything but paise. `reasonCode` is a code and not a sentence - a
+  CONVENTION, not an enforced rule, and nothing in the seam screens it.
+- **`verifyWebhook` TAKES THE RAW BODY** - `string | Uint8Array`, exactly as it arrived.
+  A signature is computed over bytes, so a payload that has been parsed and
+  re-serialised is a different byte sequence and fails the check looking like a forgery.
+- **`CheckoutSession.url` IS A HOSTED PAGE** on the provider's domain, not a client-side
+  SDK payload. The seam is server-only, and describing an in-page checkout would put
+  provider vocabulary into the browser.
+- **`CheckoutInput` AND `RefundInput` CARRY AN `idempotencyKey`.** A caller that
+  generates a fresh key on every retry gets a second charge.
 - **`PaymentNotConfiguredError` LIVES IN `lib/errors.ts`**, extending `AppError` with
   status 500 and code `payment_not_configured` - 500 and not 503, because an
   unconfigured provider is a gap in this deployment rather than a temporary outage, and
-  a 503 would promise that a retry might succeed.
+  a 503 would promise that a retry might succeed. Both are pinned in `errors.test.ts`,
+  because a mutation to 503 leaves the rest of the repository green.
 - **THE SEAM IS SERVER-ONLY, ON EVERY FILE IN IT.** `import "server-only"` sits at the
   top of both `lib/billing/provider.ts` and `lib/billing/unconfigured.ts`, so a
   configured provider's secret key cannot reach a browser. The guard on the entry point

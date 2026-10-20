@@ -19,6 +19,7 @@ import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
+  PaymentNotConfiguredError,
   UnauthorizedError,
   ValidationError,
   toSafeResponse,
@@ -36,6 +37,19 @@ describe("AppError subclasses", () => {
     expect(new NotFoundError("No such patient").status).toBe(404);
     expect(new ConflictError("Already exists").status).toBe(409);
     expect(new ValidationError("Bad input").status).toBe(422);
+    // 500 and not 503: an unconfigured payment provider is a gap in this deployment
+    // rather than a temporary outage, and a 503 would promise that a retry might
+    // succeed. The status is pinned here because a mutation to 503 would leave every
+    // other test in the repository green.
+    expect(new PaymentNotConfiguredError("x").status).toBe(500);
+    expect(new PaymentNotConfiguredError("x").code).toBe("payment_not_configured");
+  });
+
+  it("answer a payment that cannot be taken with our own message", () => {
+    expect(toSafeResponse(new PaymentNotConfiguredError())).toEqual({
+      status: 500,
+      body: { error: "Payment provider is not configured.", code: "payment_not_configured" },
+    });
   });
 
   it("return their own authored message, which is safe by construction", () => {

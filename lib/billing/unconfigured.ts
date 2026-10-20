@@ -39,7 +39,7 @@ export const unconfiguredProvider: PaymentProvider = {
     throw new PaymentNotConfiguredError();
   },
 
-  async verifyWebhook(_payload: string, _signature: string): Promise<WebhookEvent> {
+  async verifyWebhook(_payload: string | Uint8Array, _signature: string): Promise<WebhookEvent> {
     throw new PaymentNotConfiguredError();
   },
 

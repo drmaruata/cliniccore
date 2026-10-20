@@ -3255,3 +3255,109 @@ asserted.
 
 The refusal is LOUD, which is the other half of why a value rule beats a key blocklist here:
 a blocklist fails silently, and this fails with a message naming the key and the reason.
+
+## Task 14: the payment provider seam, and what a seam that lies would cost
+
+### WHAT THIS INCREMENT IS, AND IS NOT
+
+The design spec splits two things that are easily confused. The SEAM is the interface, the
+unconfigured stub, and the one factory that chooses between them. The WIRING is Razorpay
+against its sandbox, which arrives in Phase 8 with test keys, with HMAC webhook
+verification, idempotency-key storage against replayed deliveries, and test cards driving
+the flow. This increment builds the seam ONLY.
+
+Nothing about billing is functional, and the seam must not pretend otherwise. The design
+spec's own wording is the reason: a "test mode" that returns a successful fake payment
+would misrepresent payment capability, because a caller would then believe a clinic had
+been charged.
+
+### THE SEVEN RULINGS
+
+1. **EVERY METHOD REJECTS, AND THE STUB HAS NO SUCCESS PATH AT ALL.** Not a branch, not a
+   configuration flag, no environment variable. The only way to obtain a working provider
+   is to write one.
+2. **THE METHODS ARE `async`, SO THE CONTRACT IS A REJECTION.** A method that threw
+   synchronously would be a different contract, and a caller attaching a rejection
+   handler would never see it. MEASURED in the test: the outcome is asserted to be a
+   Promise before it is asserted to reject, so a synchronous throw fails the test
+   rather than being mistaken for a rejection.
+3. **`configured` IS A PROPERTY, NOT A METHOD.** The contract is that every METHOD of a
+   provider refuses, so a method answering "am I configured?" would have to either break
+   the contract by answering, or answer nothing by refusing. The boolean answer lives
+   BESIDE the contract rather than inside it.
+4. **`isPaymentConfigured()` ASKS THE PROVIDER IT WOULD HAND OUT.** A second source of
+   truth about whether payments work is a second thing to get out of step with the first.
+5. **THE SEAM IS SERVER-ONLY, ON EVERY FILE IN IT.** `import "server-only"` at the top of
+   both files. The guard on the entry point is only meaningful if the file it reaches is
+   guarded too, and `lib/billing/unconfigured.ts` is importable on its own.
+6. **MONEY IS THE HOUSE `Minor` TYPE** (`lib/utils/money.ts`), so the seam cannot describe
+   an amount in anything but paise, and `reasonCode` is a code rather than a sentence.
+7. **THE TYPES CARRY DOMAIN FACTS, NOT PROVIDER FACTS** - with one deliberate exception:
+   `WebhookEvent.eventType` stays the provider's own vocabulary, because a seam that
+   translated every provider's event names would be a second, lossy translation layer,
+   and the interpretation belongs to the subscription state machine that Phase 8 adds.
+
+### WHAT THE FIRST REVIEW FOUND, AND WHAT CHANGED BECAUSE OF IT
+
+The first review found no blocker and nine gaps. Two of them were the same failure class
+this project has been bitten by repeatedly - a guarantee that existed in the DOCUMENT but
+not in the TEST.
+
+- **THE "NO FAKE PROVIDER" PIN COVERED ONE MODULE.** It pinned the runtime exports of
+  `lib/billing/provider.ts`, so a fake provider exported from `lib/billing/unconfigured.ts`
+  - or from a NEW file in the seam - would have been reachable from application code with
+    NO test failing. The pin now covers the seam's FILE LIST, each module's runtime
+    exports, and every provider-like export: it must be unconfigured, and it must refuse.
+- **AN ENV-GATED "TEST MODE" WAS INVISIBLE.** Nothing forbade the seam from reading
+  `process.env` and branching to a fake, and the AGENTS.md claim that there was "no
+  environment variable anywhere in `lib/`" was FALSE - `lib/supabase/{client,server,
+ proxy}.ts` read `NEXT_PUBLIC_SUPABASE_*` and `lib/auth/session.ts` read `NODE_ENV`.
+  The scan now exists and the claim is scoped to `lib/billing/`.
+- **`isPaymentConfigured()` WAS UNPINNED.** A hardcoded `return false` passes every other
+  test in the suite, because the provider and the answer would both be false. The
+  DERIVATION is now pinned by a source-text check, not just the answer.
+- **`PaymentNotConfiguredError.status` WAS UNPINNED.** A mutation to 503 leaves the rest
+  of the repository green. Both the status and the code are now asserted in
+  `errors.test.ts`, alongside the five classes that were already there.
+- **THE METHOD FINDER READ OWN PROPERTIES ONLY.** A provider written as a class puts its
+  methods on the prototype, so the finder would have seen NO methods - which reads as
+  "the provider has no methods" and invites weakening the pin rather than fixing the
+  finder. The prototype chain is walked now, and `constructor` is excluded: it is a
+  function like any other, and calling it without `new` throws something that is not a
+  rejection. MEASURED by applying a class-based provider: the suite failed until both
+  fixes were in, and passes now.
+- **THE TEST CARRIED SEVERAL GUARANTEES IN ONE CASE**, so a later phase that changed one
+  of them would have taken the others with it. It is split by guarantee now, and each
+  test says what Phase 8 must do to it.
+- **`verifyWebhook` TOOK A `string`, WHICH INVITES A WRONG SIGNATURE.** An HMAC is
+  computed over bytes, so a payload that has been parsed and re-serialised is a different
+  byte sequence and fails the check looking like a forgery. It now takes
+  `string | Uint8Array`, documented as the raw body.
+- **NO IDEMPOTENCY KEY.** A retried `createCheckout` or `refund` could create a second
+  order or a second refund. Both inputs carry one now.
+- **`CheckoutSession.url` WAS UNDOCUMENTED**, and an implementer using an in-page
+  checkout would have had to either leak provider vocabulary into the browser or extend
+  the seam. It is documented as a HOSTED page on the provider's domain.
+
+### THE MUTATIONS, AND WHY THEY ARE THE EVIDENCE
+
+A suite that cannot fail is worse than no suite, so the suite was mutated and re-run.
+Twelve mutations, each caught: a provider method returning a fake session; a provider
+method removed; an HTTP client imported; a global `fetch` called; a fake provider
+exported; a fake provider exported from `unconfigured.ts`; a new file appearing in
+`lib/billing/`; the seam reading `process.env`; the seam importing `node:http`;
+`isPaymentConfigured` hardcoded to `false`; the error status changed to 503; and a
+provider rewritten as a class (the last of which is a POSITIVE control - the suite must
+still pass, and it did not until the prototype-chain and `constructor` fixes were in).
+
+### THE RESIDUALS, STATED PLAINLY
+
+- **THE SEAM'S IMPORT WHITELIST IS A DENY-BY-DEFAULT LIST** of the specifiers the seam
+  may import, not a deny-list of known-bad packages. A name list of HTTP clients can only
+  catch the clients somebody thought of. The cost is that Phase 8 must admit the
+  provider's SDK to the list.
+- **THE SCANS ARE TEXTUAL.** A module-scope `const f = globalThis.fetch` is matched by
+  the `globalThis.fetch` pattern, but a computed specifier would not be. The structural
+  guarantee is `import "server-only"` plus the fact that the seam holds no key yet.
+- **`reasonCode` IS A CONVENTION, NOT AN ENFORCED RULE.** Nothing in the seam screens it,
+  and the audit-metadata screen applies to `audit_logs`, not here.
