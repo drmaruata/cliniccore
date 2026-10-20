@@ -76,6 +76,19 @@ export class ValidationError extends AppError {
   }
 }
 
+/**
+ * Raised when a payment provider is asked to do something it cannot do because no
+ * provider is configured.
+ *
+ * 500, not 503: the provider is unconfigured, which is a gap in this deployment rather
+ * than a temporary outage, and a 503 would promise that a retry might succeed.
+ */
+export class PaymentNotConfiguredError extends AppError {
+  constructor(message = "Payment provider is not configured.", code = "payment_not_configured") {
+    super(message, 500, code);
+  }
+}
+
 export interface SafeResponse {
   status: number;
   body: { error: string; code: string };

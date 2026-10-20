@@ -21,8 +21,8 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1–13 of 20 are complete** (13 = typed errors, validation schemas, and the
-  revalidating active-org resolution). **Task 14 is next.** Run `git log --oneline` and
+  **Tasks 1–14 of 20 are complete** (14 = the provider-agnostic payment seam, unconfigured).
+  **Task 15 is next.** Run `git log --oneline` and
   `git status` before you start. Briefs, reports and review packages are in
   `.superpowers/sdd/cliniccore-foundation/`.
 
@@ -375,3 +375,53 @@ landed with it.
   `audit_logs` outlives the patient row it came from - the table has no foreign keys on
   purpose. Record an id or a code and resolve it. One residual: a single-word value that is
   not a free-text key name is indistinguishable from a code and passes.
+
+## Task 14+ : the billing seam exists, and nothing about billing works
+
+Task 14 added `lib/billing/provider.ts` (the contract and the factory) and
+`lib/billing/unconfigured.ts` (the stub). It is a SEAM and nothing more. Consequences the
+next agent must not have to rediscover:
+
+- **BILLING IS NOT FUNCTIONAL, AND MUST NOT BE PRESENTED AS THOUGH IT IS.** Every method
+  of the provider refuses with `PaymentNotConfiguredError`, `isPaymentConfigured()` is
+  `false`, and there is no provider SDK, no HTTP client and no environment variable
+  anywhere in `lib/`. MEASURED and pinned by `tests/unit/payment-provider.test.ts`, which
+  also proves the test itself can fail: five mutations (a method returning a fake
+  session, a method removed, an HTTP client imported, a global `fetch` called, a fake
+  provider exported) are each caught.
+- **THERE IS NO "TEST MODE", AND THERE MUST NEVER BE ONE.** The design spec forbids a
+  mode that returns a successful fake payment, because a caller would then believe a
+  clinic had been charged. The test pins the module's runtime exports to exactly
+  `PaymentNotConfiguredError`, `getPaymentProvider` and `isPaymentConfigured`, so a fake
+  cannot be added without the test noticing.
+- **ONBOARDING MUST NOT PRESENT A PAYMENT STEP** while only the seam exists. Where the
+  chosen plan supports a trial, onboarding continues straight to clinic setup. This
+  binds Task 17.
+- **RAZORPAY WIRING IS PHASE 8 AND IS BLOCKED** pending test keys. The spec's own
+  reasons for deferring it: the sandbox needs `subscription_plans`,
+  `organization_subscriptions` and `subscription_usage` to exist, and webhook
+  verification is security-sensitive code that deserves its own focused pass with
+  adversarial tests - forged signature, replayed delivery, out-of-order event, duplicate
+  idempotency key. Never record Razorpay as complete.
+- **`isPaymentConfigured()` ASKS THE PROVIDER**, because a second source of truth about
+  whether payments work is a second thing to get out of step with the first. The
+  provider's `configured` is a PROPERTY, not a method, and that is deliberate: the
+  contract says every METHOD refuses, so a method answering "am I configured?" would
+  have to refuse too. A property cannot refuse.
+- **MONEY IS bigint PAISE IN THE SEAM TOO.** `amountMinor` is `bigint`, per the standing
+  rule, and a provider that speaks in floats is not a provider this seam can describe.
+  `reasonCode` is a code and not a sentence, for the same reason the audit metadata
+  screen refuses prose.
+- **`PaymentNotConfiguredError` LIVES IN `lib/errors.ts`**, extending `AppError` with
+  status 500 and code `payment_not_configured` - 500 and not 503, because an
+  unconfigured provider is a gap in this deployment rather than a temporary outage, and
+  a 503 would promise that a retry might succeed.
+- **THE SEAM IS SERVER-ONLY, ON EVERY FILE IN IT.** `import "server-only"` sits at the
+  top of both `lib/billing/provider.ts` and `lib/billing/unconfigured.ts`, so a
+  configured provider's secret key cannot reach a browser. The guard on the entry point
+  is only meaningful if the file it reaches is guarded too, which is why the test checks
+  every file under `lib/billing/`.
+- **THE TYPES CARRY DOMAIN FACTS, NOT PROVIDER FACTS** - with one deliberate exception:
+  `WebhookEvent.eventType` stays the provider's own vocabulary, because a seam that
+  translated every provider's event names would be a second, lossy translation layer.
+  The interpretation belongs to the subscription state machine that Phase 8 adds.
