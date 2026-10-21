@@ -3632,3 +3632,136 @@ operator's step.
 - **THERE IS NO SIGN-OUT CONTROL.** The button belongs to the signed-in shell, which is
   Task 16's, so the spec's "sign out" step clears the session cookie - the state a
   sign-out leaves - and says so.
+
+## Task 16 - the signed-in application shell, organization onboarding and invitations
+
+### WHAT WAS BUILT
+
+- `app/app/` - the signed-in application: `layout.tsx` (the shell), `page.tsx` (the
+  `/app` index, which redirects to the dashboard), `dashboard/page.tsx`,
+  `onboarding/{page,panel,form,actions}.ts(x)` and `settings/members/{page,invite-form,
+actions}.ts(x)`. `app/invite/[token]/{page,actions}.ts` and `accept-button.tsx` are the
+  invitation link.
+- `components/app/{sidebar-nav,org-switcher,clinic-switcher}.tsx` - the shell's three
+  client components.
+- `lib/auth/active-org.ts` gained `listMemberOrgs`; `lib/auth/session.ts` gained the
+  `cc_active_clinic` cookie; `lib/errors.ts` gained `ActionResult` and
+  `toActionResult`; `lib/validation/invitations.ts` is new.
+- Three migrations: `20261014001720_invitations.sql`,
+  `20261014001730_invitation_digest_correction.sql` and
+  `20261014001740_migration_history_name_fix.sql`.
+- Two E2E specs: `tests/e2e/onboarding.spec.ts` and `tests/e2e/invitations.spec.ts`,
+  plus the shared `tests/helpers/e2e-sign-in.ts` and `tests/helpers/e2e-cleanup.ts`.
+
+### THE RULINGS, AND WHY
+
+- **THE URL CONTRACT IS `/app/...`, SO THE DIRECTORY IS `app/app/` AND NOT
+  `app/(app)/`.** The plan's file tree spells the group `(app)`, but the plan's own
+  "Produces" line, Task 16's Step 1 and Task 15's brief all say `/app/...`, and the
+  same tree lists the auth group as `(auth)` while the brief lists those routes as
+  `/login` - so the tree's group names are not url segments. A pathless route group
+  would have added a directory level with no behaviour.
+- **THE LAYOUT CALLS `getActiveOrg()`, NOT `requireActiveOrg()`.** The plan's Step 3
+  says "the `(app)` layout calls `requireActiveOrg()`. If it returns null ..." -
+  and `requireActiveOrg()` THROWS when there is no active organization, so it cannot be
+  the thing whose null result is checked. `getActiveOrg()` is the null-returning
+  sibling.
+- **ZERO MEMBERSHIPS IS NOT THE SAME AS NO ACTIVE ORGANIZATION, AND THE SHELL
+  DISTINGUISHES THEM.** `getActiveOrg()` answers null in four situations: signed out,
+  no memberships, a cookie naming an organization the user has left, and several
+  organizations with no cookie chosen. Only the second is "create your organization";
+  the third and fourth render the PICKER, because the house rule in
+  `lib/auth/active-org.ts` is that a stale cookie never falls back to another tenant.
+  Rendering onboarding for a user who already belongs to a tenant would offer to
+  create a second organization to somebody who needs to choose a first one.
+- **THE GRANT CEILING WAS ENFORCED IN SQL, NOT IN TYPESCRIPT.** `private.can_grant`
+  already refused an assignment whose role holds a permission the grantor does not,
+  and the `user_role_assignments` INSERT policy uses it. The INVITATION path did not:
+  the acceptance function is a definer, so it created the assignment with no policy in
+  the way. `private.can_assign_role` is `can_grant` plus the rule the registry cannot
+  express - only an existing `organization_owner` may grant `organization_owner`,
+  because `organization_owner` and `organization_admin` carry byte-identical
+  permission sets (MEASURED by migration 01240). The `invitations` INSERT policy calls
+  it and `public.grantable_roles` is the thin wrapper the UI asks, so the rule is in
+  ONE place and the browser cannot widen it.
+- **THE PUBLIC RPC SURFACE IS THE ONLY DOOR.** PostgREST exposes the `public` schema
+  only (MEASURED in migration 01600), so `private.accept_invitation` is unreachable
+  from a browser and `public.accept_invitation` wraps it - the same pattern as the
+  three wrappers of 01600. `private.accept_invitation` keeps EXECUTE for
+  `authenticated` because the plan asks for it; the capability it adds beyond the
+  wrapper is nil, because the wrapper adds no restriction of its own.
+- **THE DASHBOARD SHOWS NO NUMBERS.** There is no clinical data yet, so a KPI would
+  be a fabrication. The page shows the organization, the caller's own role assignments
+  and an explicit empty state.
+
+### THE MEASUREMENTS
+
+- **`public.digest` DOES NOT EXIST ON THIS PROJECT.** The first acceptance function
+  hashed with it, and the query `select encode(public.digest('probe-token','sha256'),
+'hex')` fails with `42883: function public.digest(unknown, unknown) does not exist`.
+  pgcrypto is installed in the `extensions` schema - migration 00100's `create
+extension pgcrypto with schema public` was SKIPPED because the extension was already
+  there - so `pg_proc` holds `digest(bytea,text)` and `digest(text,text)` in
+  `extensions`. The correction uses the PostgreSQL built-in
+  `pg_catalog.sha256(pg_catalog.convert_to(...))`. A plpgsql body is not validated at
+  creation time, so the broken function was CREATED successfully and would have failed
+  at the first acceptance - which is why the correction is a new file.
+- **THE TWO SIDES OF THE TOKEN DIGEST AGREE, AND THE E2E PROVES IT A THIRD TIME.**
+  postgres `sha256(convert_to('probe-token','UTF8'))`,
+  postgres `extensions.digest('probe-token','sha256')` and node
+  `createHash('sha256').update('probe-token')` all produce
+  `92e2a3caaa3bec34d48004c7da4036f21c00828f51788c7650b9ee4ba5ef63d5`.
+- **THE APPLIER RECORDS THE `name` IT IS GIVEN, AND A BARE STEM BREAKS THE HISTORY
+  ASSERTION.** The first two applies named their migrations `20261014001720_invitations`
+  and `20261014001730_invitation_digest_correction`, without the `.sql`, and
+  `tests/integration/tenancy-schema.test.ts` failed: the history must name every
+  migration file exactly once. Re-applying would have left FOUR rows for two files -
+  the applier does not dedupe by idempotency key, it re-executes - so
+  `20261014001740_migration_history_name_fix.sql` renames the two rows and nothing
+  else.
+- **A GENERIC `button[type="submit"]` SELECTOR IS AMBIGUOUS IN THE SHELL.** The first
+  invitation E2E clicked the SIGN-OUT control - the shell header's form comes first in
+  the DOM - and failed on the sign-in page. The specs click by accessible name.
+- **THE LIVE PROJECT AFTER THE E2E RUNS:** 0 organizations, 0 audit logs, 0 auth users,
+  0 invitations, 0 memberships, 0 user_role_assignments, 0 clinics, 1 role (the
+  platform role). The `tenant_creation_events` ledger holds 29 rows, all created
+  before this task; the two rows this task's runs left behind were removed by hand.
+- **A PRE-EXISTING LEAK IN `tests/integration/public-rpc.test.ts` WAS FOUND AND
+  CLOSED.** The `tenant_creation_events` ledger has no foreign key, so the row
+  `public.create_organization_with_owner` writes for each organization created
+  survives the account and the organization that made it - and that file creates
+  tenants over real HTTPS. MEASURED: the ledger count went 29 -> 31 across one
+  `npm run test`, and the new rows' `user_id` pointed at accounts that no longer
+  existed. The cleanup now deletes the ledger rows for the accounts it deletes, and
+  the count is stable across a run. The ledger is the rate-limit EVIDENCE for tenant
+  creation, so a probe's rows in it are not a neutral thing to leave behind.
+
+### THE RESIDUALS, STATED PLAINLY
+
+- **TASK 15'S "THERE IS NO SIGN-OUT CONTROL" IS NOW OUT OF DATE.** Task 16 added the
+  control to the signed-in shell - a form whose action is the `signOut` server action -
+  and `tests/e2e/onboarding.spec.ts` covers it: the control ends the session and lands
+  on the sign-in page. The auth spec still clears the cookies by hand, because that
+  spec exercises the AUTH pages and the control lives in the shell. The Task 15
+  section above is left as it was written: this file is append-only, and a correction
+  belongs at the end rather than in the record of an earlier task.
+- **INVITATION DELIVERY IS NOT IMPLEMENTED, AND THAT IS BLOCKED.** There is no mail
+  provider, no send, and no queue. The owner-facing form on `/app/settings/members`
+  DISPLAYS the link for manual sharing and says in the UI that ClinicCore does not
+  send invitation emails yet. Nothing about a notification is claimed.
+- **THE INVITATION PAGE DOES NOT NAME THE ORGANIZATION.** The `invitations` table is
+  readable only by a holder of `staff.manage` in the owning organization, and the
+  invitee is not a member yet. A preview RPC is a later task.
+- **THE ROSTER SHOWS USER IDS.** `profiles` is readable only by its owner and
+  `auth.users` is not readable by a client, so a member's name is not available to
+  another member under the current privacy model.
+- **THE CLINIC SWITCHER IS A NEW PIECE OF STATE** - a `cc_active_clinic` cookie - that
+  no clinical screen consumes yet. It exists because the plan requires the component,
+  and a switcher that cannot switch is dead UI. It is re-validated on every read, and
+  the dashboard shows the active clinic.
+- **AN INVITATION'S `clinic_ids` IS NOT USED.** The schema carries it, the acceptance
+  function ignores it, and the invite form does not offer a clinic choice: the
+  invitation grants an organization-wide role.
+- **THE MEMBERSHIP RATE CAP IS FIVE ORGANIZATIONS PER USER PER 24 HOURS**, measured in
+  Task 13's `public.create_organization_with_owner`. The E2E creates one organization
+  per account, so it does not approach the cap.

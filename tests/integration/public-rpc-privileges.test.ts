@@ -27,6 +27,7 @@ import { beginSession, dbDescribe } from "./helpers/database";
 const POLICY_REFERENCED = [
   "assigned_to_self",
   "can",
+  "can_assign_role",
   "can_grant",
   "clinic_ids",
   "current_org_ids",
@@ -38,10 +39,12 @@ const POLICY_REFERENCED = [
 ];
 
 const PUBLIC_WRAPPERS = [
+  "accept_invitation",
   "can",
   "create_organization_with_owner",
   "delete_organization",
   "export_patients",
+  "grantable_roles",
   "write_audit",
 ];
 
@@ -53,14 +56,22 @@ const PUBLIC_WRAPPERS = [
  * because it performs the delete itself, so there is no signature to mirror. That is a
  * real difference, not an oversight, and lumping the two lists together would assert a
  * parity that does not exist.
+ *
+ * `public.grantable_roles` is not among them for the same reason: it calls
+ * `private.can_assign_role`, which is a different function with a different signature.
  */
-const DELEGATING_WRAPPERS = ["can", "create_organization_with_owner", "write_audit"];
+const DELEGATING_WRAPPERS = [
+  "accept_invitation",
+  "can",
+  "create_organization_with_owner",
+  "write_audit",
+];
 
 /** No policy, no trigger, and called by nothing. */
 const HARDENED = ["write_audit", "next_sequence_value", "create_organization_with_owner"];
 
 dbDescribe("the public RPC surface", () => {
-  it("exposes the three wrappers, and nothing else of OURS, in public", async () => {
+  it("exposes only our own functions in public, and nothing else", async () => {
     const session = await beginSession();
     try {
       const rows = await session.query<{ fn: string }>(

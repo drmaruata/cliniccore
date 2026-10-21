@@ -21,8 +21,9 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1-15 of 20 are complete** (15 = the auth pages: signup, login, password reset
-  and verification). **Task 16 is next.** Run `git log --oneline` and
+  **Tasks 1-16 of 20 are complete** (16 = the signed-in application shell, organization
+  onboarding, the tenant switcher and the invitation flow). **Task 17 is next.** Run
+  `git log --oneline` and
   `git status` before you start. Briefs, reports and review packages are in
   `.superpowers/sdd/cliniccore-foundation/`.
 
@@ -39,17 +40,19 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`01240` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`01740` (extensions, core functions, identity/tenancy
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
   then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
   gates, `01230`'s role guard and `01240`'s grant ceiling, then `01300`'s storage buckets,
-  `01400`/`01410`'s storage hardening and `01420`'s MIME allowlist and path guard), all applied —
-  25 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  `01400`/`01410`'s storage hardening and `01420`'s MIME allowlist and path guard, then the
+  `01600`–`01710` public RPC wrappers and their corrections, and finally Task 16's
+  `01720` invitations, `01730` digest correction and `01740` migration-history name fix), all
+  applied — 47 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
-  writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/`,
-  `proxy.ts`, the route groups and the rest of `supabase/` do not exist yet. **Storage:** five private
+  writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
+  `proxy.ts` landed in Task 12; the `(app)` routes landed in Task 16. **Storage:** five private
   buckets (`patient-documents`, `clinical-attachments`, `investigation-reports`, `org-assets`,
   `prescription-documents`), all `public = false`, 20 policies on `storage.objects` all `to
 authenticated`, and `allowed_mime_types` = PDF/JPEG/PNG/DICOM/text. Object tenancy is the
@@ -575,3 +578,147 @@ card.tsx` renders the title as a `div`, so a page whose title is a `CardTitle` h
 - **THE E2E SPEC LEAVES NOTHING BEHIND.** It creates ONE account with the admin API,
   goes through the public endpoint exactly once, and removes both - the live database
   reads 0 auth users after a run.
+
+## Task 16+ : the signed-in application exists, and the URL contract is `/app/...`
+
+Task 16 added the application shell, organization onboarding, the tenant switcher and the
+invitation flow. Consequences the next agent must not have to rediscover:
+
+- **THE URL CONTRACT IS `/app/...` AND THE DIRECTORY IS `app/app/`.** The plan's file
+  tree spells the group `(app)`, but the plan's own "Produces" line, Task 16's Step 1
+  ("assert `/app` renders an onboarding screen") and Task 15's brief all say `/app/...`,
+  and the same tree lists the auth group as `(auth)` while the brief lists those routes
+  as `/login` - so the tree's group names are NOT url segments. **Task 16 therefore
+  created `app/app/`, NOT `app/(app)/`.** The live routes are `/app`, `/app/dashboard`,
+  `/app/onboarding`, `/app/settings/members` and `/invite/[token]`. A route group would
+  have added a pathless directory level with no behaviour, so none was created. Task 17's
+  marketing shell replaces the ROOT `app/page.tsx` (which still serves `/`).
+- **THE SHELL HAS THREE STATES, AND ONLY ONE OF THEM IS "NO ORGANIZATION".**
+  (1) ZERO memberships -> the onboarding screen, rendered INSTEAD of the shell.
+  (2) A membership but NO active organization -> the PICKER, not onboarding: the user
+  belongs to several organizations and has not chosen one, OR the `cc_active_org` cookie
+  names an organization they have left. The house rule is that a stale cookie does NOT
+  fall back to another tenant - the choice died, so the shell asks again. Rendering
+  ONBOARDING there would offer to create a second organization to a user who already
+  has one. (3) An active organization -> the shell.
+- **THE PLAN'S "CALL `requireActiveOrg()`" IS WRONG AS WRITTEN, AND THE CODE USES
+  `getActiveOrg()`.** `requireActiveOrg()` THROWS when there is no active organization,
+  so it cannot be the thing whose null result routes to onboarding. The brief settles
+  it: the layout calls `getActiveOrg()`.
+- **THE SIGN-OUT BUTTON IS A `type="submit"` BUTTON IN THE SHELL HEADER, SO A GENERIC
+  `button[type="submit"]` SELECTOR IS AMBIGUOUS.** MEASURED: the first invitation E2E
+  clicked the sign-out control instead of the invite form's, and the test failed on the
+  sign-in page. The specs now click by ACCESSIBLE NAME.
+- **INVITATION DELIVERY IS NOT IMPLEMENTED, AND THAT IS BLOCKED.** The owner-facing form
+  on `/app/settings/members` DISPLAYS the invitation link for manual sharing and says
+  so in the UI. There is no mail provider, no mail send, and no queue. A form that said
+  "we have emailed them" would be a lie. The absence of delivery is recorded as BLOCKED
+  in `docs/IMPLEMENTATION_STATUS.md`, not as a working notification.
+- **THE RAW INVITATION TOKEN IS NEVER STORED.** `invitations.token_hash` holds a
+  SHA-256 digest; the raw token exists only in the link the owner copies and in the
+  redemption request. The owner hashes it in node (`createHash("sha256")`), the
+  database hashes it again in `pg_catalog.sha256`, and the two must agree byte for byte.
+  MEASURED: `92e2a3caaa3bec34d48004c7da4036f21c00828f51788c7650b9ee4ba5ef63d5` for
+  `probe-token` in postgres AND in node. The E2E computes the digest a THIRD time and
+  asserts the stored column against it.
+- **`public.digest` DOES NOT EXIST ON THIS PROJECT, AND THE FILE THAT SAID IT DID WAS
+  CORRECTED RATHER THAN EDITED.** MEASURED: pgcrypto is installed in the `extensions`
+  schema, not `public` - migration 00100's `create extension pgcrypto with schema public`
+  was SKIPPED because the extension was already there - so `public.digest(...)` raises
+  `42883`. The acceptance function now uses the PostgreSQL BUILT-IN
+  `pg_catalog.sha256(pg_catalog.convert_to(...))`, which has no extension and no schema
+  to depend on. The correction is `20261014001730_invitation_digest_correction.sql`,
+  because an applied migration is never edited. A plpgsql body is NOT validated at
+  creation time, so the broken function was CREATED successfully and would have failed
+  at the first acceptance.
+- **THE INVITATION PATH HAD A GRANT-CEILING HOLE, AND IT IS NOW CLOSED IN SQL.**
+  `private.can_grant` already refused an assignment whose role holds a permission the
+  grantor does not, and the `user_role_assignments` INSERT policy uses it - but the
+  ACCEPTANCE function is a definer, so it created the assignment with no policy in the
+  way, and a staff manager could have invited a colleague into a role holding
+  `settings.manage`, `patients.export` and `subscription.manage`. The new
+  `private.can_assign_role` is `can_grant` PLUS the rule the registry cannot express
+  (organization_owner and organization_admin carry byte-identical permission sets -
+  MEASURED by migration 01240 - so the subset ceiling cannot tell them apart): only an
+  existing organization_owner may grant organization_owner. The `invitations` INSERT
+  policy calls it, and `public.grantable_roles` is the thin wrapper the UI asks.
+- **THE INVITATION IS ACCEPTED BY A DEFINER, SO IT CHECKS EVERYTHING ITSELF.** A
+  definer bypasses RLS, so RLS is not a backstop for it: the caller must be signed in,
+  the token must hash to a row, the invitation must be unexpired and unused, the
+  organization must be active, and the role must be one of THAT tenant's roles. The
+  membership and the role assignment are created in one transaction, and the
+  `accepted_at` stamp is taken with `where accepted_at is null` so two simultaneous
+  acceptances cannot both win.
+- **THE MEMBERSHIP IS REUSED, NOT DUPLICATED, ON ACCEPTANCE.** The unique constraint is
+  `(organization_id, user_id)`, so a second membership row is impossible - and the
+  function reuses an existing membership instead, which is what lets an invitation add
+  a ROLE to somebody who is already a member.
+- **THE ROLE ASSIGNMENT'S UNIQUE CONSTRAINT DOES NOT FIRE FOR A NULL `clinic_id`.**
+  NULLs are distinct in a unique index, so two org-wide assignments of the same role to
+  the same person are both allowed, and `on conflict` would not catch the second. The
+  acceptance function guards with `where not exists (...)` instead.
+- **THE INVITATION PAGE DOES NOT NAME THE ORGANIZATION, AND THAT IS DELIBERATE.** The
+  `invitations` table is readable only by a holder of `staff.manage` in the owning
+  organization, and the person opening the link is not a member yet - so the page says
+  what is true without naming the tenant, and the organization becomes visible on the
+  dashboard the moment the invitation is accepted. A preview RPC is a later task.
+- **THE CLINIC SWITCHER IS A SECOND `cc_active_clinic` COOKIE, AND IT IS RE-VALIDATED
+  ON EVERY READ.** The list it renders is the clinics the user can REACH, not the
+  tenant's clinics: the `clinics` SELECT policy is `current_org_ids()` AND
+  `clinic_ids(organization_id)`, so a membership scoped to one clinic sees one clinic
+  here. The dashboard shows the active clinic, or "all clinics".
+- **THE SWITCHERS ASK THE DATABASE, NEVER THE CLIENT.** The organization list is a
+  MEMBERSHIP lookup (`listMemberOrgs`) and not a read of `organizations`: the
+  `organizations` SELECT policy is `is_member(id) or is_platform_admin()`, so reading
+  the table directly would hand a platform operator the whole tenant directory - right
+  for the platform console, wrong for a switcher. Switching calls a server action that
+  re-checks membership and then writes the cookie.
+- **THE DASHBOARD SHOWS NO NUMBERS, BECAUSE THERE ARE NONE.** No patients, no
+  appointments, no invoices - so the page shows the organization, the caller's own role
+  assignments and an explicit empty state. A dashboard that shows "142 patients" would
+  be a fabrication.
+- **THE ROSTER SHOWS USER IDS, BECAUSE `profiles` IS READABLE ONLY BY ITS OWNER.** A
+  member's name is not available to another member under the current privacy model, and
+  `auth.users` is not readable by a client at all.
+- **THE MIGRATION FILE IS `20261014001720_invitations.sql`, NOT THE PLAN'S
+  `20261014001400`.** The plan's slot was taken by `20261014001400_storage_hardening.sql`,
+  and two files carrying the same fourteen-digit version would make the filename order
+  - the order `scripts/apply-migration.ts` applies in - ambiguous. Two more corrections
+    follow it: `01730` (the digest) and `01740` (the migration-history row names, which
+    the first two applies got wrong - the applier records the `name` it is given, and
+    passing the bare stem instead of the file name broke
+    `tests/integration/tenancy-schema.test.ts`, which asserts the history names every
+    migration file exactly once).
+- **THE PUBLIC RPC SURFACE NOW HAS SEVEN FUNCTIONS**, and
+  `tests/integration/public-rpc-privileges.test.ts` pins the list: `accept_invitation`,
+  `can`, `create_organization_with_owner`, `delete_organization`, `export_patients`,
+  `grantable_roles`, `write_audit`. `private.can_assign_role` is POLICY-referenced (the
+  invitations INSERT policy calls it), so it must stay executable by `authenticated` -
+  revoking it would make every invitation insert INVISIBLE rather than denied.
+- **THE E2E CLEANUP NOW VERIFIES ITSELF.** `tests/helpers/e2e-cleanup.ts` deletes the
+  children before the parents, deletes the audit rows (which have NO foreign keys) and
+  the creation ledger (which has none either), and then RE-COUNTS what it removed and
+  throws if anything survived. A cleanup that silently fails is worse than none.
+  MEASURED: after the Task 16 runs the live database reads 0 organizations, 0 audit
+  logs, 0 auth users, 0 invitations, 0 memberships, 0 assignments, 0 clinics and 1 role
+  (the platform role). The `tenant_creation_events` ledger holds 29 rows, all from
+  before this task.
+- **THE `tenant_creation_events` LEDGER GREW BY TWO ROWS PER `npm run test`, AND THAT
+  WAS A PRE-EXISTING LEAK IN `tests/integration/public-rpc.test.ts`.** The ledger has
+  no foreign key, so the row `public.create_organization_with_owner` writes for each
+  organization created survives the account and the organization that made it - and
+  that file creates tenants over real HTTPS. MEASURED: the count went 29 -> 31 across
+  one suite run, and the rows' `user_id` pointed at accounts that no longer existed.
+  The cleanup now deletes the ledger rows for the accounts it deleted, and the count
+  is stable across a run. The ledger is the rate-limit EVIDENCE for tenant creation,
+  so leaving a probe's rows in it is not a neutral thing to do.
+- **A `type="submit"` BUTTON IN THE SHELL HEADER IS A TRAP FOR ANY E2E SPEC.** The
+  sign-out control is one, and it comes before the page's own forms in the DOM.
+- **THE SHELL HAS A SIGN-OUT CONTROL, SO TASK 15's "THERE IS NO SIGN-OUT CONTROL" IS
+  OUT OF DATE.** It is a form whose action is the `signOut` server action, it lands on
+  the sign-in page, and `tests/e2e/onboarding.spec.ts` covers it. The auth spec still
+  clears the cookies by hand, because that spec exercises the auth pages.
+- **THE SHELL ONLY EXISTS FOR A USER WITH A TENANT.** A user with zero memberships
+  gets the onboarding screen INSTEAD of the shell - so there is no sign-out control,
+  no sidebar and no switchers on that screen. An E2E spec that wants the shell has to
+  create an organization first.

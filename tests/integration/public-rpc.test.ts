@@ -172,6 +172,12 @@ afterAll(async () => {
     .in("id", createdOrgIds);
   expect(leftover ?? []).toEqual([]);
   for (const id of createdProbeUserIds) {
+    // The CREATION LEDGER also has no foreign keys, so it survives the account that
+    // filled it: `public.create_organization_with_owner` writes one row per organization
+    // created, and nothing removes them. MEASURED: without this, every run of this
+    // suite left two rows behind in the live project, and the ledger is the rate-limit
+    // evidence for tenant creation.
+    await client.from("tenant_creation_events").delete().eq("user_id", id);
     const { error } = await client.auth.admin.deleteUser(id);
     if (error) throw new Error(`cleanup failed for ${id}: ${error.message}`);
   }

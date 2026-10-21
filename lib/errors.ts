@@ -111,6 +111,28 @@ export interface SafeResponse {
 }
 
 /**
+ * The shape an action returns when its SUCCESS carries a payload.
+ *
+ * WHY A SECOND SHAPE. `SafeResponse` describes a failure, and every action in the auth
+ * group returns one or null. An action that produces something - an invitation link, a
+ * created id - has to return that something on the way out, and `SafeResponse` has no
+ * place to put it. Widening `SafeResponse` instead would mean every caller has to
+ * narrow the body before using it, and the failure branch would quietly grow a `value`
+ * field that is always absent.
+ *
+ * The failure branch is BUILT from `toSafeResponse`, so the message still comes from
+ * there and only from there: this type changes the shape a caller sees, never the
+ * provenance of the text.
+ */
+export type ActionResult<T> = { ok: true; value: T } | { ok: false; error: string; code: string };
+
+/** The failure half of an `ActionResult`, built through the one sanctioned path. */
+export function toActionResult<T>(error: unknown): ActionResult<T> {
+  const safe = toSafeResponse(error);
+  return { ok: false, error: safe.body.error, code: safe.body.code };
+}
+
+/**
  * The ONLY sanctioned path from an exception to a response body.
  *
  * Deliberately touches nothing on an unknown value: no `String(e)`, no `e.message`, no

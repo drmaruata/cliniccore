@@ -1,6 +1,7 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
-import { AUTH_COOKIE, admin } from "../helpers/auth-session-fixture";
+import { admin } from "../helpers/auth-session-fixture";
+import { hasSession, signIn } from "../helpers/e2e-sign-in";
 
 /**
  * The auth pages, end to end.
@@ -22,14 +23,14 @@ import { AUTH_COOKIE, admin } from "../helpers/auth-session-fixture";
  * content is not this spec's to assert. The cookie is the thing that says the user was
  * actually signed in, so it is the assertion that can fail for the right reason.
  *
- * WHY "SIGN OUT" IS A COOKIE CLEAR. This application has no sign-out control yet: the
- * button belongs to the signed-in shell, which is Task 17's. What the step needs is
- * the state a sign-out leaves - no session - and that is what clearing the cookies is.
+ * WHY "SIGN OUT" IS A COOKIE CLEAR. This spec exercises the AUTH pages, and the
+ * sign-out control lives in the signed-in shell, which is Task 16's - so what this step
+ * needs is the state a sign-out leaves (no session), and that is what clearing the
+ * cookies is. The shell's own button is covered by tests/e2e/onboarding.spec.ts.
  */
 
 const PASSWORD = "Pr0be-Passw0rd!x";
 const ONBOARDING_ROUTE = "/app/onboarding";
-const DASHBOARD_ROUTE = "/app/dashboard";
 
 /** The account every test shares. Created with the admin API, so no rate limit. */
 let sharedEmail: string;
@@ -69,47 +70,13 @@ test.afterAll(async () => {
   if (sharedUserId) await admin().auth.admin.deleteUser(sharedUserId);
 });
 
-/** Whether the browser holds a signed-in session. The thing the redirect cannot prove. */
-async function hasSession(page: Page): Promise<boolean> {
-  const cookies = await page.context().cookies();
-  return cookies.some((cookie) => cookie.name === AUTH_COOKIE && cookie.value.length > 0);
-}
-
 /**
  * Sign in through the form and report what happened.
  *
- * RETRIES, because the provider's rate limit is shared by every address, every run and
- * every browser project - so a burst of runs trips it, and a suite that fails on the
- * limit is testing the limit rather than the application. The retry waits and tries
- * again; the ASSERTION is still the one that matters.
+ * The helper lives in tests/helpers/e2e-sign-in.ts, because the provider's rate limit
+ * makes the retry part of the ANSWER rather than of this file: three specs sign in, and
+ * three copies of a retry loop would be three chances to get the backoff wrong.
  */
-async function signIn(
-  page: Page,
-  email: string,
-  password: string,
-): Promise<"signed_in" | "refused" | "no_outcome"> {
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    await page.goto("/login");
-    await page.fill('input[id="email"]', email);
-    await page.fill('input[id="password"]', password);
-    await page.click('button[type="submit"]');
-
-    const signedIn = page
-      .waitForURL(new RegExp(`${DASHBOARD_ROUTE}$`), { timeout: 8000 })
-      .then(() => "signed_in" as const)
-      .catch(() => "no_redirect" as const);
-    const refused = page
-      .getByText("Invalid email or password.", { exact: true })
-      .waitFor({ timeout: 8000 })
-      .then(() => "refused" as const)
-      .catch(() => "no_message" as const);
-
-    const outcome = await Promise.race([signedIn, refused]);
-    if (outcome === "signed_in" || outcome === "refused") return outcome;
-    await page.waitForTimeout(5000);
-  }
-  return "no_outcome";
-}
 
 test.describe("Authentication", () => {
   test("signs up a fresh user and lands on onboarding", async ({ page }) => {

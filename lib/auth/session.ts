@@ -22,6 +22,15 @@ import { cookies } from "next/headers";
 /** Cookie name for the chosen organization. */
 export const ACTIVE_ORG_COOKIE = "cc_active_org";
 
+/**
+ * Cookie name for the chosen clinic.
+ *
+ * THE SAME RULE AS THE ORGANIZATION COOKIE, AND THE SAME CAVEAT: it records which
+ * clinic the user last chose, and it is re-validated against the clinics the user can
+ * REACH on every read. A clinic id in this cookie is not evidence of anything.
+ */
+export const ACTIVE_CLINIC_COOKIE = "cc_active_clinic";
+
 /** Thirty days: long enough to survive a weekend, short enough to be re-validated anyway. */
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
@@ -51,6 +60,24 @@ export async function readActiveOrgId(): Promise<string | null> {
 export async function writeActiveOrgId(orgId: string): Promise<void> {
   const cookieStore = await cookies();
   cookieStore.set(ACTIVE_ORG_COOKIE, orgId, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: MAX_AGE_SECONDS,
+  });
+}
+
+/** The clinic id from the cookie, or null. The raw string, like the organization's. */
+export async function readActiveClinicId(): Promise<string | null> {
+  const cookieStore = await cookies();
+  return cookieStore.get(ACTIVE_CLINIC_COOKIE)?.value ?? null;
+}
+
+/** Record the chosen clinic. Same attributes and the same "not evidence" caveat. */
+export async function writeActiveClinicId(clinicId: string): Promise<void> {
+  const cookieStore = await cookies();
+  cookieStore.set(ACTIVE_CLINIC_COOKIE, clinicId, {
     httpOnly: true,
     sameSite: "lax",
     path: "/",

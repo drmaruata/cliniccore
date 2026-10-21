@@ -2229,8 +2229,13 @@ describe("the hex rule is not vacuous", () => {
     // 28 -> 41 code files.
     // The review added 4 client form components (app/(auth)/*/form.tsx) and
     // lib/auth/action-input.ts. 41 -> 46 code files.
-    expect(code.length + css.length).toBe(48);
-    expect(code.length).toBe(46);
+    // Task 16 added 18 more, on the same reasoning: the signed-in application shell
+    // (app/app/** and app/invite/**), the three app components (components/app/**) and
+    // lib/validation/invitations.ts. None is UI surface in the strict sense, but all
+    // sit under scan roots, and a module that slipped past the gate would let a
+    // hard-coded hex into the codebase unnoticed. 46 -> 64 code files.
+    expect(code.length + css.length).toBe(66);
+    expect(code.length).toBe(64);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was

@@ -38,6 +38,13 @@ export interface ActiveOrg {
   locale: string;
 }
 
+/** One of the organizations a user belongs to, as the switcher needs it. */
+export interface MemberOrg {
+  id: string;
+  name: string;
+  slug: string;
+}
+
 interface MembershipRow {
   organization_id: string;
   organizations: {
@@ -132,6 +139,38 @@ export async function requireActiveOrg(): Promise<ActiveOrg> {
     throw new UnauthorizedError("No active organization. Choose one to continue.", "no_active_org");
   }
   return org;
+}
+
+/**
+ * The organizations the given user may act in.
+ *
+ * WHY A MEMBERSHIP LOOKUP AND NOT AN ORGANIZATION LOOKUP. `organizations` has a SELECT
+ * policy of `is_member(id) or is_platform_admin()`, so reading the table directly would
+ * hand a platform operator the whole tenant directory - which is right for the platform
+ * console and wrong for a switcher that is supposed to list the organizations the user
+ * BELONGS to. The membership table is the honest source: RLS reduces it to the rows
+ * whose organization the user is an active member of, so the list cannot contain a
+ * tenant the user cannot act in, and cannot omit one they can.
+ *
+ * The same rule the active organization is resolved by, so the switcher and the resolver
+ * cannot disagree about what the user belongs to.
+ */
+export async function listMemberOrgs(userId: string): Promise<MemberOrg[]> {
+  const supabase = await createServerClient();
+  const { data, error } = await supabase
+    .from("organization_memberships")
+    .select("organization_id, organizations(id, name, slug)")
+    .eq("user_id", userId);
+
+  if (error) throw error;
+
+  return (data ?? [])
+    .map((row) => {
+      const org = row.organizations;
+      if (!org) return null;
+      return { id: org.id, name: org.name, slug: org.slug };
+    })
+    .filter((org): org is MemberOrg => org !== null);
 }
 
 /**
