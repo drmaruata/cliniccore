@@ -51,11 +51,38 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export const signupSchema = z.object({
   email,
   password,
-  fullName: z.string().trim().min(1, "Enter your name").max(120).optional(),
+  // An EMPTY name is ABSENT, not invalid. The field is labelled optional, and a field
+  // that is optional in the label but required in practice cannot be submitted at all.
+  // MEASURED: the form seeds `fullName: ""`, and `min(1)` rejected it, so the
+  // resolver never reached the server action. A name that is only whitespace is the
+  // same thing.
+  fullName: z.string().trim().max(120, "That name is implausibly long").optional(),
 });
 export type SignupInput = z.infer<typeof signupSchema>;
 
 export const forgotPasswordSchema = z.object({ email });
+
+/**
+ * The reset form, with the confirmation field.
+ *
+ * ONE schema for both sides. The client resolver and the server action must agree, or
+ * the form accepts something the server refuses - and the disagreement is invisible
+ * until a user hits it.
+ */
+export const resetPasswordFormSchema = z
+  .object({
+    password: z
+      .string()
+      .min(8, "Use at least 8 characters")
+      .max(200, "That password is implausibly long")
+      .regex(/[A-Za-z]/, "Include at least one letter")
+      .regex(/[0-9]/, "Include at least one number"),
+    confirmPassword: z.string(),
+  })
+  .refine((value) => value.password === value.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
 
 /**
  * No email field: the reset token identifies the account, and accepting an address here

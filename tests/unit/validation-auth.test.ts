@@ -60,6 +60,29 @@ describe("signupSchema", () => {
     ).toBe(true);
   });
 
+  it("accepts an EMPTY name, because the field is labelled optional", () => {
+    // MEASURED, and the cause of a signup that could not be submitted at all: the form
+    // seeds `fullName: ""`, and a `min(1)` on an optional field rejected it, so the
+    // resolver never reached the server action. A field that is optional in the label
+    // but required in practice cannot be submitted.
+    const parsed = signupSchema.safeParse({
+      email: "dr@clinic.test",
+      password: "clinic123",
+      fullName: "",
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("still refuses an implausibly long name", () => {
+    expect(
+      signupSchema.safeParse({
+        email: "dr@clinic.test",
+        password: "clinic123",
+        fullName: "x".repeat(121),
+      }).success,
+    ).toBe(false);
+  });
+
   it("enforces length and both character classes", () => {
     expect(signupSchema.safeParse({ email: "a@b.test", password: "short1" }).success).toBe(false);
     expect(signupSchema.safeParse({ email: "a@b.test", password: "longenough" }).success).toBe(

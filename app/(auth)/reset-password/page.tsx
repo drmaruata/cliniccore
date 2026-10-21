@@ -1,70 +1,35 @@
-"use client";
-
-import { useState, useEffect, Suspense } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import type { Metadata } from "next";
 import Link from "next/link";
-import { useActionState } from "react";
-import { useSearchParams } from "next/navigation";
-import { resetPasswordSchema } from "@/lib/validation/auth";
-import { resetPassword } from "./actions";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { getUser } from "@/lib/supabase/server";
 
-type ResetPasswordInput = {
-  password: string;
-  confirmPassword: string;
+import ResetPasswordForm from "./form";
+
+export const metadata: Metadata = {
+  title: "Choose a new password | ClinicCore",
+  description: "Set a new password for your ClinicCore account",
 };
 
-function ResetPasswordForm() {
-  const searchParams = useSearchParams();
-  const [formState, formAction] = useActionState(resetPassword, null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [tokenValid, setTokenValid] = useState(true);
+/**
+ * The new-password route.
+ *
+ * THE SESSION IS THE PRECONDITION, AND IT IS CHECKED HERE. The recovery session is
+ * established by the code exchange in `app/api/auth/verify/route.ts` - a route handler,
+ * because a Server Component cannot set cookies. If there is no session, the link was
+ * expired, already used, or never valid, and the honest answer is that the link does
+ * not work - not a form that submits and then fails.
+ */
+export default async function ResetPasswordPage() {
+  const user = await getUser();
 
-  // Verify the token by checking if we can get the user
-  useEffect(() => {
-    // The actual verification happens in the server action
-    // We just check if there's a code in the URL
-    const code = searchParams.get("code");
-    if (!code) {
-      // Use a timeout to avoid calling setState synchronously in the effect
-      setTimeout(() => setTokenValid(false), 0);
-    }
-  }, [searchParams]);
-
-  const form = useForm<ResetPasswordInput>({
-    resolver: zodResolver(
-      resetPasswordSchema.extend({
-        confirmPassword: resetPasswordSchema.shape.password,
-      }),
-    ),
-    defaultValues: {
-      password: "",
-      confirmPassword: "",
-    },
-  });
-
-  const onSubmit = form.handleSubmit(async (data) => {
-    setIsLoading(true);
-    await formAction(data);
-    setIsLoading(false);
-  });
-
-  if (!tokenValid) {
+  if (!user) {
     return (
       <Card className="w-full">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl text-destructive">Invalid or expired link</CardTitle>
+          <CardTitle className="text-2xl text-destructive">
+            <h1>Invalid or expired link</h1>
+          </CardTitle>
           <CardDescription>
             This password reset link has expired or has already been used.
           </CardDescription>
@@ -81,74 +46,5 @@ function ResetPasswordForm() {
     );
   }
 
-  return (
-    <Card className="w-full">
-      <CardHeader className="text-center">
-        <CardTitle className="text-2xl">Reset your password</CardTitle>
-        <CardDescription>Enter your new password below</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="password">New password</Label>
-            <Input
-              id="password"
-              type="password"
-              placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
-              {...form.register("password")}
-              disabled={isLoading}
-              aria-invalid={!!form.formState.errors.password}
-            />
-            {form.formState.errors.password && (
-              <p className="text-sm text-destructive" role="alert">
-                {form.formState.errors.password.message}
-              </p>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="confirmPassword">Confirm new password</Label>
-            <Input
-              id="confirmPassword"
-              type="password"
-              placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
-              {...form.register("confirmPassword")}
-              disabled={isLoading}
-              aria-invalid={!!form.formState.errors.confirmPassword}
-            />
-            {form.formState.errors.confirmPassword && (
-              <p className="text-sm text-destructive" role="alert">
-                {form.formState.errors.confirmPassword.message}
-              </p>
-            )}
-          </div>
-
-          {formState && (
-            <div className="text-sm text-destructive" role="alert">
-              {formState.body.error}
-            </div>
-          )}
-
-          <Button type="submit" className="w-full" disabled={isLoading}>
-            {isLoading ? "Resetting..." : "Reset password"}
-          </Button>
-        </form>
-      </CardContent>
-      <CardFooter className="flex flex-col space-y-3">
-        <p className="text-sm text-muted-foreground text-center">
-          <Link href="/login" className="text-primary hover:underline font-medium">
-            Back to sign in
-          </Link>
-        </p>
-      </CardFooter>
-    </Card>
-  );
-}
-
-export default function ResetPasswordPage() {
-  return (
-    <Suspense fallback={<div>Loading...</div>}>
-      <ResetPasswordForm />
-    </Suspense>
-  );
+  return <ResetPasswordForm />;
 }

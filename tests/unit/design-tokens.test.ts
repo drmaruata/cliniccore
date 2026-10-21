@@ -2227,8 +2227,10 @@ describe("the hex rule is not vacuous", () => {
     // Task 15 added 11 files under app/(auth)/ and app/api/auth/, plus 2 UI components
     // (components/ui/input.tsx, components/ui/label.tsx), all under scan roots.
     // 28 -> 41 code files.
-    expect(code.length + css.length).toBe(43);
-    expect(code.length).toBe(41);
+    // The review added 4 client form components (app/(auth)/*/form.tsx) and
+    // lib/auth/action-input.ts. 41 -> 46 code files.
+    expect(code.length + css.length).toBe(48);
+    expect(code.length).toBe(46);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was

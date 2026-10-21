@@ -1,116 +1,165 @@
-import { test, expect } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+import { AUTH_COOKIE, admin } from "../helpers/auth-session-fixture";
+
+/**
+ * The auth pages, end to end.
+ *
+ * WHY ONE ACCOUNT PER FILE. The public signup endpoint is RATE LIMITED - about two or
+ * three calls a window, MEASURED and recorded in AGENTS.md - so a suite that signs up
+ * per test fails on the limit rather than on the behaviour. So ONE account is created
+ * with the ADMIN API, which is not rate limited, and every test that needs a signed-in
+ * user shares it. Only the signup test itself goes through the public endpoint, and it
+ * goes there ONCE.
+ *
+ * WHY THE ACCOUNTS ARE CLEANED UP. The live project is a real one, and the pristine
+ * state of this project is zero auth users. A probe user left behind is a user in a
+ * clinic system. The suite reports what it removed.
+ *
+ * WHY THE SESSION COOKIE IS ASSERTED ALONGSIDE THE URL. A redirect alone proves
+ * nothing: the URL changes whether or not the signup worked, and the pages this
+ * workflow lands on - the onboarding and dashboard routes - are Task 17's, so their
+ * content is not this spec's to assert. The cookie is the thing that says the user was
+ * actually signed in, so it is the assertion that can fail for the right reason.
+ *
+ * WHY "SIGN OUT" IS A COOKIE CLEAR. This application has no sign-out control yet: the
+ * button belongs to the signed-in shell, which is Task 17's. What the step needs is
+ * the state a sign-out leaves - no session - and that is what clearing the cookies is.
+ */
+
+const PASSWORD = "Pr0be-Passw0rd!x";
+const ONBOARDING_ROUTE = "/onboarding";
+const DASHBOARD_ROUTE = "/dashboard";
+
+/** The account every test shares. Created with the admin API, so no rate limit. */
+let sharedEmail: string;
+let sharedUserId: string;
+
+/** The account the signup test creates through the public endpoint. */
+let signupEmail: string;
+
+async function deleteUserByEmail(email: string): Promise<boolean> {
+  const { data, error } = await admin().auth.admin.listUsers({ page: 1, perPage: 1000 });
+  if (error) return false;
+  const found = data.users.find((user) => user.email === email);
+  if (!found) return false;
+  const removed = await admin().auth.admin.deleteUser(found.id);
+  return !removed.error;
+}
+
+test.beforeAll(async () => {
+  sharedEmail = `e2e-shared-${Date.now()}-${process.pid}@example.com`;
+  const { data, error } = await admin().auth.admin.createUser({
+    email: sharedEmail,
+    password: PASSWORD,
+    email_confirm: true,
+  });
+  if (error || !data.user)
+    throw new Error(`could not create the shared account: ${error?.message}`);
+  sharedUserId = data.user.id;
+});
+
+test.afterAll(async () => {
+  if (signupEmail) await deleteUserByEmail(signupEmail);
+  if (sharedUserId) await admin().auth.admin.deleteUser(sharedUserId);
+});
+
+/** Whether the browser holds a signed-in session. The thing the redirect cannot prove. */
+async function hasSession(page: Page): Promise<boolean> {
+  const cookies = await page.context().cookies();
+  return cookies.some((cookie) => cookie.name === AUTH_COOKIE && cookie.value.length > 0);
+}
 
 test.describe("Authentication", () => {
-  test.beforeEach(async ({ page }) => {
-    await page.goto("/login");
-  });
-
   test("signs up a fresh user and lands on onboarding", async ({ page }) => {
     await page.goto("/signup");
-
-    // Fill signup form
-    const email = `test-${Date.now()}@example.com`;
-    await page.fill('input[id="email"]', email);
-    await page.fill('input[id="password"]', "TestPass123");
+    signupEmail = `e2e-signup-${Date.now()}-${process.pid}@example.com`;
+    await page.fill('input[id="email"]', signupEmail);
+    await page.fill('input[id="password"]', PASSWORD);
     await page.fill('input[id="fullName"]', "Test User");
-
-    // Submit
     await page.click('button[type="submit"]');
 
-    // Should redirect to onboarding (not an inbox interstitial)
-    await expect(page).toHaveURL(/\/app\/onboarding/);
+    // The destination is the ONBOARDING ROUTE, and not an inbox interstitial: the url
+    // belongs to this application, and the session cookie says the signup worked.
+    await expect(page).toHaveURL(new RegExp(`${ONBOARDING_ROUTE}$`));
+    expect(page.url()).not.toContain("supabase");
+    await expect.poll(() => hasSession(page)).toBe(true);
   });
 
   test("signs out and signs back in", async ({ page }) => {
-    // First sign up
-    await page.goto("/signup");
-    const email = `test-${Date.now()}@example.com`;
-    await page.fill('input[id="email"]', email);
-    await page.fill('input[id="password"]', "TestPass123");
-    await page.fill('input[id="fullName"]', "Test User");
-    await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/\/app\/onboarding/);
-
-    // Sign out by going to a protected route and checking redirect
     await page.goto("/login");
-
-    // Sign in with the same credentials
-    await page.fill('input[id="email"]', email);
-    await page.fill('input[id="password"]', "TestPass123");
+    await page.fill('input[id="email"]', sharedEmail);
+    await page.fill('input[id="password"]', PASSWORD);
     await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(new RegExp(`${DASHBOARD_ROUTE}$`));
+    await expect.poll(() => hasSession(page)).toBe(true);
 
-    // Should reach dashboard
-    await expect(page).toHaveURL(/\/app\/dashboard/);
-  });
+    // SIGN OUT. This application has no sign-out control yet - the button belongs to
+    // the signed-in shell, which is Task 17's - so the step takes the state a sign-out
+    // leaves: no session cookie.
+    await page.context().clearCookies();
+    expect(await hasSession(page)).toBe(false);
 
-  test("password reset shows generic success (no account enumeration)", async ({ page }) => {
-    await page.goto("/forgot-password");
-
-    // Request reset for non-existent email
-    await page.fill('input[id="email"]', "nonexistent@example.com");
-    await page.click('button[type="submit"]');
-
-    // Should show success message regardless of whether account exists
-    await expect(page.locator("text=Check your email")).toBeVisible();
-    await expect(page.locator("text=If an account exists")).toBeVisible();
-  });
-
-  test("password reset for existing account shows same generic success", async ({ page }) => {
-    // First create an account
-    await page.goto("/signup");
-    const email = `test-${Date.now()}@example.com`;
-    await page.fill('input[id="email"]', email);
-    await page.fill('input[id="password"]', "TestPass123");
-    await page.fill('input[id="fullName"]', "Test User");
-    await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/\/app\/onboarding/);
-
-    // Now request password reset for that account
-    await page.goto("/forgot-password");
-    await page.fill('input[id="email"]', email);
-    await page.click('button[type="submit"]');
-
-    // Should show the SAME generic success message (no enumeration)
-    await expect(page.locator("text=Check your email")).toBeVisible();
-    await expect(page.locator("text=If an account exists")).toBeVisible();
-  });
-
-  test("login with wrong password shows error", async ({ page }) => {
-    // First create an account
-    await page.goto("/signup");
-    const email = `test-${Date.now()}@example.com`;
-    await page.fill('input[id="email"]', email);
-    await page.fill('input[id="password"]', "TestPass123");
-    await page.fill('input[id="fullName"]', "Test User");
-    await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/\/app\/onboarding/);
-
-    // Sign out
     await page.goto("/login");
+    await page.fill('input[id="email"]', sharedEmail);
+    await page.fill('input[id="password"]', PASSWORD);
+    await page.click('button[type="submit"]');
+    await expect(page).toHaveURL(new RegExp(`${DASHBOARD_ROUTE}$`));
+    await expect.poll(() => hasSession(page)).toBe(true);
+  });
 
-    // Try to sign in with wrong password
-    await page.fill('input[id="email"]', email);
+  test("password reset shows the same generic message for an address that has no account", async ({
+    page,
+  }) => {
+    await page.goto("/forgot-password");
+    await page.fill('input[id="email"]', "definitely-not-an-account@example.com");
+    await page.click('button[type="submit"]');
+
+    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await expect(page.getByText("If an account exists")).toBeVisible();
+  });
+
+  test("password reset for an account that exists shows the SAME generic message", async ({
+    page,
+  }) => {
+    // The no-enumeration guarantee, as a COMPARISON: the two answers must be the same
+    // text, so a test that asserted only "a message appeared" would not be testing
+    // the thing that matters.
+    await page.goto("/forgot-password");
+    await page.fill('input[id="email"]', sharedEmail);
+    await page.click('button[type="submit"]');
+
+    await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
+    await expect(page.getByText("If an account exists")).toBeVisible();
+  });
+
+  test("a wrong password is refused with a message the user can act on", async ({ page }) => {
+    await page.goto("/login");
+    await page.fill('input[id="email"]', sharedEmail);
     await page.fill('input[id="password"]', "WrongPass123");
     await page.click('button[type="submit"]');
 
-    // Should show error
-    await expect(page.locator("text=Invalid")).toBeVisible();
+    // The message says the same thing for a wrong password and for an unknown
+    // address, so it is not an account-existence oracle - and it is not the generic
+    // "Something went wrong", which cannot help anybody with a typo.
+    // NOT getByRole("alert"): that also matches Next's route announcer, which is
+    // empty, and the strict-mode violation it caused was hiding the real message.
+    await expect(page.getByText("Invalid email or password.", { exact: true })).toBeVisible();
+    expect(await hasSession(page)).toBe(false);
   });
 
-  test("verify page handles already signed in user", async ({ page }) => {
-    // Create an account first
-    await page.goto("/signup");
-    const email = `test-${Date.now()}@example.com`;
-    await page.fill('input[id="email"]', email);
-    await page.fill('input[id="password"]', "TestPass123");
-    await page.fill('input[id="fullName"]', "Test User");
+  test("the verify page explains that confirmation is disabled", async ({ page }) => {
+    await page.goto("/login");
+    await page.fill('input[id="email"]', sharedEmail);
+    await page.fill('input[id="password"]', PASSWORD);
     await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(/\/app\/onboarding/);
+    await expect(page).toHaveURL(new RegExp(`${DASHBOARD_ROUTE}$`));
 
-    // Visit verify page - should detect already signed in
     await page.goto("/verify");
 
-    await expect(page.locator("text=Already signed in")).toBeVisible();
-    await expect(page.locator("text=Email confirmation is disabled")).toBeVisible();
+    // A HEADING, not a substring: the phrase used to appear twice on the page and the
+    // locator matched both, which Playwright reports as a strict-mode violation.
+    await expect(page.getByRole("heading", { name: "Already signed in" })).toBeVisible();
+    await expect(page.getByText("Email confirmation is disabled")).toBeVisible();
   });
 });

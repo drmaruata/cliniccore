@@ -2,7 +2,10 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "Sign in | ClinicCore",
+  title: {
+    default: "Account | ClinicCore",
+    template: "%s | ClinicCore",
+  },
   description: "Sign in to your ClinicCore account",
 };
 
