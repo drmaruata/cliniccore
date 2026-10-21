@@ -24,7 +24,6 @@ import { signIn } from "../helpers/e2e-sign-in";
  */
 
 const PASSWORD = "Pr0be-Passw0rd!x";
-const INVITEE_EMAIL = "newdoc@example.com";
 
 /** What this worker created. The suite runs its tests in parallel, so it is per worker. */
 const probe = newProbeCleanup();
@@ -60,6 +59,11 @@ test.describe("Invitations", () => {
     const owner = await createProbeUser("invite-owner");
     expect(await signIn(page, owner.email, PASSWORD)).toBe("signed_in");
 
+    // The colleague being invited. The invitation is addressed to an ACCOUNT, and the
+    // acceptance compares that address with the acceptor's verified claim - so the
+    // invitee's own address is the one the invitation has to name.
+    const invitee = await createProbeUser("invite-invitee");
+
     const slug = `probe-invite-${Date.now()}-${process.pid}`;
     probe.slugs.push(slug);
 
@@ -75,7 +79,7 @@ test.describe("Invitations", () => {
     // because the SHELL has a submit button too - the sign-out control - and it comes
     // first in the DOM.
     await page.goto("/app/settings/members");
-    await page.fill('input[id="invite-email"]', INVITEE_EMAIL);
+    await page.fill('input[id="invite-email"]', invitee.email);
     await page.selectOption('select[id="invite-role"]', "doctor");
     await page.getByRole("button", { name: "Create invitation" }).click();
 
@@ -102,13 +106,12 @@ test.describe("Invitations", () => {
     expect(invitations).toHaveLength(1);
     const invitation = invitations?.[0];
     expect(invitation?.token_hash).toBe(sha256(token));
-    expect(invitation?.email).toBe(INVITEE_EMAIL);
+    expect(invitation?.email).toBe(invitee.email);
     for (const [column, value] of Object.entries(invitation ?? {})) {
       expect(String(value), `the raw token must not appear in ${column}`).not.toContain(token);
     }
 
     // The invitee, signed in as a DIFFERENT user, redeems the link.
-    const invitee = await createProbeUser("invite-invitee");
     expect(await signIn(page, invitee.email, PASSWORD)).toBe("signed_in");
     await page.goto(`/invite/${token}`);
     await page.getByRole("button", { name: "Accept invitation" }).click();
@@ -165,7 +168,7 @@ test.describe("Invitations", () => {
       .from("invitations")
       .insert({
         organization_id: org.id,
-        email: INVITEE_EMAIL,
+        email: invitee.email,
         role_id: role.id,
         token_hash: sha256(expiredToken),
         expires_at: new Date(Date.now() - 60_000).toISOString(),
@@ -177,9 +180,7 @@ test.describe("Invitations", () => {
 
     await page.goto(`/invite/${expiredToken}`);
     await page.getByRole("button", { name: "Accept invitation" }).click();
-    await expect(
-      page.getByText("That invitation has expired, or has already been used."),
-    ).toBeVisible();
+    await expect(page.getByText("That invitation cannot be used")).toBeVisible();
 
     // 2. An invitation that is LIVE, accepted once and then presented again.
     const liveToken = "b".repeat(64);
@@ -187,7 +188,7 @@ test.describe("Invitations", () => {
       .from("invitations")
       .insert({
         organization_id: org.id,
-        email: INVITEE_EMAIL,
+        email: invitee.email,
         role_id: role.id,
         token_hash: sha256(liveToken),
         expires_at: new Date(Date.now() + 3_600_000).toISOString(),
@@ -208,9 +209,7 @@ test.describe("Invitations", () => {
     // The same link a second time is refused, and creates no second membership.
     await page.goto(`/invite/${liveToken}`);
     await page.getByRole("button", { name: "Accept invitation" }).click();
-    await expect(
-      page.getByText("That invitation has expired, or has already been used."),
-    ).toBeVisible();
+    await expect(page.getByText("That invitation cannot be used")).toBeVisible();
 
     const { count: afterSecond } = await admin()
       .from("organization_memberships")

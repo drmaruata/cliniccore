@@ -40,15 +40,17 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`01740` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`01770` (extensions, core functions, identity/tenancy
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
   then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
   gates, `01230`'s role guard and `01240`'s grant ceiling, then `01300`'s storage buckets,
   `01400`/`01410`'s storage hardening and `01420`'s MIME allowlist and path guard, then the
-  `01600`–`01710` public RPC wrappers and their corrections, and finally Task 16's
-  `01720` invitations, `01730` digest correction and `01740` migration-history name fix), all
-  applied — 47 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  `01600`–`01710` public RPC wrappers and their corrections, then Task 16's `01720`
+  invitations, `01730` digest correction, `01740` migration-history name fix, and the
+  review fixes `01750` ceiling parameterisation, `01760` invitation ceiling and `01770`
+  currency and locale), all
+  applied — 50 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
@@ -722,3 +724,91 @@ invitation flow. Consequences the next agent must not have to rediscover:
   gets the onboarding screen INSTEAD of the shell - so there is no sign-out control,
   no sidebar and no switchers on that screen. An E2E spec that wants the shell has to
   create an organization first.
+
+## Task 16 review fixes : the invitation ceiling is closed, and the rules are PARAMETERISED
+
+The Task 16 review found a privilege escalation in the invitation path and three gaps
+around it. All of it is fixed; the facts a later agent must not have to rediscover:
+
+- **THE ESCALATION WAS REAL, AND IT WAS IN THE UPDATE POLICY.** The ceiling was in
+  the invitations INSERT policy only. `invitations_update` had no ceiling, and the
+  UPDATE policy is what changes the role an invitation will hand out. So a
+  `medical_director` (staff.manage plus the doctor's permissions, but not
+  `settings.manage`, `billing.manage` or `subscription.manage`) could INSERT an
+  invitation for `doctor`, UPDATE its `role_id` to `organization_owner`, and redeem
+  the token it already held - `private.accept_invitation` is a definer, so no policy
+  stood in the way, and it wrote the `user_role_assignments` row for
+  `organization_owner`. **Fixed in both halves**: the UPDATE policy carries
+  `private.can_assign_role(organization_id, role_id)`, AND the acceptance function
+  re-checks the ceiling FOR `invited_by`.
+- **THE RULES ARE NOW PARAMETERISED BY USER, AND `private.can` IS A DELEGATION.**
+  `private.is_member`, `private.can`, `private.can_grant` and
+  `private.can_assign_role` each delegate to a `*_for` sibling that takes the user as
+  a parameter: `is_member_for`, `can_for`, `can_grant_for`, `can_assign_role_for`.
+  **THE RULE NOW LIVES IN THE `*_for` FUNCTION** - `private.can` is a one-line
+  delegation to `private.can_for((select auth.uid()), ...)`. A later agent reading
+  `private.can` will see no rule in it at all, and the unit assertions in
+  `tests/unit/authorization-schema-sql.test.ts` read the rule from `can_for` and pin
+  the delegation separately. The `*_for` functions are NOT granted to `authenticated`:
+  they answer questions about OTHER users, and only definer functions call them.
+- **WHY THE PARAMETERISATION AND NOT A SECOND COPY OF THE RULE.** The acceptance path
+  has to judge the INVITER, not the acceptor, and `auth.uid()` is the acceptor. A
+  second copy of "does this user hold this permission" would be a second copy of the
+  most important rule in the database - and this repository has already been bitten by
+  exactly that twice (the platform-key clause, and the grant ceiling).
+- **THE CEILING IS EVALUATED FOR THE INVITER AT REDEMPTION TIME**, so an invitation
+  whose inviter has since lost the relevant permissions is refused. That is the
+  fail-closed direction: a ceiling that a demotion could outrun would not be a
+  ceiling.
+- **MEASURED, THE MUTATION IS VISIBLE.** Replacing `private.can_assign_role` with
+  `select true` and running `tests/security/rls-policies.test.ts` fails EXACTLY TWO
+  tests - "refuses an invitation naming a role the inviter may not grant" and
+  "refuses to move an invitation to a role the writer may not grant" - both with
+  "expected a failure matching /row-level security/i but the statement succeeded",
+  which is the escalation succeeding. The function was restored byte-for-byte
+  afterwards: `md5(prosrc)` is back to `cb34fa61a9f9391554b600c3e005c78d`, and the
+  whitespace matters - a one-line redefinition leaves a DIFFERENT md5.
+- **AN INVITATION IS NOW BOUND TO THE ACCEPTOR'S ADDRESS.** The acceptance compares
+  the stored `citext` address with `auth.jwt() ->> 'email'`, the ACCEPTOR's verified
+  claim, and FAILS CLOSED when the claim is absent. So the stored address means
+  something, the owner's roster stops showing "Pending" for ever, and a bearer of the
+  link who is not the invited person gets nothing. The invite form therefore has to be
+  given the INVITEE's own address, and the E2E spec uses the invitee's address for
+  the invitation.
+- **AN INVITATION THAT NAMES CLINICS IS REFUSED RATHER THAN OVER-GRANTED.**
+  `invitations.clinic_ids` used to be ignored, and the acceptance created an
+  ORGANIZATION-WIDE assignment - an over-grant. The foundation's invite form offers
+  no clinic choice, so the honest behaviour is to refuse such an invitation.
+  Honouring `clinic_ids` properly is a later task, and it needs `clinic_memberships`
+  rows as well: without them `private.clinic_ids` falls back to ALL of the
+  organization's clinics.
+- **THE TENANT'S CURRENCY AND LOCALE ARE APPLIED NOW.** The public creation function
+  takes `p_currency` and `p_locale` (both defaulted),
+  validates them, and applies them to the new tenant in the SAME transaction as the
+  creation. The PRIVATE creator is unchanged: its body holds the generated
+  organization role seed, whose canonical home is `20261014000600_onboarding_rpc.sql`
+  and whose drift guard reads THAT file - re-inlining a 250-line generated block in a
+  second migration would leave the guard watching a historical definition. The
+  four-argument public function was DROPPED (`create or replace` does not replace a
+  changed signature, it creates an overload), and the types were regenerated.
+- **A PUBLIC WRAPPER MAY NOW ADD OPTIONAL PARAMETERS**, and the mirror assertion in
+  `tests/integration/public-rpc-privileges.test.ts` says so: the private original's
+  argument list must be a PREFIX of the wrapper's, and every added parameter must
+  carry a default. A wrapper may not change or drop any of the original's - that is
+  what broke the first version of the creation wrapper.
+- **`switchClinic` IS SCOPED TO THE ACTIVE ORGANIZATION.** The `clinics` SELECT
+  policy spans every organization the user belongs to, so a lookup by id alone
+  accepted the other tenant's clinic; the action now resolves the active
+  organization and requires the clinic to be in it, and the dashboard's
+  active-clinic lookup is scoped the same way. MEASURED by the E2E spec, which puts
+  the other tenant's clinic into the control by hand and watches the refusal.
+- **THE ONBOARDING ACTION NOW MAPS `23514`**, the five-organizations-per-user cap, to
+  a sentence instead of a generic 500.
+- **THE TOKEN IS STILL IN THE URL, AND THAT IS A RECORDED RESIDUAL.** The invite page
+  sends `Referrer-Policy: no-referrer` so the token does not leak to anything the page
+  links to, but the URL is the plan's contract (`/invite/<token>`), so the token is
+  in the browser's history and in any access log. A one-time code or a fragment would
+  fix it and is a later task.
+- **THE THREE NEW MIGRATIONS ARE `01750`, `01760` AND `01770`** - the ceiling
+  parameterisation, the invitation ceiling and acceptance rewrite, and the currency
+  and locale. All applied; the history now has 50 rows.

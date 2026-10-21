@@ -120,6 +120,65 @@ test.describe("Onboarding", () => {
     await expect(page.getByRole("heading", { name: "Probe Onboarding Clinic" })).toBeVisible();
   });
 
+  test("the clinic switcher refuses a clinic from another organization", async ({ page }) => {
+    // The user belongs to TWO organizations, and the shell only ever offers the
+    // clinics of the ACTIVE one - so the other tenant's clinic has to be put into the
+    // control by hand, which is exactly what a session-holder would do. The action has
+    // to refuse it: the `clinics` SELECT policy spans every organization the user
+    // belongs to, so a lookup by id alone would accept the other tenant's clinic,
+    // and a cookie naming it becomes a cross-tenant filter the moment a clinical
+    // screen reads it.
+    const user = await createProbeUser("clinic-scope");
+    expect(await signIn(page, user.email, PASSWORD)).toBe("signed_in");
+
+    const slugA = `probe-clinic-a-${Date.now()}-${process.pid}`;
+    const slugB = `probe-clinic-b-${Date.now()}-${process.pid}`;
+    probe.slugs.push(slugA, slugB);
+
+    for (const [name, slug] of [
+      ["Probe Clinic A", slugA],
+      ["Probe Clinic B", slugB],
+    ] as const) {
+      await page.goto("/app/onboarding");
+      await page.fill('input[id="name"]', name);
+      await page.fill('input[id="slug"]', slug);
+      await page.getByRole("button", { name: "Create organization" }).click();
+      await expect(page).toHaveURL(/\/app\/dashboard$/);
+    }
+
+    // The ACTIVE organization is the second one. The first one's clinic is the one a
+    // crafted request would name.
+    const { data: clinicA } = await admin()
+      .from("clinics")
+      .select("id")
+      .eq("name", "Probe Clinic A")
+      .single();
+    if (!clinicA) throw new Error("the first clinic was not created");
+
+    await page.evaluate((clinicId) => {
+      const select = document.querySelector<HTMLSelectElement>("#cc-clinic-switcher");
+      if (!select) throw new Error("the clinic switcher is not on the page");
+      const option = document.createElement("option");
+      option.value = clinicId;
+      option.textContent = "Probe Clinic A";
+      select.appendChild(option);
+      // The NATIVE setter, not `select.value = ...`: React tracks the value on the
+      // node, and assigning through the tracked property makes React believe nothing
+      // changed - so the change event would be swallowed and the action never called.
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        "value",
+      )?.set;
+      setter?.call(select, clinicId);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }, clinicA.id);
+
+    // The refusal, and the cookie is not written: the dashboard still reads "all
+    // clinics", because the action refused before it could record a choice.
+    await expect(page.getByText("You cannot reach that clinic.")).toBeVisible();
+    await expect(page.getByText("Working in all clinics")).toBeVisible();
+  });
+
   test("the shell's sign-out control ends the session", async ({ page }) => {
     // The shell's own control, and the one control Task 15 had to fake - Task 15
     // cleared the cookies by hand because there was no button to click. The shell only

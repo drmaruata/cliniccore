@@ -120,17 +120,32 @@ describe("authorization helper functions", () => {
     // organizations.status existed but was read by nothing, so suspending a
     // tenant left can() and clinic_ids() returning exactly what they returned
     // before - which undercuts platform.tenants.manage's own description.
-    for (const name of ["current_org_ids", "is_member", "clinic_ids"]) {
+    //
+    // `is_member` is a DELEGATION now: the membership rule lives in
+    // `is_member_for`, which takes the user as a parameter, and the wrapper supplies
+    // `auth.uid()`. So the rule is read where it lives - and the delegation is
+    // pinned separately, so the rule cannot be re-implemented in the wrapper.
+    for (const name of ["current_org_ids", "is_member_for", "clinic_ids"]) {
       expect(latestDefinition(name), `${name} must honour organizations.status`).toContain(
         "o.status = 'active'",
       );
     }
+    expect(latestDefinition("is_member")).toContain(
+      "private.is_member_for((select auth.uid()), p_org_id)",
+    );
   });
 });
 
 describe("private.can scope", () => {
+  // The rule lives in `private.can_for`, which takes the user as a parameter so that
+  // the invitation path can ask it about the INVITER; `private.can` delegates to it
+  // with `auth.uid()`. The assertions below read the rule where it lives AND pin the
+  // delegation, because a second copy of this rule is how the platform-key clause came
+  // to exist twice and drift once.
+  const rule = () => latestDefinition("can_for");
+
   it("never consults platform administration", () => {
-    expect(latestDefinition("can")).not.toContain("is_platform_admin");
+    expect(rule()).not.toContain("is_platform_admin");
   });
 
   it("refuses platform.* keys, whoever attached them and whatever the case", () => {
@@ -138,27 +153,35 @@ describe("private.can scope", () => {
     // attach platform.tenants.manage to its OWN role and satisfy the org check.
     // lower() because the grant match is exact text: without it a key spelled
     // `Platform.tenants.manage` would both insert and match.
-    expect(latestDefinition("can")).toContain("lower(p_permission) not like 'platform.%'");
+    expect(rule()).toContain("lower(p_permission) not like 'platform.%'");
   });
 
   it("admits only the organization's own roles, never a platform role", () => {
-    const body = latestDefinition("can");
+    const body = rule();
     expect(body).toContain("and r.organization_id = p_org_id");
     expect(body).not.toContain("r.organization_id is null");
   });
 
-  it("is bound to the calling user", () => {
+  it("is bound to the user it is asked about", () => {
     // Without this the function degenerates into "does any member of this org
     // hold this permission", handing patients.read to everyone in an org that
-    // has a doctor role.
-    expect(latestDefinition("can")).toContain("and a.user_id = (select auth.uid())");
+    // has a doctor role. The CALLER is bound by the delegation, below.
+    expect(rule()).toContain("and a.user_id = p_user_id");
   });
 
   it("requires an active membership and honours clinic scope", () => {
-    const body = latestDefinition("can");
-    expect(body).toContain("(select private.is_member(p_org_id))");
+    const body = rule();
+    expect(body).toContain("(select private.is_member_for(p_user_id, p_org_id))");
     // When p_clinic_id is NULL only an org-wide assignment can satisfy it.
     expect(body).toContain("and (a.clinic_id is null or a.clinic_id = p_clinic_id)");
+  });
+
+  it("is reached through a delegation that binds the caller", () => {
+    // The wrapper adds no decision of its own, so the rule cannot be re-implemented
+    // in it - and the binding to the calling user is here rather than in the rule.
+    expect(latestDefinition("can")).toContain(
+      "private.can_for((select auth.uid()), p_org_id, p_permission, p_clinic_id)",
+    );
   });
 });
 

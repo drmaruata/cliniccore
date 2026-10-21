@@ -1,8 +1,21 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { getUser } from "@/lib/supabase/server";
 import { AcceptInvitationButton } from "./accept-button";
+
+/**
+ * WHY THE PAGE SENDS NO REFERER. The invitation token is in the URL, and the URL is
+ * what a browser sends in the `Referer` header to anywhere else this page links to.
+ * `no-referrer` stops that. The token is still in the URL itself - and therefore in
+ * the browser's history and in any access log - because the plan's contract is
+ * `/invite/<token>`; that residual is recorded rather than papered over.
+ */
+export const metadata: Metadata = {
+  title: "Invitation | ClinicCore",
+  referrer: "no-referrer",
+};
 
 /**
  * The invitation page: the link an invited colleague opens.
@@ -33,14 +46,17 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
           <>
             <p className="text-sm text-muted-foreground">
               Accepting joins you to the clinic that invited you, with the role the invitation
-              names. If you already belong to that clinic, you will simply gain the role.
+              names. The invitation was addressed to one account, so it has to be accepted while
+              signed in as that account.
             </p>
             <AcceptInvitationButton token={token} />
           </>
         ) : (
           <>
             <p className="text-sm text-muted-foreground">
-              Sign in first, then open this link again to accept the invitation.
+              Sign in first, then open this link again to accept the invitation. The invitation was
+              addressed to a particular account, so it has to be accepted while signed in as that
+              account.
             </p>
             <Button asChild variant="outline">
               <Link href="/login">Sign in</Link>

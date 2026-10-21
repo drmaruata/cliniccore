@@ -44,6 +44,11 @@ export async function createOrganization(
       // more thing to get wrong on the first screen, and the clinic can be renamed.
       p_clinic_name: parsed.data.name,
       p_timezone: parsed.data.timezone,
+      // The tenant's money and locale. The currency is the unit every amount in this
+      // organization will be denominated in, so it is set at creation rather than
+      // left at the column default for a later settings screen to change.
+      p_currency: parsed.data.currency,
+      p_locale: parsed.data.locale,
     });
     orgId = response.data ?? null;
     error = response.error;
@@ -58,6 +63,17 @@ export async function createOrganization(
         new ConflictError(
           "That clinic address is already taken. Choose a different one.",
           "slug_taken",
+        ),
+      );
+    }
+    if (error.code === "23514") {
+      // The creation cap: five organizations per user in any 24-hour window. The
+      // database refuses the sixth, and the user deserves to be told that rather
+      // than shown a generic failure.
+      return toSafeResponse(
+        new ValidationError(
+          "You have created five clinics in the last day. Wait a while, or contact support.",
+          "creation_cap_reached",
         ),
       );
     }

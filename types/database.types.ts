@@ -594,6 +594,8 @@ export type Database = {
       create_organization_with_owner: {
         Args: {
           p_clinic_name: string;
+          p_currency?: string;
+          p_locale?: string;
           p_name: string;
           p_slug: string;
           p_timezone?: string;

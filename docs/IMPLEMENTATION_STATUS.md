@@ -3765,3 +3765,150 @@ extension pgcrypto with schema public` was SKIPPED because the extension was alr
 - **THE MEMBERSHIP RATE CAP IS FIVE ORGANIZATIONS PER USER PER 24 HOURS**, measured in
   Task 13's `public.create_organization_with_owner`. The E2E creates one organization
   per account, so it does not approach the cap.
+
+## Task 16 - the review fixes: the invitation ceiling, the parameterised rules, and the gaps
+
+### WHAT THE REVIEW FOUND, AND WHAT CLOSED IT
+
+**BLOCKER 1 - a privilege escalation through the invitations UPDATE policy.** The grant
+ceiling was in the invitations INSERT policy only. `invitations_update` had no ceiling,
+and the UPDATE policy is what changes the role an invitation will grant. MEASURED
+against the real policy set: a `medical_director` holds `staff.manage` and the
+doctor's permissions but not `settings.manage`, `billing.manage` or
+`subscription.manage`, so it could
+
+1. INSERT an invitation naming the `doctor` role - the ceiling passes, because every
+   permission of `doctor` is one it holds;
+2. UPDATE that invitation's `role_id` to the tenant's `organization_owner` - the old
+   UPDATE policy checked only `staff.manage` and membership, so the update SUCCEEDED;
+3. redeem the token it already held - `private.accept_invitation` is a definer, so no
+   policy was in the way, and it created the `user_role_assignments` row for
+   `organization_owner`.
+
+The result was a medical_director holding the tenant's owner role, with
+`settings.manage` (which rewrites the slug, the currency and the timezone),
+`patients.export` and `subscription.manage`.
+
+Fixed in BOTH halves, because either alone leaves a way in:
+
+- `20261014001760` recreates `invitations_update` with
+  `private.can_assign_role(organization_id, role_id)` in its `WITH CHECK`.
+- `20261014001760` also rewrites `private.accept_invitation` to evaluate the ceiling
+  FOR `invited_by` - the definer cannot trust the stored `role_id`, because the
+  policies that guarded the creation do not guard the redemption. The ceiling is
+  evaluated at redemption time, so an invitation whose inviter has since lost the
+  relevant permissions is refused.
+
+**The rules had to be answerable for a given user.** `private.can_assign_role`
+answers for `auth.uid()`, which is the ACCEPTOR - but the acceptance has to judge the
+INVITER, who chose the role. So `20261014001750` parameterises the rules by user and
+turns the existing entry points into delegations:
+
+    private.is_member_for(user, org)          <- private.is_member(org)
+    private.can_for(user, org, perm, clinic) <- private.can(org, perm, clinic)
+    private.can_grant_for(user, org, role)    <- private.can_grant(org, role)
+    private.can_assign_role_for(user, org, role)
+                                                <- private.can_assign_role(org, role)
+
+There is still ONE copy of each rule. The alternative - re-deriving "does this user
+hold this permission" inside a new function - would be a second copy of the most
+important rule in the database, and this repository has already been bitten by exactly
+that twice. The `*_for` functions are not granted to `authenticated`: they answer
+questions about OTHER users, and only definer functions call them.
+
+**BLOCKER 2 - the ceiling had no content assertion, and a mutation was invisible.**
+`tests/security/rls-policies.test.ts` asserted only that the invitations policies had
+a non-null `with_check`. It now has a block - "the invitation grant ceiling" - with
+six tests, each refusal beside a positive control:
+
+- FRANK (who holds `staff.manage` and nothing else) cannot INSERT an invitation
+  naming a role whose permissions he does not hold, and CAN insert one naming the role
+  whose only permission is `staff.manage`.
+- FRANK cannot UPDATE an invitation's `role_id` to such a role, and CAN update the
+  invitation's other columns.
+- The acceptance refuses an invitation for a SUSPENDED organization.
+- The acceptance refuses an invitation naming a role of ANOTHER tenant. (The state is
+  reachable: `private.guard_role_identity` guards a role's key and its system flag, not
+  its organization, so a role can be moved between tenants under an invitation that
+  already names it.)
+- The acceptance refuses an invitation addressed to somebody else.
+- The acceptance refuses an invitation whose inviter was not allowed to grant the role.
+- And a POSITIVE CONTROL: a well-formed invitation, addressed to the acceptor, is
+  accepted, and the acceptor gains the membership and the named role.
+
+**MEASURED, THE MUTATION IS VISIBLE.** Replacing `private.can_assign_role` with
+`select true` in the live database and running the security suite fails EXACTLY TWO
+tests - "refuses an invitation naming a role the inviter may not grant" and "refuses
+to move an invitation to a role the writer may not grant" - both with "expected a
+failure matching /row-level security/i but the statement succeeded", which IS the
+escalation succeeding. The function was restored byte-for-byte afterwards:
+`md5(prosrc)` is back to `cb34fa61a9f9391554b600c3e005c78d`. The whitespace matters:
+a one-line redefinition of the same function leaves a different md5, and the restore
+had to be repeated with the migration's exact text.
+
+### THE GAPS
+
+**GAP 3 - `switchClinic` was not scoped to the active organization.** The `clinics`
+SELECT policy spans every organization the user belongs to, so a lookup by id alone
+accepted the other tenant's clinic, and a cookie naming it is a cross-tenant filter
+the moment a clinical screen reads it. The action now resolves the active
+organization and requires the clinic to be in it; the dashboard's active-clinic
+lookup is scoped the same way. MEASURED by the E2E spec, which puts the other
+tenant's clinic into the control by hand - through the NATIVE value setter, because
+React tracks the value on the node and an assignment through the tracked property
+makes React believe nothing changed - and watches the refusal.
+
+**GAP 4 - the currency and the locale were collected, validated and discarded.** The
+creation RPC took neither, so the column defaults won: a clinic that typed USD got
+INR, with no error. That is not cosmetic - money is stored in the TENANT's currency,
+so the currency a tenant is born with decides the unit of every amount it will ever
+hold. `20261014001770` gives `public.create_organization_with_owner` the two
+parameters (defaulted, validated, and applied to the new tenant in the same
+transaction as the creation), and the types were regenerated.
+
+The PRIVATE creator is deliberately unchanged. Its body holds the generated
+organization role seed, whose canonical home is
+`20261014000600_onboarding_rpc.sql` - and the drift guard
+(`tests/unit/onboarding-seed.test.ts`) reads THAT file. Re-inlining a 250-line
+generated block into a second migration would leave the guard watching a historical
+definition rather than the effective one, which is the exact failure the guard exists
+to catch. The four-argument public function was dropped, because `create or replace`
+does not replace a function whose signature has changed - it creates an overload, and
+two public functions with the same name would leave the generated types choosing
+between them.
+
+**GAP 5 - the invitation's address was never enforced.** The capability-URL model is
+defensible, but the stored address then presents the row as naming a person it does
+not name: the owner's roster showed "Pending" for ever, and any bearer of the link
+took the role. **The choice made: the acceptance is bound to the ACCEPTOR's
+address** - the stored `citext` address against `auth.jwt() ->> 'email'`, the
+acceptor's verified claim, failing CLOSED when the claim is absent. The address is
+therefore the invitation's credential in the owner's roster, and the link alone is
+not enough. The invite form is given the invitee's own address, and the E2E spec
+uses the invitee's address for the invitation.
+
+### THE NITS
+
+- **AN INVITATION THAT NAMES CLINICS IS REFUSED RATHER THAN OVER-GRANTED.**
+  `invitations.clinic_ids` used to be ignored and the acceptance created an
+  ORGANIZATION-WIDE assignment, which is an over-grant for a clinic-scoped
+  invitation. The foundation's invite form offers no clinic choice, so the honest
+  behaviour is to refuse such an invitation. Honouring `clinic_ids` properly is a
+  later task, and it needs `clinic_memberships` rows as well: without them
+  `private.clinic_ids` falls back to ALL of the organization's clinics.
+- **THE CREATION CAP NOW HAS A MESSAGE.** The onboarding action maps `23514` - the
+  five-organizations-per-user-per-24-hours cap - to a sentence instead of a generic 500.
+- **THE TOKEN IS STILL IN THE URL, AND THAT IS A RESIDUAL.** The invite page sends
+  `Referrer-Policy: no-referrer`, so the token does not leak to anything the page
+  links to, but the URL is the plan's contract (`/invite/<token>`) and the token is
+  therefore in the browser's history and in any access log. A one-time code or a
+  fragment would fix it, and is a later task.
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint`, `npm run test` (838), `npm run build` and
+`npm run format:check` all exit 0. The E2E suite passes on chromium: 4 onboarding
+tests (including the clinic-scope refusal) and 2 invitation tests. The live project
+after the runs: 0 organizations, 0 audit logs, 0 auth users, 0 invitations, 0
+memberships, 0 assignments, 0 clinics, 1 role, and the `tenant_creation_events`
+ledger back at its 29 pre-existing rows.

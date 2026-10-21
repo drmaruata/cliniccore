@@ -153,7 +153,7 @@ dbDescribe("the public RPC surface", () => {
     }
   });
 
-  it("gives every wrapper EXACTLY the signature of the function it wraps", async () => {
+  it("gives every wrapper the signature of the function it wraps, plus optional extras", async () => {
     // A wrapper that changes the signature is not a thin wrapper - it is a different API,
     // and a stricter one. MEASURED: the first version of
     // public.create_organization_with_owner declared `p_timezone text` with no default
@@ -164,8 +164,15 @@ dbDescribe("the public RPC surface", () => {
     //
     // A DEFAULT is part of a function's contract, not an optional extra, so the two
     // signatures are compared INCLUDING their defaults. Both sides use the same parameter
-    // names, so the defaulted argument strings are simply equal. This is the assertion
-    // that would have caught it, and it covers the next wrapper too.
+    // names, so the defaulted argument strings are simply equal.
+    //
+    // A WRAPPER MAY ADD OPTIONAL PARAMETERS. The creation wrapper now takes the
+    // tenant's currency and locale, which the private creator cannot - its signature
+    // is fixed by the file that owns the generated role seed - so the wrapper carries
+    // two extra parameters and both have defaults. What may NOT happen is a change to
+    // or a drop of any of the original's: a call that used to work has to keep
+    // working, and the added parameters have to be optional so that a caller which
+    // does not know about them is unaffected.
     const session = await beginSession();
     try {
       const rows = await session.query<{ pub: string; pub_args: string; priv_args: string }>(
@@ -182,10 +189,24 @@ dbDescribe("the public RPC surface", () => {
       );
       expect(rows.length).toBe(DELEGATING_WRAPPERS.length);
       for (const row of rows) {
+        const identical = row.pub_args === row.priv_args;
+        const superset = row.pub_args.startsWith(`${row.priv_args}, `);
         expect(
-          row.pub_args,
-          `public.${row.pub} must have the same arguments AND defaults as private.${row.pub}`,
-        ).toBe(row.priv_args);
+          identical || superset,
+          `public.${row.pub} must keep private.${row.pub}'s arguments, unchanged`,
+        ).toBe(true);
+        if (identical) continue;
+
+        // Every added parameter is optional, so a caller which does not know about it
+        // still resolves the function.
+        const added = row.pub_args.slice(row.priv_args.length + 2);
+        const parameters = added.split(", ").filter((part) => part.length > 0);
+        expect(parameters.length, `public.${row.pub} added no parameters`).toBeGreaterThan(0);
+        for (const parameter of parameters) {
+          expect(parameter, `public.${row.pub}'s added parameter must carry a default`).toMatch(
+            /default/i,
+          );
+        }
       }
     } finally {
       await session.rollback();

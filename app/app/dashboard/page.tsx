@@ -47,10 +47,14 @@ export default async function DashboardPage() {
   const activeClinicId = await readActiveClinicId();
   let activeClinicName: string | null = null;
   if (activeClinicId) {
+    // SCOPED TO THE ACTIVE ORGANIZATION, like the switcher that wrote the cookie. The
+    // `clinics` SELECT policy spans every organization the user belongs to, so a
+    // lookup by id alone would name another tenant's clinic.
     const { data: clinic } = await supabase
       .from("clinics")
       .select("name")
       .eq("id", activeClinicId)
+      .eq("organization_id", org.id)
       .maybeSingle();
     activeClinicName = clinic?.name ?? null;
   }

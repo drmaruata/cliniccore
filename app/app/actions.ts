@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
-import { listMemberOrgs, setActiveOrg } from "@/lib/auth/active-org";
+import { getActiveOrg, listMemberOrgs, setActiveOrg } from "@/lib/auth/active-org";
 import { writeActiveClinicId } from "@/lib/auth/session";
 import {
   ForbiddenError,
@@ -63,10 +63,16 @@ export async function switchOrganization(orgId: string): Promise<SafeResponse | 
 /**
  * Point the session at another clinic the user can reach.
  *
- * THE REACH CHECK IS THE POLICY. The `clinics` SELECT policy is the organization's
- * clinics AND the ones the user can reach, so a query for one clinic id answers only
- * for a clinic the user may read. A clinic that comes back empty is a clinic the
- * user cannot reach.
+ * THE CLINIC MUST BELONG TO THE ACTIVE ORGANIZATION. The `clinics` SELECT policy spans
+ * every organization the user is a member of, so a lookup by id alone would accept the
+ * other tenant's clinic - and a cookie naming it is a cross-tenant filter the moment a
+ * clinical screen reads it. The active organization is resolved first and the clinic
+ * has to be in it.
+ *
+ * THE REACH CHECK IS THE POLICY. The same SELECT policy is the organization's clinics
+ * AND the ones the user can reach, so a query for one clinic id answers only for a
+ * clinic the user may read. A clinic that comes back empty is a clinic the user
+ * cannot reach.
  */
 export async function switchClinic(clinicId: string): Promise<SafeResponse | null> {
   const parsed = z.uuid().safeParse(clinicId);
@@ -74,11 +80,19 @@ export async function switchClinic(clinicId: string): Promise<SafeResponse | nul
     return toSafeResponse(new ValidationError("That clinic is not valid."));
   }
 
+  const org = await getActiveOrg();
+  if (!org) {
+    return toSafeResponse(
+      new ValidationError("Choose an organization before choosing a clinic.", "no_active_org"),
+    );
+  }
+
   const supabase = await createServerClient();
   const { data, error } = await supabase
     .from("clinics")
     .select("id")
     .eq("id", parsed.data)
+    .eq("organization_id", org.id)
     .maybeSingle();
 
   if (error) {

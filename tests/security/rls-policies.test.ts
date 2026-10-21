@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
+
 import { afterAll, expect, it } from "vitest";
 
 import {
@@ -1494,6 +1496,312 @@ dbDescribe("private helpers are not oracles", () => {
         ["00000000-0000-4000-8000-000000000001"],
         /permission denied/i,
       );
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
+dbDescribe("the invitation grant ceiling", () => {
+  /*
+   * THE ESCALATION THIS BLOCK EXISTS FOR.
+   *
+   * The ceiling was put in the invitations INSERT policy and nowhere else, and the
+   * UPDATE policy is what changes the role an invitation will hand out. So a
+   * `medical_director` - which holds `staff.manage` and the doctor's permissions, but
+   * not `settings.manage`, `billing.manage` or `subscription.manage` - could create an
+   * invitation for `doctor`, UPDATE its `role_id` to `organization_owner`, and then
+   * redeem the token it already held: `private.accept_invitation` is a definer, so no
+   * policy stood in the way, and it wrote the `user_role_assignments` row for
+   * `organization_owner`.
+   *
+   * Every test below has a POSITIVE CONTROL beside it. A refusal-only block passes
+   * just as well against a policy that refuses everything, and against a function that
+   * refuses every acceptance - which is exactly what a broken fix would look like.
+   */
+
+  /** The token the acceptance function is handed, and the digest the row must hold. */
+  const TOKEN = "c".repeat(64);
+  const TOKEN_HASH = createHash("sha256").update(TOKEN, "utf8").digest("hex");
+
+  /** A principal who is a member of nothing, so a membership created is visible. */
+  const NEWCOMER = "ab000000-1111-4111-8111-ab0000000009";
+
+  /**
+   * Become a principal whose JWT carries an email claim.
+   *
+   * `private.accept_invitation` compares the invitation's address with the
+   * ACCEPTOR's claim, so a test of the acceptance path has to set one - and it has to
+   * set it the way PostgREST does. `request.jwt.claim.sub` is what `auth.uid()` reads
+   * and `request.jwt.claims` is what `auth.jwt()` reads; the two are set separately
+   * because the library reads the sub claim first and the whole claims object second.
+   */
+  async function becomeWithEmail(session: Session, userId: string, email: string): Promise<void> {
+    await session.query(`select set_config('request.jwt.claim.sub', $1, true)`, [userId]);
+    await session.query(`select set_config('request.jwt.claims', $1, true)`, [
+      JSON.stringify({ sub: userId, email }),
+    ]);
+    await session.query("set local role authenticated");
+  }
+
+  it("refuses an invitation naming a role the inviter may not grant", async () => {
+    const session = await stage();
+    try {
+      await become(session, FRANK);
+      // FRANK holds staff.manage and nothing else. The medical_director role carries
+      // settings.manage and patients.read as well, so FRANK may not hand it out -
+      // and an invitation for it would make its holder a doctor AND a settings
+      // manager, which FRANK is neither.
+      await expectRejection(
+        session,
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'frank-target@example.test', $2, 'hash-frank-refused', $3, now() + interval '1 day')`,
+        [ORG_A, ROLE_SETTINGS, FRANK],
+        /row-level security/i,
+      );
+
+      // Positive control: the role whose ONLY permission is staff.manage - the one
+      // FRANK holds - is grantable. Without this, the refusal above would also pass
+      // against a policy refusing every invitation.
+      const permitted = await session.query<{ id: string }>(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'frank-target@example.test', $2, 'hash-frank-ok', $3, now() + interval '1 day')
+         returning id`,
+        [ORG_A, ROLE_PARTIAL, FRANK],
+      );
+      expect(permitted).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses to move an invitation to a role the writer may not grant", async () => {
+    const session = await stage();
+    try {
+      await become(session, FRANK);
+      // An invitation FRANK may create: the role whose only permission he holds.
+      await session.query(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'frank-target@example.test', $2, 'hash-move', $3, now() + interval '1 day')`,
+        [ORG_A, ROLE_PARTIAL, FRANK],
+      );
+
+      // THE ESCALATION. The row stays visible to FRANK (its USING clause passes), and
+      // the NEW row is refused by the ceiling in the WITH CHECK - which RAISES,
+      // because a failed check on an otherwise visible row is an error and not a
+      // silent filter.
+      await expectRejection(
+        session,
+        `update public.invitations set role_id = $1 where token_hash = 'hash-move'`,
+        [ROLE_SETTINGS],
+        /row-level security/i,
+      );
+
+      // Positive control: the same writer may still change the invitation's other
+      // columns, and the role it names is untouched.
+      const stillThere = await session.query<{ role_id: string }>(
+        `update public.invitations set email = 'frank-target2@example.test'
+          where token_hash = 'hash-move' returning role_id::text`,
+      );
+      expect(stillThere).toHaveLength(1);
+      expect(stillThere[0]?.role_id).toBe(ROLE_PARTIAL);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses to accept an invitation for a suspended organization", async () => {
+    const session = await stage();
+    try {
+      // A role of the suspended organization, so the ONLY thing wrong with this
+      // invitation is the organization's status.
+      await session.resetRole();
+      await session.query(
+        `insert into public.roles (organization_id, key, name) values ($1, 'doctor', 'Doctor')`,
+        [ORG_SUSPENDED],
+      );
+      await session.query(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         select $1, 'alice@example.test', r.id, $2, $3, now() + interval '1 day'
+           from public.roles r where r.organization_id = $1 and r.key = 'doctor'`,
+        [ORG_SUSPENDED, TOKEN_HASH, CAROL],
+      );
+
+      await becomeWithEmail(session, ALICE, "alice@example.test");
+      await expectRejection(
+        session,
+        `select private.accept_invitation($1)`,
+        [TOKEN],
+        /not accepting new members/i,
+      );
+
+      // And no membership was created for the suspended organization.
+      const memberships = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.organization_memberships
+          where organization_id = $1 and user_id = $2`,
+        [ORG_SUSPENDED, ALICE],
+      );
+      expect(Number(memberships[0]?.n)).toBe(0);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses to accept an invitation naming another tenant's role", async () => {
+    const session = await stage();
+    try {
+      // The invitation names a role of org A. Then the ROLE is moved to org B -
+      // which the schema allows, because `private.guard_role_identity` guards the
+      // role's key and its system flag, not its organization. So this is a state the
+      // database can actually reach, and the invitation now names a role of another
+      // tenant.
+      await session.resetRole();
+      await session.query(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'alice@example.test', $2, $3, $4, now() + interval '1 day')`,
+        [ORG_A, ROLE_SETTINGS, TOKEN_HASH, DAVE],
+      );
+      await session.query(`update public.roles set organization_id = $1 where id = $2`, [
+        ORG_B,
+        ROLE_SETTINGS,
+      ]);
+
+      await becomeWithEmail(session, ALICE, "alice@example.test");
+      await expectRejection(
+        session,
+        `select private.accept_invitation($1)`,
+        [TOKEN],
+        /role this organization does not have/i,
+      );
+
+      // And ALICE gained no membership anywhere new.
+      const memberships = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.organization_memberships where user_id = $1`,
+        [ALICE],
+      );
+      expect(Number(memberships[0]?.n)).toBe(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("accepts an invitation that names a role of its own tenant, addressed to the acceptor", async () => {
+    // THE POSITIVE CONTROL for the two refusals above. Without it, they would also
+    // pass against an acceptance function that refuses everything - which is what a
+    // broken fix looks like.
+    const session = await stage();
+    try {
+      await session.resetRole();
+      await session.query(
+        `insert into auth.users (id, email, raw_user_meta_data) values ($1, 'newcomer@example.test', '{}')`,
+        [NEWCOMER],
+      );
+      // DAVE can grant the role this invitation names - every permission it carries is
+      // one DAVE holds - so this is an invitation a staff manager may legitimately
+      // issue. (The fixture's role KEYS are not the ones the registry would use; what
+      // matters here is the permission set, and the role id is asserted below.)
+      await session.query(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'newcomer@example.test', $2, $3, $4, now() + interval '1 day')`,
+        [ORG_A, ROLE_SETTINGS, TOKEN_HASH, DAVE],
+      );
+
+      await becomeWithEmail(session, NEWCOMER, "newcomer@example.test");
+      const accepted = await session.query<{ membership: string }>(
+        `select private.accept_invitation($1)::text as membership`,
+        [TOKEN],
+      );
+      expect(accepted).toHaveLength(1);
+
+      const memberships = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.organization_memberships
+          where organization_id = $1 and user_id = $2`,
+        [ORG_A, NEWCOMER],
+      );
+      expect(Number(memberships[0]?.n)).toBe(1);
+
+      const assignments = await session.query<{ role_id: string }>(
+        `select role_id::text from public.user_role_assignments
+          where organization_id = $1 and user_id = $2`,
+        [ORG_A, NEWCOMER],
+      );
+      // The role the invitation named - and only that role.
+      expect(assignments.map((a) => a.role_id)).toEqual([ROLE_SETTINGS]);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses an acceptance addressed to somebody else", async () => {
+    // The invitation is for one account. The acceptance compares the stored address
+    // with the acceptor's VERIFIED claim, so a bearer of the link who is not that
+    // person is refused - which is what makes the stored address mean something, and
+    // what stops the owner's roster showing "Pending" for ever.
+    const session = await stage();
+    try {
+      await session.resetRole();
+      await session.query(
+        `insert into auth.users (id, email, raw_user_meta_data) values ($1, 'newcomer@example.test', '{}')`,
+        [NEWCOMER],
+      );
+      await session.query(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'somebody-else@example.test', $2, $3, $4, now() + interval '1 day')`,
+        [ORG_A, ROLE_SETTINGS, TOKEN_HASH, DAVE],
+      );
+
+      await becomeWithEmail(session, NEWCOMER, "newcomer@example.test");
+      await expectRejection(
+        session,
+        `select private.accept_invitation($1)`,
+        [TOKEN],
+        /sent to a different address/i,
+      );
+
+      // And the newcomer is not a member.
+      const memberships = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.organization_memberships where user_id = $1`,
+        [NEWCOMER],
+      );
+      expect(Number(memberships[0]?.n)).toBe(0);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses an acceptance whose inviter was not allowed to grant the role", async () => {
+    // THE DEFENDER HALF. Even with the UPDATE policy fixed, the acceptance function is
+    // a definer and the stored role_id is data - so the ceiling is checked AGAIN, for
+    // the inviter, at redemption time. Here the inviter is GRACE, who holds
+    // settings.manage, staff.manage and patients.read - and the invitation names the
+    // organization_owner role, which she may not grant.
+    const session = await stage();
+    try {
+      await session.resetRole();
+      await session.query(
+        `insert into auth.users (id, email, raw_user_meta_data) values ($1, 'newcomer@example.test', '{}')`,
+        [NEWCOMER],
+      );
+      await session.query(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'newcomer@example.test', $2, $3, $4, now() + interval '1 day')`,
+        [ORG_A, "00000000-0000-4000-8000-000000000006", TOKEN_HASH, GRACE],
+      );
+
+      await becomeWithEmail(session, NEWCOMER, "newcomer@example.test");
+      await expectRejection(
+        session,
+        `select private.accept_invitation($1)`,
+        [TOKEN],
+        /not allowed to grant/i,
+      );
+
+      // And the newcomer is not a member.
+      const memberships = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.organization_memberships where user_id = $1`,
+        [NEWCOMER],
+      );
+      expect(Number(memberships[0]?.n)).toBe(0);
     } finally {
       await session.rollback();
     }

@@ -58,7 +58,7 @@ export async function acceptInvitation(token: string): Promise<SafeResponse | nu
     if (error.code === "22023") {
       return toSafeResponse(
         new ValidationError(
-          "That invitation has expired, or has already been used.",
+          "That invitation cannot be used: it may have expired, already have been used, or have been sent to a different address.",
           "invitation_not_usable",
         ),
       );
