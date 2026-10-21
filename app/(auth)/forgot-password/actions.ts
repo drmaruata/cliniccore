@@ -53,7 +53,9 @@ export async function forgotPassword(
   });
 
   if (error) {
-    console.error("forgotPassword: reset request failed", error.message);
+    // WITHOUT THE ADDRESS, like the login log: an address is a person's, and a log is
+    // the one place a whole list of them accumulates.
+    console.error("forgotPassword: the reset request failed", error.code ?? "unknown");
   }
 
   return GENERIC_RESPONSE;

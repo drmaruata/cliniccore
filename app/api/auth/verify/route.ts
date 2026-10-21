@@ -13,7 +13,7 @@ import { NextResponse, type NextRequest } from "next/server";
  * checked would be an OPEN REDIRECT - a link on this domain that bounces a signed-in
  * user to an attacker's page. Only the routes this application owns are allowed.
  */
-const ALLOWED_DESTINATIONS = new Set(["/", "/reset-password", "/onboarding", "/dashboard"]);
+const ALLOWED_DESTINATIONS = new Set(["/", "/reset-password", "/app/dashboard", "/app/onboarding"]);
 
 export async function GET(request: NextRequest) {
   const code = request.nextUrl.searchParams.get("code");

@@ -28,8 +28,8 @@ import { AUTH_COOKIE, admin } from "../helpers/auth-session-fixture";
  */
 
 const PASSWORD = "Pr0be-Passw0rd!x";
-const ONBOARDING_ROUTE = "/onboarding";
-const DASHBOARD_ROUTE = "/dashboard";
+const ONBOARDING_ROUTE = "/app/onboarding";
+const DASHBOARD_ROUTE = "/app/dashboard";
 
 /** The account every test shares. Created with the admin API, so no rate limit. */
 let sharedEmail: string;
@@ -39,12 +39,17 @@ let sharedUserId: string;
 let signupEmail: string;
 
 async function deleteUserByEmail(email: string): Promise<boolean> {
-  const { data, error } = await admin().auth.admin.listUsers({ page: 1, perPage: 1000 });
-  if (error) return false;
-  const found = data.users.find((user) => user.email === email);
-  if (!found) return false;
-  const removed = await admin().auth.admin.deleteUser(found.id);
-  return !removed.error;
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await admin().auth.admin.listUsers({ page, perPage: 1000 });
+    if (error) return false;
+    const found = data.users.find((user) => user.email === email);
+    if (found) {
+      const removed = await admin().auth.admin.deleteUser(found.id);
+      return !removed.error;
+    }
+    if (data.users.length < 1000) return false;
+  }
+  return false;
 }
 
 test.beforeAll(async () => {
@@ -108,12 +113,24 @@ async function signIn(
 
 test.describe("Authentication", () => {
   test("signs up a fresh user and lands on onboarding", async ({ page }) => {
-    await page.goto("/signup");
     signupEmail = `e2e-signup-${Date.now()}-${process.pid}@example.com`;
-    await page.fill('input[id="email"]', signupEmail);
-    await page.fill('input[id="password"]', PASSWORD);
-    await page.fill('input[id="fullName"]', "Test User");
-    await page.click('button[type="submit"]');
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await page.goto("/signup");
+      await page.fill('input[id="email"]', signupEmail);
+      await page.fill('input[id="password"]', PASSWORD);
+      await page.fill('input[id="fullName"]', "Test User");
+      await page.click('button[type="submit"]');
+
+      // The public signup endpoint is the scarcest resource this suite touches, so
+      // the one call to it retries rather than failing on the limit. A refused attempt
+      // creates nothing, so the retry is safe with the same address.
+      const landed = await page
+        .waitForURL(new RegExp(`${ONBOARDING_ROUTE}$`), { timeout: 8000 })
+        .then(() => true)
+        .catch(() => false);
+      if (landed) break;
+      await page.waitForTimeout(5000);
+    }
 
     // The destination is the ONBOARDING ROUTE, and not an inbox interstitial: the url
     // belongs to this application, and the session cookie says the signup worked.

@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
-import { useActionState } from "react";
+import { startTransition, useActionState } from "react";
 import { signupSchema, type SignupInput } from "@/lib/validation/auth";
 import { signup } from "./actions";
 
@@ -32,8 +32,15 @@ export default function SignupPage() {
 
   // The dispatch is not awaited for its result: it returns nothing, so awaiting it
   // resolved at once and the loading state was dead. `isPending` is the real signal.
-  const onSubmit = form.handleSubmit(async (data) => {
-    await formAction(data);
+  const onSubmit = form.handleSubmit((data) => {
+    // INSIDE A TRANSITION, WHICH IS NOT OPTIONAL. MEASURED with the repo's React
+    // 19.3.0: dispatched outside a transition, `isPending` never became true - the
+    // values were [false, false] - so the button never disabled, a double click fired
+    // TWO server actions, and React logged an error on every submit. `isPending` is
+    // only the real signal inside one.
+    startTransition(() => {
+      formAction(data);
+    });
   });
 
   return (
@@ -51,13 +58,15 @@ export default function SignupPage() {
             <Input
               id="email"
               type="email"
+              autoComplete="email"
               placeholder="you@clinic.com"
               {...form.register("email")}
               disabled={isPending}
               aria-invalid={!!form.formState.errors.email}
+              aria-describedby={form.formState.errors.email ? "email-error" : undefined}
             />
             {form.formState.errors.email && (
-              <p className="text-sm text-destructive" role="alert">
+              <p id="email-error" className="text-sm text-destructive">
                 {form.formState.errors.email.message}
               </p>
             )}
@@ -67,14 +76,16 @@ export default function SignupPage() {
             <Label htmlFor="fullName">Full name (optional)</Label>
             <Input
               id="fullName"
+              autoComplete="name"
               type="text"
               placeholder="Dr. Jane Smith"
               {...form.register("fullName")}
               disabled={isPending}
               aria-invalid={!!form.formState.errors.fullName}
+              aria-describedby={form.formState.errors.fullName ? "fullName-error" : undefined}
             />
             {form.formState.errors.fullName && (
-              <p className="text-sm text-destructive" role="alert">
+              <p id="fullName-error" className="text-sm text-destructive">
                 {form.formState.errors.fullName.message}
               </p>
             )}
@@ -85,13 +96,15 @@ export default function SignupPage() {
             <Input
               id="password"
               type="password"
+              autoComplete="new-password"
               placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
               {...form.register("password")}
               disabled={isPending}
               aria-invalid={!!form.formState.errors.password}
+              aria-describedby={form.formState.errors.password ? "password-error" : undefined}
             />
             {form.formState.errors.password && (
-              <p className="text-sm text-destructive" role="alert">
+              <p id="password-error" className="text-sm text-destructive">
                 {form.formState.errors.password.message}
               </p>
             )}
@@ -104,7 +117,7 @@ export default function SignupPage() {
             <div
               className={
                 formState.body.code === "confirmation_required"
-                  ? "text-sm text-success"
+                  ? "text-sm text-success-ink"
                   : "text-sm text-destructive"
               }
               role="alert"

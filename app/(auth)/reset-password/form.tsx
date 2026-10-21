@@ -2,7 +2,7 @@
 
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useActionState } from "react";
+import { startTransition, useActionState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -35,8 +35,15 @@ export default function ResetPasswordForm() {
     defaultValues: { password: "", confirmPassword: "" },
   });
 
-  const onSubmit = form.handleSubmit(async (data) => {
-    await formAction(data);
+  const onSubmit = form.handleSubmit((data) => {
+    // INSIDE A TRANSITION, WHICH IS NOT OPTIONAL. MEASURED with the repo's React
+    // 19.3.0: dispatched outside a transition, `isPending` never became true - the
+    // values were [false, false] - so the button never disabled, a double click fired
+    // TWO server actions, and React logged an error on every submit. `isPending` is
+    // only the real signal inside one.
+    startTransition(() => {
+      formAction(data);
+    });
   });
 
   return (
@@ -58,9 +65,10 @@ export default function ResetPasswordForm() {
               {...form.register("password")}
               disabled={isPending}
               aria-invalid={!!form.formState.errors.password}
+              aria-describedby={form.formState.errors.password ? "password-error" : undefined}
             />
             {form.formState.errors.password && (
-              <p className="text-sm text-destructive" role="alert">
+              <p id="password-error" className="text-sm text-destructive">
                 {form.formState.errors.password.message}
               </p>
             )}
@@ -75,16 +83,19 @@ export default function ResetPasswordForm() {
               {...form.register("confirmPassword")}
               disabled={isPending}
               aria-invalid={!!form.formState.errors.confirmPassword}
+              aria-describedby={
+                form.formState.errors.confirmPassword ? "confirmPassword-error" : undefined
+              }
             />
             {form.formState.errors.confirmPassword && (
-              <p className="text-sm text-destructive" role="alert">
+              <p id="confirmPassword-error" className="text-sm text-destructive">
                 {form.formState.errors.confirmPassword.message}
               </p>
             )}
           </div>
 
           {formState && (
-            <div className="text-sm text-destructive" role="alert">
+            <div className="text-sm text-destructive" role="status">
               {formState.body.error}
             </div>
           )}

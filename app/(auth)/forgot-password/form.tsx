@@ -14,7 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
-import { useActionState } from "react";
+import { startTransition, useActionState } from "react";
 import { forgotPasswordSchema } from "@/lib/validation/auth";
 import { forgotPassword } from "./actions";
 
@@ -30,8 +30,15 @@ export default function ForgotPasswordPage() {
 
   // The dispatch is not awaited for its result: it returns nothing, so awaiting it
   // resolved at once and the loading state was dead. `isPending` is the real signal.
-  const onSubmit = form.handleSubmit(async (data) => {
-    await formAction(data);
+  const onSubmit = form.handleSubmit((data) => {
+    // INSIDE A TRANSITION, WHICH IS NOT OPTIONAL. MEASURED with the repo's React
+    // 19.3.0: dispatched outside a transition, `isPending` never became true - the
+    // values were [false, false] - so the button never disabled, a double click fired
+    // TWO server actions, and React logged an error on every submit. `isPending` is
+    // only the real signal inside one.
+    startTransition(() => {
+      formAction(data);
+    });
   });
 
   // Show success state when formState has status 200
@@ -78,20 +85,22 @@ export default function ForgotPasswordPage() {
             <Input
               id="email"
               type="email"
+              autoComplete="email"
               placeholder="you@clinic.com"
               {...form.register("email")}
               disabled={isPending}
               aria-invalid={!!form.formState.errors.email}
+              aria-describedby={form.formState.errors.email ? "email-error" : undefined}
             />
             {form.formState.errors.email && (
-              <p className="text-sm text-destructive" role="alert">
+              <p id="email-error" className="text-sm text-destructive">
                 {form.formState.errors.email.message}
               </p>
             )}
           </div>
 
           {formState && formState.status !== 200 && (
-            <div className="text-sm text-destructive" role="alert">
+            <div className="text-sm text-destructive" role="status">
               {formState.body.error}
             </div>
           )}

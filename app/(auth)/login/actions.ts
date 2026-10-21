@@ -18,9 +18,19 @@ import { redirect } from "next/navigation";
  * WHY A WRONG PASSWORD IS A 401 AND NOT A GENERIC 500. `toSafeResponse` only lets an
  * `AppError` contribute a message, and a Supabase `AuthError` is not one - so a typo
  * was reported as "Something went wrong. Please try again.", which is the one message
- * that cannot help anybody. Supabase answers "Invalid login credentials" for BOTH a
- * wrong password and an unknown address, so saying "Invalid email or password." is
- * enumeration-safe: it says exactly the same thing either way.
+ * that cannot help anybody. The provider answers "invalid login credentials" with the
+ * code `invalid_credentials` for BOTH a wrong password and an unknown address, so
+ * saying "Invalid email or password." is enumeration-safe: it says exactly the same
+ * thing either way.
+ *
+ * WHY THE MAPPING IS BY CODE AND NOT BY MESSAGE. A code survives a wording change that
+ * a message would not, and a message that changed would silently turn the two cases
+ * into different answers - which is an account-existence oracle.
+ *
+ * WHY THE TRY IS AROUND THE PROVIDER CALL ONLY. `redirect()` throws a NEXT_REDIRECT
+ * sentinel, and catching that would swallow the redirect and answer with a response
+ * instead. A THROWN action, though, would leave the user with no message at all and
+ * eject them to the global error page - `(auth)` has no `error.tsx`.
  */
 export async function login(
   _prev: SafeResponse | null,
@@ -32,21 +42,24 @@ export async function login(
   }
 
   const supabase = await createServerClient();
-  const { error } = await supabase.auth.signInWithPassword({
-    email: parsed.data.email,
-    password: parsed.data.password,
-  });
+
+  let error: { message: string; code?: string; status?: number } | null = null;
+  try {
+    const response = await supabase.auth.signInWithPassword({
+      email: parsed.data.email,
+      password: parsed.data.password,
+    });
+    error = response.error;
+  } catch (unexpected) {
+    console.error("login: the provider call threw", unexpected);
+    return toSafeResponse(unexpected);
+  }
 
   if (error) {
     // Logged on the server, WITHOUT the address: a login attempt is worth seeing in a
     // log, and the address would put a patient or a clinician's identity in one.
     console.error("login failed", error.code ?? "unknown", error.status ?? "unknown");
-    // BY THE ERROR CODE, NOT THE MESSAGE. MEASURED: the provider answers
-    // "invalid login credentials" with the code "invalid_credentials" for BOTH a wrong
-    // password and an unknown address, so the two are indistinguishable - and a code
-    // survives a wording change that a message would not. A rate limit is its own
-    // case, and it is the same for every account. Everything else is an outage, and
-    // the generic 500 says so without distinguishing anybody.
+
     if (error.code === "invalid_credentials") {
       return toSafeResponse(new UnauthorizedError("Invalid email or password."));
     }

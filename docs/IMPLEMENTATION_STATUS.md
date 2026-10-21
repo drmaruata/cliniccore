@@ -3622,10 +3622,13 @@ operator's step.
 
 - **A SIGN-UP LANDS ON A 404 UNTIL TASK 16.** The routes are Task 16's, and the spec
   asserts the route and the session rather than a page that does not exist yet.
-- **NO RESET MAIL IS SENT IN THIS ENVIRONMENT.** The E2E accounts are at `example.com`,
-  which has no MX record, so the provider refuses to send to a real account while a
-  request for an unknown address returns 200. That a mail ARRIVES is not verifiable here
-  without a mailbox; what is verifiable - the generic response - is asserted.
+- **NO RESET MAIL IS SENT IN THIS ENVIRONMENT.** MEASURED: a request for an unknown
+  address returns 200, and a request for a real account at `example.com` - where the
+  E2E accounts live - is refused with the provider's code `email_address_invalid`. The
+  CAUSE was not established, so it is not asserted: "no MX record" is the likely one and
+  a guess. What is measured is the difference - the provider only attempts a send for
+  an account it knows. That a mail ARRIVES is not verifiable here without a mailbox; what
+  is verifiable - the generic response - is asserted.
 - **THERE IS NO SIGN-OUT CONTROL.** The button belongs to the signed-in shell, which is
   Task 16's, so the spec's "sign out" step clears the session cookie - the state a
   sign-out leaves - and says so.

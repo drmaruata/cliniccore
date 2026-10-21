@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import SignupForm from "./form";
 
 export const metadata: Metadata = {
-  title: "Create your account | ClinicCore",
+  title: "Create your account",
   description: "Create a ClinicCore account for your clinic",
 };
 

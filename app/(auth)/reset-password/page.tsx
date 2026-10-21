@@ -7,7 +7,7 @@ import { getUser } from "@/lib/supabase/server";
 import ResetPasswordForm from "./form";
 
 export const metadata: Metadata = {
-  title: "Choose a new password | ClinicCore",
+  title: "Choose a new password",
   description: "Set a new password for your ClinicCore account",
 };
 

@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { getUser } from "@/lib/supabase/server";
 
 export const metadata: Metadata = {
-  title: "Verify your email | ClinicCore",
+  title: "Verify your email",
   description: "Check the status of your ClinicCore account",
 };
 

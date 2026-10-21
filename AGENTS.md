@@ -533,12 +533,15 @@ handler and the first E2E spec. Consequences the next agent must not have to red
   does not change the live project. **The hosted project's redirect allow-list must
   include the app URL**, and until an operator does that, no reset mail is sent. Recorded
   as BLOCKED, not as working.
-- **THE RESET MAIL CANNOT BE VERIFIED IN THIS ENVIRONMENT.** The E2E accounts are at
-  `example.com`, which has no MX record, so the provider refuses to send to a REAL
-  account - MEASURED, and it refuses with "Email address ... is invalid" while a
-  request for an UNKNOWN address returns 200. The spec therefore asserts the GENERIC
-  response, which is the enumeration guarantee and the thing that is verifiable here;
-  that a mail arrives is not verifiable without a mailbox.
+- **THE RESET MAIL CANNOT BE VERIFIED IN THIS ENVIRONMENT.** MEASURED: a reset request
+  for an UNKNOWN address returns 200, and a request for a REAL account at
+  `example.com` - where the E2E accounts live - is REFUSED, with the provider's code
+  `email_address_invalid`. The cause was not established - "no MX record" is the likely
+  one, and it is a guess, so it is not written down as a fact. What is measured is the
+  difference: the provider only attempts a send for an account it knows. The spec
+  therefore asserts the GENERIC response, which is the enumeration guarantee and the
+  thing that is verifiable here; that a mail ARRIVES is not verifiable without a
+  mailbox, and it is not claimed to work.
 - **THE RESET EXCHANGE LIVES IN A ROUTE HANDLER, NOT A PAGE.** The recovery session has
   to be written as a COOKIE, and a Server Component cannot set cookies. So
   `app/api/auth/verify/route.ts` exchanges the code and redirects to a `next` that is
@@ -549,9 +552,14 @@ handler and the first E2E spec. Consequences the next agent must not have to red
 card.tsx` renders the title as a `div`, so a page whose title is a `CardTitle` has no
   heading at all - invisible to a screen reader navigating by heading, and to any test
   that looks for one. The auth pages wrap their titles in an `<h1>`.
-- **`useActionState`'s DISPATCH RETURNS NOTHING.** `await formAction(data)` resolves at
-  once, so a loading state built on it is dead. `isPending` - the third element of the
-  hook - is the real signal, and it is what the four forms use.
+- **`useActionState`'s DISPATCH RETURNS NOTHING, AND `isPending` NEEDS A TRANSITION.**
+  `await formAction(data)` resolves at once, so a loading state built on awaiting it is
+  dead. `isPending` - the third element of the hook - is the real signal, but ONLY when
+  the dispatch runs inside `startTransition`. MEASURED with the repo's React 19.3.0: with
+  the dispatch outside a transition, `isPending` never became true - the values were
+  [false, false] - so the button never disabled, a double click fired TWO server
+  actions, and React logged "An async function with useActionState was called outside of
+  a transition" on every submit. All four forms dispatch inside `startTransition`.
 - **A SERVER ACTION MUST ACCEPT `FormData` AS WELL AS AN OBJECT.** A form with an
   `action` and no `onSubmit` posts FormData, and a form with neither puts every field -
   including the password - in the query string, which is browser history, an access log
