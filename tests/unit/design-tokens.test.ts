@@ -2224,8 +2224,11 @@ describe("the hex rule is not vacuous", () => {
     // reasoning: neither is UI surface, but both sit under lib/, and a module that
     // slipped past the gate would let a hard-coded hex into the codebase unnoticed.
     // 26 -> 28 code files.
-    expect(code.length + css.length).toBe(30);
-    expect(code.length).toBe(28);
+    // Task 15 added 11 files under app/(auth)/ and app/api/auth/, plus 2 UI components
+    // (components/ui/input.tsx, components/ui/label.tsx), all under scan roots.
+    // 28 -> 41 code files.
+    expect(code.length + css.length).toBe(43);
+    expect(code.length).toBe(41);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was
