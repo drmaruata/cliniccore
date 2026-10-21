@@ -16,21 +16,37 @@
  * claims to observe makes its assertion vacuous, which is the failure this project has
  * been bitten by repeatedly. The method set is pinned before the rejection loop, the
  * fetch spy is made to see a call before it is asked to stay still, and the whole suite
- * has been mutation-checked - twelve mutations, each caught.
+ * has been mutation-checked - eighteen mutations, each caught.
  *
  * WHY THE HTTP-CLIENT RULE IS A WHITELIST. A deny-list of known-bad packages can only
  * catch the packages somebody thought of. The rule here is that `lib/` may import
  * NOTHING that is not on a short, explicit list, so a new HTTP client is a test failure
  * rather than a review comment.
+ *
+ * WHY THE TYPES ARE PINNED AT THE TYPE LEVEL. The five input/output types are invisible
+ * at run time - `Object.keys` cannot see a type - so no runtime assertion can hold them
+ * still. A mutation that turned `amountMinor` from `bigint` into `number` would leave
+ * every test in this file green, because the tests never see the type. The pins below
+ * are therefore COMPILE-TIME, and `npm run typecheck` is the gate that enforces them.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import * as providerModule from "@/lib/billing/provider";
 import * as unconfiguredModule from "@/lib/billing/unconfigured";
+import { stripComments } from "@/scripts/check-no-secrets";
+import type { Minor } from "@/lib/utils/money";
+import type {
+  CheckoutInput,
+  CheckoutSession,
+  PaymentProvider,
+  RefundInput,
+  RefundResult,
+  WebhookEvent,
+} from "@/lib/billing/provider";
 
 const { PaymentNotConfiguredError, getPaymentProvider, isPaymentConfigured } = providerModule;
 
@@ -42,13 +58,23 @@ const BILLING_ROOT = join(LIB_ROOT, "billing");
 const EXPECTED_METHODS = ["createCheckout", "refund", "verifyWebhook"];
 
 /**
- * What each module of the seam is allowed to export. Pinned so that a fake provider
- * cannot be added to a module that already exists.
+ * The modules of the seam, and what each may export.
  *
- * PHASE 8 EXTENDS THIS LIST. The guarantee that survives is "no fake can be added
- * without a test failing" - and extending the list is how a REAL provider is added,
+ * ONE map drives three things: which files may exist in the seam, what each of them may
+ * export, and which of them are scanned for a provider that could take money. A module
+ * added to the seam therefore cannot escape the provider scan - the previous version
+ * listed the two modules in the scan itself, so a module added later would have been
+ * scanned by nobody.
+ *
+ * PHASE 8 EXTENDS THIS MAP. The guarantee that survives is "no fake can be added
+ * without a test failing" - and extending the map is how a REAL provider is added,
  * deliberately, rather than a fake slipping in unnoticed.
  */
+const SEAM_MODULES: Record<string, Record<string, unknown>> = {
+  "lib/billing/provider.ts": providerModule as unknown as Record<string, unknown>,
+  "lib/billing/unconfigured.ts": unconfiguredModule as unknown as Record<string, unknown>,
+};
+
 const EXPECTED_EXPORTS: Record<string, string[]> = {
   "lib/billing/provider.ts": [
     "PaymentNotConfiguredError",
@@ -90,10 +116,155 @@ const SANCTIONED_LIB_PACKAGES = new Set([
   "zod",
 ]);
 
+/**
+ * The directories a file under `lib/` may reach with a relative import.
+ *
+ * `lib/` and `types/` - the latter holds the GENERATED database types, which four
+ * modules import and which are not in `lib/`. Anything else - a vendored copy of a
+ * client, say - is outside what this application sanctions, and a relative import is
+ * exactly how it would be reached.
+ */
+const ALLOWED_LIB_CONTAINERS = [LIB_ROOT, join(REPO_ROOT, "types")];
+
 /** The source extensions the scans read. A `.md` file in the seam is not a module. */
-const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"];
 
 type AnyMethod = (...args: unknown[]) => unknown;
+
+/**
+ * COMPILE-TIME PINS ON THE FIVE TYPES.
+ *
+ * These are the assertions that hold the type surface still, and `npm run typecheck` is
+ * the gate that runs them. A runtime test cannot do this job: a type is invisible to
+ * `Object.keys`, so a mutation that turned `amountMinor` from `bigint` into `number`
+ * would leave every runtime test in the repository green.
+ */
+/**
+ * Whether A is assignable to B.
+ *
+ * WRAPPED IN A TUPLE so the conditional is NOT distributive, and deliberately free of
+ * function types. Prettier 3.9.10 REMOVES the parentheses around a function type in a
+ * conditional type's `extends` clause - `(<T>() => T extends Y ? 1 : 2)` becomes
+ * `<T>() => T extends Y ? 1 : 2` - and that CHANGES the meaning: the canonical
+ * `Equal<X, Y>` type silently becomes `true` for every pair, which is the worst kind
+ * of control, because it reads like a working one. MEASURED: with the paren-stripped
+ * form, a mutation that turned `amountMinor` into `number` passed typecheck.
+ */
+type Extends<A, B> = [A] extends [B] ? true : false;
+
+/**
+ * Every member must be `true`.
+ *
+ * NOT an intersection of `Equal`s. `true & false` is still ASSIGNABLE to `true`, so a
+ * constraint of `extends true` is satisfied by an intersection containing a `false` -
+ * and the first version of these pins, which intersected them, caught nothing. MEASURED:
+ * the same mutation passed typecheck with the intersection, and fails with a tuple. A
+ * tuple reports WHICH position failed.
+ */
+type AllTrue<T extends readonly true[]> = T;
+
+/**
+ * Two types that are the same type for our purposes: mutually assignable.
+ *
+ * A DEFERRED conditional rather than `AllTrue<[...]>`, because a constraint is checked
+ * eagerly and the members are not known to be `true` while X and Y are still type
+ * parameters. The check happens at the instantiation, which is where it belongs.
+ */
+/** A type's keys are exactly these, in both directions - nothing missing, nothing extra. */
+type KeysAre<X, K extends string> = [Extends<K, keyof X>] extends [true]
+  ? [Extends<keyof X, K>] extends [true]
+    ? true
+    : false
+  : false;
+
+type Same<X, Y> = [Extends<X, Y>] extends [true]
+  ? [Extends<Y, X>] extends [true]
+    ? true
+    : false
+  : false;
+
+type Expect<T extends true> = T;
+
+type _EveryAmountIsPaise = AllTrue<
+  [
+    Same<CheckoutInput["amountMinor"], Minor>,
+    Same<CheckoutSession["amountMinor"], Minor>,
+    Same<RefundInput["amountMinor"], Minor>,
+    Same<RefundResult["amountMinor"], Minor>,
+    Same<WebhookEvent["amountMinor"], Minor | null>,
+  ]
+>;
+
+type _TheProviderHasTheThreeMethods = AllTrue<
+  [
+    Extends<"configured", keyof PaymentProvider>,
+    Extends<"createCheckout", keyof PaymentProvider>,
+    Extends<"refund", keyof PaymentProvider>,
+    Extends<"verifyWebhook", keyof PaymentProvider>,
+    Extends<keyof PaymentProvider, "configured" | "createCheckout" | "refund" | "verifyWebhook">,
+  ]
+>;
+
+type _TheFactoryReturnsTheProvider = Expect<
+  Same<ReturnType<typeof getPaymentProvider>, PaymentProvider>
+>;
+
+type _AProviderRefuses = AllTrue<
+  [
+    Extends<ReturnType<PaymentProvider["createCheckout"]>, Promise<CheckoutSession>>,
+    Extends<ReturnType<PaymentProvider["verifyWebhook"]>, Promise<WebhookEvent>>,
+    Extends<ReturnType<PaymentProvider["refund"]>, Promise<RefundResult>>,
+  ]
+>;
+
+/**
+ * The KEY SETS of the five types, pinned.
+ *
+ * A field that silently disappears is as much a hole as a field that changes type: a
+ * `WebhookEvent` without `refundId` cannot report how an ASYNCHRONOUS refund ended, and
+ * a `RefundInput` without `organizationId` cannot say whose money is being refunded.
+ *
+ * PHASE 8 EXTENDS THESE, and a deliberate extension is a diff in this file.
+ */
+type _TheCheckoutNamesTheTenant = Expect<
+  KeysAre<
+    CheckoutInput,
+    "amountMinor" | "currency" | "description" | "idempotencyKey" | "organizationId" | "planCode"
+  >
+>;
+
+type _TheCheckoutNamesTheOrder = Expect<
+  KeysAre<
+    CheckoutSession,
+    "amountMinor" | "currency" | "expiresAt" | "providerOrderId" | "providerSessionId" | "url"
+  >
+>;
+
+type _TheEventNamesTheOrderAndTheRefund = Expect<
+  KeysAre<
+    WebhookEvent,
+    | "amountMinor"
+    | "currency"
+    | "eventId"
+    | "eventType"
+    | "occurredAt"
+    | "providerOrderId"
+    | "providerPaymentId"
+    | "providerSessionId"
+    | "refundId"
+  >
+>;
+
+type _TheRefundNamesTheTenant = Expect<
+  KeysAre<
+    RefundInput,
+    "amountMinor" | "idempotencyKey" | "organizationId" | "providerPaymentId" | "reasonCode"
+  >
+>;
+
+type _TheRefundResultNamesThePayment = Expect<
+  KeysAre<RefundResult, "amountMinor" | "currency" | "providerPaymentId" | "refundId" | "status">
+>;
 
 /** A repo-relative path with forward slashes, so the assertions read the same on Windows. */
 function rel(file: string): string {
@@ -151,16 +322,44 @@ function isProviderLike(value: unknown): boolean {
   return providerMethodsOf(value).some(([name]) => name === "createCheckout");
 }
 
-function sourceFilesUnder(dir: string): string[] {
+/**
+ * Every source file under a directory.
+ *
+ * Symlinks are FOLLOWED, because a scanner that silently skips a file is the failure
+ * this project has been bitten by repeatedly - and a symlink out of the directory is
+ * exactly how a file would go missing. The visited set stops a symlink loop.
+ */
+function sourceFilesUnder(dir: string, seen = new Set<string>()): string[] {
   const found: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return found;
+  }
+  for (const entry of entries) {
     const full = join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...sourceFilesUnder(full));
-    else if (SOURCE_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) {
-      found.push(full);
+    const isDirectory =
+      entry.isDirectory() || (entry.isSymbolicLink() && statSync(full).isDirectory());
+    if (isDirectory) {
+      const real = realpathOrSelf(full);
+      if (seen.has(real)) continue;
+      seen.add(real);
+      found.push(...sourceFilesUnder(full, seen));
+      continue;
     }
+    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+    if (SOURCE_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) found.push(full);
   }
   return found;
+}
+
+function realpathOrSelf(file: string): string {
+  try {
+    return statSync(file).isDirectory() ? join(file, ".") : file;
+  } catch {
+    return file;
+  }
 }
 
 /**
@@ -178,10 +377,18 @@ const IMPORT_PATTERNS = [
   /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
 ];
 
+/**
+ * The module specifiers a file names, with COMMENTS REMOVED.
+ *
+ * Without the strip, a line of prose inside a block comment that happens to look like
+ * an import would be reported as a dependency that does not exist. A rule that fires on
+ * English is a rule that gets switched off.
+ */
 function importSpecifiers(source: string): string[] {
+  const code = stripComments(source);
   const found: string[] = [];
   for (const pattern of IMPORT_PATTERNS) {
-    for (const match of source.matchAll(pattern)) {
+    for (const match of code.matchAll(pattern)) {
       const specifier = match[1];
       if (specifier) found.push(specifier);
     }
@@ -194,8 +401,7 @@ function importSpecifiers(source: string): string[] {
  *
  * `process.env` is the obvious one and `process["env"]` and `const { env } = process`
  * are the two that a scan for the first would miss. A prose mention of "the process
- * environment" is deliberately NOT a match: a rule that fires on English is a rule that
- * gets switched off.
+ * environment" is deliberately NOT a match.
  */
 const ENV_ACCESS_PATTERNS = [
   /process\s*\.\s*env\b/,
@@ -203,6 +409,13 @@ const ENV_ACCESS_PATTERNS = [
   /\b(?:const|let|var)\s*\{[^}]*\benv\b[^}]*\}\s*=\s*process\b/,
   /from\s*['"]node:process['"]/,
 ];
+
+/** Whether a resolved path is inside a directory. */
+function isInside(path: string, directory: string): boolean {
+  const normalised = path.split(/[\\/]/).join("/");
+  const root = directory.split(/[\\/]/).join("/");
+  return normalised === root || normalised.startsWith(root + "/");
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -238,6 +451,14 @@ describe("the provider the factory hands out", () => {
     expect(getPaymentProvider().configured).toBe(false);
   });
 
+  it("hands out the very stub it exported, frozen", () => {
+    // The stub is EXPORTED and the factory hands out that object, so a caller holding
+    // it could `Object.assign` a working createCheckout onto it and every other caller
+    // would receive the fake. Frozen, the assignment throws instead of succeeding.
+    expect(getPaymentProvider()).toBe(unconfiguredModule.unconfiguredProvider);
+    expect(Object.isFrozen(unconfiguredModule.unconfiguredProvider)).toBe(true);
+  });
+
   it("asks the provider whether it is configured, rather than keeping a second truth", () => {
     // A hardcoded `return false` would pass every other test here, because both the
     // provider and the answer would be false. That is exactly the control whose value is
@@ -271,9 +492,11 @@ describe("the stub itself", () => {
 describe("there is no working, fake or test provider", () => {
   it("adds no module to the seam", () => {
     // A fake in a NEW file would be reachable from application code by its path, and
-    // the export pin below cannot see a module it does not know about.
+    // the export pin below cannot see a module it does not know about. The same map
+    // drives the file list and the provider scan, so a module added here cannot escape
+    // either.
     expect(sourceFilesUnder(BILLING_ROOT).map(rel).sort()).toEqual(
-      Object.keys(EXPECTED_EXPORTS).sort(),
+      Object.keys(SEAM_MODULES).sort(),
     );
   });
 
@@ -281,39 +504,33 @@ describe("there is no working, fake or test provider", () => {
     // The brief forbids a "test mode" that returns a successful fake payment, because
     // that would misrepresent payment capability. Pinning the runtime exports is how
     // that is proved rather than asserted.
-    expect(Object.keys(providerModule).sort()).toEqual(
-      EXPECTED_EXPORTS["lib/billing/provider.ts"] ?? [],
-    );
-    expect(Object.keys(unconfiguredModule).sort()).toEqual(
-      EXPECTED_EXPORTS["lib/billing/unconfigured.ts"] ?? [],
-    );
+    for (const [file, module] of Object.entries(SEAM_MODULES)) {
+      expect(Object.keys(module).sort(), `${file} exports`).toEqual(EXPECTED_EXPORTS[file] ?? []);
+    }
   });
 
   it("exports no provider that could take money", async () => {
     // Whichever module a provider-like object appears in, and whichever SHAPE it has,
     // it must be unconfigured and must refuse. This is the check that survives a fake
-    // being added to either file, as an object or as a class.
-    for (const [moduleName, module] of [
-      ["provider", providerModule],
-      ["unconfigured", unconfiguredModule],
-    ] as const) {
+    // being added to any module of the seam, as an object or as a class.
+    for (const [file, module] of Object.entries(SEAM_MODULES)) {
       for (const [name, value] of Object.entries(module)) {
         if (!isProviderLike(value)) continue;
         if (typeof value === "object" && value !== null) {
           expect(
             (value as { configured?: unknown }).configured,
-            `${moduleName}.${name} must not be configured`,
+            `${file}:${name} must not be configured`,
           ).toBe(false);
         }
         const methods = providerMethodsOf(value);
         expect(
           methods.map(([method]) => method).sort(),
-          `${moduleName}.${name} must have the provider's methods`,
+          `${file}:${name} must have the provider's methods`,
         ).toEqual(EXPECTED_METHODS);
         for (const [method, fn] of methods) {
           await expect(
             Promise.resolve().then(() => fn.call(value)),
-            `${moduleName}.${name}.${method} must reject`,
+            `${file}:${name}.${method} must reject`,
           ).rejects.toBeInstanceOf(PaymentNotConfiguredError);
         }
       }
@@ -343,11 +560,10 @@ describe("there is no working, fake or test provider", () => {
           // A relative import must stay INSIDE the seam. Otherwise the seam reaches a
           // module elsewhere in lib/ that reads the environment and talks to a network.
           const target = resolve(dirname(file), specifier);
-          const inside =
-            target === BILLING_ROOT ||
-            target.startsWith(BILLING_ROOT + "\\") ||
-            target.startsWith(BILLING_ROOT + "/");
-          expect(inside, `${rel(file)} imports ${specifier}, which is outside the seam`).toBe(true);
+          expect(
+            isInside(target, BILLING_ROOT),
+            `${rel(file)} imports ${specifier}, which is outside the seam`,
+          ).toBe(true);
           continue;
         }
         expect(ALLOWED_BILLING_IMPORTS.has(specifier), `${rel(file)} imports ${specifier}`).toBe(
@@ -397,7 +613,21 @@ describe("no request leaves the server", () => {
       const source = readFileSync(file, "utf8");
       const where = rel(file);
       for (const specifier of importSpecifiers(source)) {
-        if (specifier.startsWith(".") || specifier.startsWith("@/")) continue;
+        if (specifier.startsWith(".")) {
+          // A relative import must reach a sanctioned container, for the same reason
+          // the seam's own relative imports must stay inside the seam.
+          const target = resolve(dirname(file), specifier);
+          expect(
+            ALLOWED_LIB_CONTAINERS.some((container) => isInside(target, container)),
+            `${where}: ${specifier} (leaves the sanctioned containers)`,
+          ).toBe(true);
+          continue;
+        }
+        if (specifier.startsWith("@/")) {
+          const target = resolve(REPO_ROOT, specifier.slice(2));
+          expect(isInside(target, LIB_ROOT), `${where}: ${specifier} (leaves lib/)`).toBe(true);
+          continue;
+        }
         if (!SANCTIONED_LIB_PACKAGES.has(specifier)) offenders.push(`${where}: ${specifier}`);
       }
       // A global `fetch(...)` needs no import to be found, and it can be hidden from a

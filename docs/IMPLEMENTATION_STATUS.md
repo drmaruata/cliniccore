@@ -3440,3 +3440,89 @@ found only because a control was required to move in the positive direction.
   behaviour, and it is worth saying so before someone reads it as an obstacle.
 - `reasonCode` is a CONVENTION, not an enforced rule. Nothing in the seam screens it,
   and the audit-metadata screen applies to `audit_logs`, not here.
+
+## Task 14, third review round: the claims were pinned in the DOCUMENT and not in the TEST
+
+The first two rounds closed nine gaps and then seven evasions of the controls the first
+round had added. The third round found no blocker either, and one thing the first two
+rounds had missed entirely: **the seam's TYPE SURFACE was pinned by nothing at all.**
+
+### THE BLOCKER: MONEY WAS NOT PINNED, AND THE DOCUMENT OVER-STATED IT AS ENFORCED
+
+The docs said the seam "cannot describe an amount in anything but paise". MEASURED: a
+mutation that turned `RefundInput.amountMinor` from `bigint` into `number` left
+**every test in the repository green**. A runtime test cannot hold a type still, because
+`Object.keys` cannot see one - the five input/output types are invisible to every
+assertion in the suite.
+
+So the pins are now COMPILE-TIME, in `tests/unit/payment-provider.test.ts`, and
+`npm run typecheck` is the gate that enforces them. The key sets of all five types are
+pinned too, in both directions, because a field that silently disappears is as much a
+hole as a field that changes type.
+
+### AND THE FIRST COMPILE-TIME PIN WAS ITSELF A CONTROL THAT COULD NOT SEE
+
+Three failures in a row, and each is the same shape as the bug it was meant to catch.
+
+1. **THE CANONICAL `Equal<X, Y>` WAS BROKEN BY PRETTIER.** Written correctly as
+   `(<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2)`, it comes
+   back from `npm run format` with the right-hand parentheses REMOVED - and the stripped
+   form evaluates to `true` for EVERY pair. MEASURED, and it is the worst kind of bug: a
+   control that reads like a working one. The pins now use `Extends`, `Same` and
+   `KeysAre`, which contain no function types and which Prettier cannot alter.
+2. **AN INTERSECTION OF BOOLEAN CHECKS IS NOT "EVERY ONE OF THEM".** `true & false` is
+   still ASSIGNABLE to `true`, so a constraint of `extends true` is satisfied by an
+   intersection containing a `false`. The first version of the amount pins intersected
+   five `Equal`s and caught NOTHING. A tuple of booleans fails the constraint properly
+   and names WHICH position failed - the error reads
+   `[true, true, false, true, true] does not satisfy the constraint 'readonly true[]'`.
+3. **A KEY-SET CHECK IN ONE DIRECTION IS HALF A CHECK.** "Every expected key is present"
+   is satisfied by a type that LOST a key, and "no unexpected key is present" is
+   satisfied by one that GAINED a key. MEASURED: a mutation that removed `refundId`
+   from `RefundResult` passed a one-directional pin.
+
+### THE OTHER FINDINGS, AND WHAT CHANGED
+
+- **THE PROVIDER-LIKE SCAN DID NOT COVER THE MODULE PHASE 8 ADDS.** The scan listed
+  the two modules by hand, so a new module would have been scanned by nobody - and the
+  AGENTS.md hand-off list did not mention it. ONE map now drives the file list, the
+  export pins and the provider scan, so a module added to the seam cannot escape any
+  of them.
+- **THE EXPORTED PROVIDER WAS MUTABLE.** The stub is exported and the factory hands out
+  that very object, so `Object.assign(unconfiguredProvider, { createCheckout: fake })`
+  would have installed a fake into the singleton every caller receives, with no test
+  seeing it. `Object.freeze` closes it, and a test asserts the freeze.
+- **THE `lib/`-WIDE PACKAGE RULE SKIPPED RELATIVE AND ALIAS SPECIFIERS**, so a vendored
+  copy of a client could be reached with `../vendor/axios`. A relative import in `lib/`
+  must now resolve inside `lib/` or `types/` - the latter holds the generated database
+  types, which four modules import. MEASURED: the first attempt at this rule flagged
+  those four legitimate imports, which is how the `types/` exception was found.
+- **A REFUND NAMED NO TENANT.** `createCheckout` carries `organizationId` and `refund`
+  did not, so the seam could not say whose money was being refunded. `RefundInput`
+  carries it now.
+- **AN EVENT COULD NAME NEITHER AN ORDER NOR A REFUND.** `WebhookEvent` carries
+  `providerOrderId` and `refundId` now - and `refundId` is how a caller learns that an
+  ASYNCHRONOUS refund finally succeeded or failed, which no return value can tell it.
+- **THE IMPORT SCAN FIRED ON PROSE.** A block comment containing a line that looked
+  like an import was reported as a dependency. The scan now strips comments first, using
+  the `stripComments` helper `scripts/check-no-secrets.ts` already exports.
+- **THE SCANNER SKIPPED SYMLINKED DIRECTORIES**, and `.mts`/`.cts` were not in the
+  extension list. Both fixed, because a scanner that silently skips a file is the
+  failure this project has been bitten by repeatedly.
+- **THE DOCS OVER-STATED "SWAPPING PROVIDERS IS A ONE-FILE CHANGE".** The
+  IMPLEMENTATION is one file; the INTERFACE has to grow for a provider whose flow this
+  seam cannot describe, and that is expected rather than a failure. The seam describes a
+  HOSTED checkout, and Razorpay's Orders + `checkout.js` flow - which needs a publishable
+  key and provider parameters in the browser - is not describable by it as it stands.
+  Phase 8 must either use a hosted flow (a Razorpay Payment Link) or extend the
+  interface. A publishable key is NOT a secret, so the server-only boundary is about the
+  SECRET key and does not itself forbid one.
+
+### THE MUTATIONS ARE NOW TWENTY-SIX, AND THE LAST EIGHT ARE COMPILE-TIME
+
+The first eighteen were runtime mutations. The last eight are TYPE mutations, and they
+are caught by `npm run typecheck` rather than by `npm test`: an amount becoming a
+`number` in each of the four amount fields; a field disappearing from `RefundInput`,
+`WebhookEvent` and `RefundResult`; a field appearing in `CheckoutSession`; and a method
+appearing in `PaymentProvider`. All eight are caught, and the tuple in the error message
+says which position failed.

@@ -400,9 +400,10 @@ next agent must not have to rediscover:
   first version carried several guarantees in one test, so a later phase that changed one
   of them would have taken the others with it. Phase 8 **REPLACES** the factory-bound
   refusal test, because a real provider stops refusing. The other guarantees **SURVIVE**,
-  but Phase 8 must **EXTEND** three lists to add a provider: the seam's file list, the
-  per-module export list, and the seam's import whitelist. Extending a list is how a
-  real provider is added deliberately - a fake cannot be added without a list changing.
+  but Phase 8 must **EXTEND** four lists to add a provider: the seam's file list, the
+  per-module export list, the seam's import whitelist, and the `lib/`-wide sanctioned
+  package list. Extending a list is how a real provider is added deliberately - a fake
+  cannot be added without a list changing.
 - **ONBOARDING MUST NOT PRESENT A PAYMENT STEP** while only the seam exists. Where the
   chosen plan supports a trial, onboarding continues straight to clinic setup. This
   binds Task 17.
@@ -470,4 +471,43 @@ next agent must not have to rediscover:
   `@supabase/supabase-js` ARE HTTP clients, and they are on it deliberately - they are
   the sanctioned way for this application to talk to Supabase. The rule is that there is
   no OTHER way, so a new HTTP client in `lib/` is a test failure rather than a review
-  comment.
+  comment. A RELATIVE import in `lib/` must also resolve inside `lib/` or `types/` - the
+  latter holds the generated database types - so a vendored copy of a client cannot be
+  reached that way either.
+- **THE SEAM'S TYPE SURFACE IS PINNED AT COMPILE TIME, AND `npm run typecheck` IS THE
+  GATE THAT ENFORCES IT.** A runtime test cannot hold a type still: `Object.keys` cannot
+  see one. MEASURED - before this pin, a mutation that turned `RefundInput.amountMinor`
+  from `bigint` into `number` left **every test in the repository green** and only
+  typecheck could catch it.
+- **PRETTIER 3.9.10 STRIPS THE PARENTHESES IN A CONDITIONAL TYPE'S `extends` CLAUSE, AND
+  THAT CHANGES ITS MEANING.** The canonical `Equal<X, Y>` - written
+  `(<T>() => T extends X ? 1 : 2) extends (<T>() => T extends Y ? 1 : 2)` - comes back
+  from `npm run format` with the right-hand parentheses removed, and the stripped form
+  evaluates to `true` for EVERY pair. MEASURED, and it is the worst kind of bug: a
+  control that reads like a working one. **The type pins in
+  `tests/unit/payment-provider.test.ts` therefore use `Extends`, `Same` and `KeysAre`,
+  which contain no function types.** Do not "simplify" them back to `Equal`.
+- **A TUPLE, NOT AN INTERSECTION, FOR "EVERY ONE OF THESE".** `true & false` is still
+  ASSIGNABLE to `true`, so a constraint of `extends true` is satisfied by an
+  intersection containing a `false` - and the first version of the amount pins, which
+  intersected them, caught nothing. A tuple of booleans fails the constraint properly
+  and names WHICH position failed.
+- **KEY SETS ARE CHECKED IN BOTH DIRECTIONS.** "Every expected key is present" is
+  satisfied by a type that LOST a key, and "no unexpected key is present" is satisfied
+  by one that GAINED a key. MEASURED: a mutation that removed `refundId` from
+  `RefundResult` passed a one-directional pin.
+- **THE EXPORTED PROVIDER IS FROZEN.** The stub is exported and the factory hands out
+  that very object, so a caller holding it could `Object.assign` a working
+  `createCheckout` onto it and every other caller would receive the fake. `Object.freeze`
+  closes that, because a module is always strict and the assignment throws.
+- **THE SEAM DESCRIBES A HOSTED CHECKOUT, AND THAT IS A REAL LIMIT.** `CheckoutSession.url`
+  is a hosted page on the provider's domain. A provider whose only flow needs a
+  publishable key and provider parameters IN THE BROWSER - Razorpay's Orders +
+  `checkout.js` - is not describable by this seam as it stands, and Phase 8 must either
+  use a hosted flow (a Razorpay Payment Link) or EXTEND the interface. Note that a
+  publishable key is NOT a secret, so the server-only boundary is about the SECRET key
+  and does not itself forbid one.
+- **A REFUND NAMES THE TENANT AND THE PAYMENT; AN EVENT NAMES THE ORDER AND THE
+  REFUND.** `RefundInput.organizationId` says whose money is being refunded;
+  `WebhookEvent.refundId` is how a caller learns that an ASYNCHRONOUS refund finally
+  succeeded or failed, which no return value can tell it.

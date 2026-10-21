@@ -73,21 +73,25 @@ export interface CheckoutInput {
 
 /** A checkout the payer can be sent to. */
 export interface CheckoutSession {
-  /** The provider's identifier for this checkout. */
+  /**
+   * The provider's identifier for THIS checkout. The seam names the STAGE, not the
+   * provider's noun: a hosted flow may call it a payment link and an in-page flow may
+   * call it an order, and the implementation maps whichever native identifier it has
+   * onto this one. It is not null - a checkout that was created has an identifier.
+   */
   providerSessionId: string;
   /**
-   * The provider's identifier for the PAYMENT behind the checkout, and the thing a
-   * refund is against - a provider refunds a payment, not a checkout. It is null until
-   * the payer has paid, and the webhook that says so is what carries it.
+   * The provider's identifier for the order behind the checkout, where the provider
+   * keeps one separately. Null where it does not.
    */
-  providerPaymentId: string | null;
-  /** The provider's identifier for the order behind it, where the provider has one. */
   providerOrderId: string | null;
   /**
    * Where the payer is sent to complete payment. This is a HOSTED page on the provider's
    * own domain, not a client-side SDK payload: the seam is server-only, and describing
    * an in-page checkout would put provider vocabulary into the browser. A provider that
-   * cannot offer a hosted page is not a provider this seam can describe.
+   * cannot offer a hosted page is not a provider this seam can describe - and that is a
+   * real limit, not a hypothetical, so it is stated here rather than left to be
+   * discovered in Phase 8.
    */
   url: string;
   /** What is being charged, in minor units. */
@@ -108,8 +112,16 @@ export interface WebhookEvent {
   occurredAt: string;
   /** The checkout the event is about, where it names one. */
   providerSessionId: string | null;
+  /** The order the event is about, where it names one. */
+  providerOrderId: string | null;
   /** The payment the event is about, where it names one. */
   providerPaymentId: string | null;
+  /**
+   * The refund the event is about, where it names one. A refund is ASYNCHRONOUS, so
+   * the result of asking for one is not the end of it - this is how a caller learns
+   * that the refund finally succeeded or finally failed.
+   */
+  refundId: string | null;
   /** The amount involved, in minor units, where the event carries one. */
   amountMinor: Minor | null;
   /** ISO 4217 currency code, where the event carries one. */
@@ -118,6 +130,8 @@ export interface WebhookEvent {
 
 /** A request to refund part or all of a payment. */
 export interface RefundInput {
+  /** The tenant whose money is being refunded. The same tenant the checkout was for. */
+  organizationId: string;
   /** The payment being refunded. */
   providerPaymentId: string;
   /** How much to refund, in minor units. */
@@ -178,8 +192,12 @@ export interface PaymentProvider {
 }
 
 /**
- * The provider this deployment uses. Swapping providers is a change to this function
- * and to the file that implements the new one, and to nothing else.
+ * The provider this deployment uses.
+ *
+ * Swapping providers is a change to the IMPLEMENTATION, and the implementation is one
+ * file. The interface is a different matter: a provider whose flow this seam cannot
+ * describe - one with no hosted checkout page, say - needs the interface to grow, and
+ * that is expected rather than a failure of the seam.
  */
 export function getPaymentProvider(): PaymentProvider {
   return unconfiguredProvider;
