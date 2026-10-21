@@ -134,13 +134,19 @@ duplicated business logic.
 app/
   (marketing)/           → /, /features, /pricing, …   (Phase 4 content)
   (auth)/                → /login, /signup, /verify, /forgot-password, /reset-password
-  (app)/                 → /app/…                       authenticated application
-  (platform)/            → /platform/…                  ClinicCore operator console
+  app/                    → /app/…                       authenticated application
+  platform/               → /platform/…                  ClinicCore operator console
   api/                   → route handlers only where a webhook or external caller needs one
   proxy.ts               → session refresh + coarse route gating
 ```
 
-Route groups are pathless, so `(app)` does not appear in the URL. Layouts in each
+Route groups are pathless, so the two groups whose urls sit at the root - `(marketing)`
+and `(auth)` - add no segment. The other two are REAL segments: `app/` and `platform/`.
+The parenthesised names in the table above were shorthand for "this subtree serves this
+url prefix", and read literally they are wrong: a pathless `(platform)/page.tsx` would
+serve `/` and collide with the marketing root page. Task 16 implemented the urls this
+table specifies, so the tree says `app/` and `platform/`.
+Layouts in each
 group own their own shell.
 
 ### 4.2 Tenancy model

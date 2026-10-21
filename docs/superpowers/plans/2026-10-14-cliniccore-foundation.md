@@ -55,12 +55,12 @@ app/
   (auth)/forgot-password/page.tsx
   (auth)/reset-password/page.tsx
   (auth)/verify/page.tsx             graceful when confirmation disabled
-  (app)/layout.tsx                   sidebar + top bar; requires session + org
-  (app)/dashboard/page.tsx           tenant-aware placeholder, real session/org data
-  (app)/onboarding/page.tsx          zero-membership path (Review Focus 1)
-  (app)/settings/members/page.tsx    memberships + role assignments
-  (platform)/layout.tsx              platform-admin gate
-  (platform)/page.tsx                tenant directory
+  app/layout.tsx                    sidebar + top bar; requires session + org
+  app/dashboard/page.tsx             tenant-aware placeholder, real session/org data
+  app/onboarding/page.tsx            zero-membership path (Review Focus 1)
+  app/settings/members/page.tsx      memberships + role assignments
+  platform/layout.tsx                platform-admin gate
+  platform/page.tsx                  tenant directory
 components/
   ui/                                shadcn primitives (generated, unedited)
   shared/                            data-table, page-header, kpi-card, empty-state,
@@ -746,7 +746,8 @@ docs/*.md                            15 artefacts
 ### Task 16: Application shell and onboarding
 
 **Files:**
-- Create: `app/(app)/layout.tsx`, `app/(app)/dashboard/page.tsx`, `app/(app)/onboarding/page.tsx`, `app/(app)/settings/members/page.tsx`, `app/invite/[token]/page.tsx`
+- Create: `app/app/layout.tsx`, `app/app/dashboard/page.tsx`, `app/app/onboarding/page.tsx`, `app/app/settings/members/page.tsx`, `app/invite/[token]/page.tsx`
+  - CORRECTED during Task 16. This list originally said `app/(app)/...`, which contradicts this task's own `Produces` line (`/app/dashboard`, `/app/onboarding`, `/app/settings/members`) and the plan's global constraint ("Authenticated user with zero organization memberships hitting `/app`"). A route group is pathless, so `(app)` would give `/dashboard`. The URL is the contract, so the directory is `app/app/` - a real segment. The design spec's route table is the authority, and its `(platform)/ -> /platform/...` row shows the same thing: a pathless `(platform)/page.tsx` would serve `/` and collide with the marketing root.
 - Create: `components/app/sidebar-nav.tsx`, `components/app/org-switcher.tsx`, `components/app/clinic-switcher.tsx`
 - Create: `supabase/migrations/20261014001400_invitations.sql`
 - Test: `tests/e2e/onboarding.spec.ts`, `tests/e2e/invitations.spec.ts`

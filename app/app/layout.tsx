@@ -1,3 +1,18 @@
+/**
+ * The signed-in application shell.
+ *
+ * WHY THIS DIRECTORY IS NAMED `app`, INSIDE `app`. The application lives at the URL
+ * PREFIX `/app/` - `/app`, `/app/dashboard`, `/app/onboarding`, `/app/settings/members` -
+ * and in Next.js a ROUTE GROUP is pathless, so a group named `(app)` would produce
+ * `/dashboard`, not `/app/dashboard`. The prefix therefore has to be a REAL segment,
+ * which means a real directory. The design spec's route table shows `(app)/ -> /app/...`,
+ * and its own `(platform)/ -> /platform/...` row proves the parenthesised names there are
+ * shorthand for a URL prefix rather than literal route groups: a pathless
+ * `(platform)/page.tsx` would serve `/` and collide with the marketing root page.
+ *
+ * So: `app/app/` is the shape that satisfies the URL contract, and `app/app/` is the
+ * only one that does.
+ */
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";

@@ -983,3 +983,13 @@ gaps and some false records. All of it is closed.
 - **THE NEW MIGRATIONS ARE `01820`, `01830` AND `01840`** - the inviter is the caller,
   the helpers' privileges, and the one membership rule with the shell's new state. All
   applied; the history now has 57 rows.
+- **THE APP SHELL LIVES AT `app/app/`, AND THE PLATFORM CONSOLE AT `app/platform/` -
+  BOTH REAL SEGMENTS, NOT ROUTE GROUPS.** The design spec's route table says the
+  authenticated application is at `/app/...` and the operator console at `/platform/...`,
+  and a route group is pathless, so a group named `(app)` would give `/dashboard` and a
+  group named `(platform)` would give `/` - which would COLLIDE with the marketing root
+  page. The spec's own table is the authority, and its parenthesised names are shorthand
+  for "this subtree serves this url prefix". The plan's file list said `app/(app)/...` and
+  the spec's tree said `(app)/`; BOTH have been corrected, because they contradicted the
+  url contract that four separate statements in the two documents agree on. `app/app/` is
+  the shape that satisfies the contract, and it is the only one that does.
