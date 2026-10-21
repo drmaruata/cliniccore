@@ -637,6 +637,7 @@ export type Database = {
           role_name: string;
         }[];
       };
+      has_any_membership: { Args: never; Returns: boolean };
       write_audit: {
         Args: {
           p_action: string;

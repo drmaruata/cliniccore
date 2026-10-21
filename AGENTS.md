@@ -40,7 +40,7 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`01810` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`01840` (extensions, core functions, identity/tenancy
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
   then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
@@ -48,10 +48,11 @@ npm run build && npm run format:check`.
   `01400`/`01410`'s storage hardening and `01420`'s MIME allowlist and path guard, then the
   `01600`–`01710` public RPC wrappers and their corrections, then Task 16's `01720`
   invitations, `01730` digest correction, `01740` migration-history name fix, `01750` ceiling
-  parameterisation, `01760` invitation ceiling, `01770` currency and locale, and the round-2
-  fixes `01780` every grant path, `01790` the proven address, `01800` the creation cap's
-  SQLSTATE and `01810` the restored pre-staging clause), all
-  applied — 54 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  parameterisation, `01760` invitation ceiling, `01770` currency and locale, the round-2 fixes
+  `01780` every grant path, `01790` the proven address, `01800` the creation cap's SQLSTATE and
+  `01810` the restored pre-staging clause, and the round-3 fixes `01820` the inviter is the
+  caller, `01830` the helpers' privileges and `01840` the one membership rule), all
+  applied — 57 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
@@ -596,14 +597,22 @@ invitation flow. Consequences the next agent must not have to rediscover:
   `/app/onboarding`, `/app/settings/members` and `/invite/[token]`. A route group would
   have added a pathless directory level with no behaviour, so none was created. Task 17's
   marketing shell replaces the ROOT `app/page.tsx` (which still serves `/`).
-- **THE SHELL HAS THREE STATES, AND ONLY ONE OF THEM IS "NO ORGANIZATION".**
+- **THE SHELL HAS FOUR STATES, AND ONLY ONE OF THEM IS "NO ORGANIZATION".**
   (1) ZERO memberships -> the onboarding screen, rendered INSTEAD of the shell.
-  (2) A membership but NO active organization -> the PICKER, not onboarding: the user
-  belongs to several organizations and has not chosen one, OR the `cc_active_org` cookie
-  names an organization they have left. The house rule is that a stale cookie does NOT
-  fall back to another tenant - the choice died, so the shell asks again. Rendering
-  ONBOARDING there would offer to create a second organization to a user who already
-  has one. (3) An active organization -> the shell.
+  (2) MEMBERSHIPS, BUT ALL OF THEM HIDDEN -> the "your access is not active" notice,
+  NOT onboarding. A member of a SUSPENDED tenant, and a member whose own membership is
+  suspended, see NO membership rows - `organization_memberships_select`'s row filter is
+  `private.is_member(organization_id)`, which requires an ACTIVE membership in an ACTIVE
+  organization - so an empty membership list does NOT mean "you belong to nothing".
+  (This state did not exist when the section was first written: the shell then answered
+  an empty list with the onboarding screen, and so offered to create a SECOND tenant to a
+  member the database was hiding. `public.has_any_membership()` now answers the question
+  RLS cannot, because a definer sees the hidden rows.)
+  (3) SEVERAL active memberships and no choice -> the PICKER: the user has not chosen
+  one, OR the `cc_active_org` cookie names an organization they have left. The house
+  rule is that a stale cookie does NOT fall back to another tenant - the choice died, so
+  the shell asks again.
+  (4) An active organization -> the shell.
 - **THE PLAN'S "CALL `requireActiveOrg()`" IS WRONG AS WRITTEN, AND THE CODE USES
   `getActiveOrg()`.** `requireActiveOrg()` THROWS when there is no active organization,
   so it cannot be the thing whose null result routes to onboarding. The brief settles
@@ -692,12 +701,21 @@ invitation flow. Consequences the next agent must not have to rediscover:
     passing the bare stem instead of the file name broke
     `tests/integration/tenancy-schema.test.ts`, which asserts the history names every
     migration file exactly once).
-- **THE PUBLIC RPC SURFACE NOW HAS SEVEN FUNCTIONS**, and
+- **THE PUBLIC RPC SURFACE NOW HAS EIGHT FUNCTIONS** (it had seven when this line was
+  written; `has_any_membership` was added by `20261014001840`), and
   `tests/integration/public-rpc-privileges.test.ts` pins the list: `accept_invitation`,
   `can`, `create_organization_with_owner`, `delete_organization`, `export_patients`,
-  `grantable_roles`, `write_audit`. `private.can_assign_role` is POLICY-referenced (the
-  invitations INSERT policy calls it), so it must stay executable by `authenticated` -
-  revoking it would make every invitation insert INVISIBLE rather than denied.
+  `grantable_roles`, `has_any_membership`, `write_audit`. `private.can_assign_role` and
+  `private.assignment_target_is_member` are POLICY-referenced, so they must stay
+  executable by `authenticated` - revoking either would make an assignment or an
+  invitation write INVISIBLE rather than denied.
+- **LOGIN DOES NOT CARRY A `next`, AND THAT IS A KNOWN LIMITATION.** The sign-in action
+  always redirects to `/app/dashboard`, so an INVITED user - who has just been invited
+  and has no organization yet - lands on the dashboard, sees the onboarding screen (or
+  the suspended notice), and has NO ROUTE BACK to the pending invitation. The
+  invitation link still works - it is a capability, and the invitee opens it directly -
+  but the product does not carry the user from the sign-in page to it. A `next`
+  parameter, matched against an allow-list, is the fix and it is a later task.
 - **THE E2E CLEANUP NOW VERIFIES ITSELF.** `tests/helpers/e2e-cleanup.ts` deletes the
   children before the parents, deletes the audit rows (which have NO foreign keys) and
   the creation ledger (which has none either), and then RE-COUNTS what it removed and
@@ -803,8 +821,13 @@ around it. All of it is fixed; the facts a later agent must not have to rediscov
   organization and requires the clinic to be in it, and the dashboard's
   active-clinic lookup is scoped the same way. MEASURED by the E2E spec, which puts
   the other tenant's clinic into the control by hand and watches the refusal.
-- **THE ONBOARDING ACTION NOW MAPS `23514`**, the five-organizations-per-user cap, to
-  a sentence instead of a generic 500.
+- **THE ONBOARDING ACTION MAPS THE CAP'S OWN SQLSTATE, `53400`**
+  (`configuration_limit_exceeded`), not `23514`. The cap is five organizations per user
+  per 24-hour window, and `23514` is `check_violation` - a CLASS that every other
+  check violation in the database shares, so mapping it would have reported all of them
+  as the cap. `23514` still has a mapping, and it is honest about being a class. (This
+  line said `23514` when it was written; the cap was given its own code in
+  `20261014001800`.)
 - **THE TOKEN IS STILL IN THE URL, AND THAT IS A RECORDED RESIDUAL.** The invite page
   sends `Referrer-Policy: no-referrer` so the token does not leak to anything the page
   links to, but the URL is the plan's contract (`/invite/<token>`), so the token is
@@ -854,6 +877,11 @@ org, self, owner_role` - and become the tenant's owner, with `settings.manage`,
 - **`private.current_org_ids` IS NO LONGER A THIRD COPY OF THE MEMBERSHIP RULE.** It
   asks `private.is_member_for` for each organization now, so `is_member_for` owns the
   membership rule and the set version and the boolean version cannot disagree.
+  **SUPERSEDED BY `20261014001840`, WHICH ALSO FIXED `private.clinic_ids`** - it
+  re-derived the same rule in its `mine` CTE, so the rule had TWO copies and this
+  section's claim that it had one was FALSE for `clinic_ids`. The unit assertion was
+  pinning the duplicate, which made the duplication a requirement rather than an
+  accident. `clinic_ids` asks `is_member_for` now too.
 - **A CLAIM IS NOT A PROVEN ADDRESS.** The acceptance now requires the ACCEPTOR's
   ACCOUNT to be confirmed (`auth.users.email_confirmed_at is not null`) and to carry
   the invitation's address (`auth.users.email = the invitation's address`), and it
@@ -899,3 +927,59 @@ onboarding-rpc.test.ts` calls the public RPC with `p_currency`/`p_locale` and re
   every grant path, the acceptance that proves the address, the creation cap's own
   SQLSTATE, and the restoration of the pre-staging clause. All applied; the history
   now has 54 rows.
+
+## Task 16 review, round 3 : the inviter is the caller, the helpers' privileges are MEASURED, and the shell tells "hidden" from "absent"
+
+The third Task 16 review found no blocker - Task 16 is judged done - but it left five
+gaps and some false records. All of it is closed.
+
+- **THE CEILING'S SUBJECT WAS A COLUMN THE CALLER SUPPLIED.**
+  `private.accept_invitation` judges the ceiling for `invited_by`, and nothing
+  constrained that column. No escalation was found - the `role_id` is still bounded by
+  the CALLER's own ceiling at write time, and widening a role's permissions needs
+  `settings.manage` - but two ceilings that can diverge is not a thing to leave in
+  place. `20261014001820` adds `and invited_by = (select auth.uid())` to both
+  invitations policies, so the ceiling at redemption is judged for the person who
+  actually issued the invitation.
+- **`private.assignment_target_is_member` WAS EXECUTE-able BY PUBLIC AND ANON.**
+  MEASURED live before the fix: `anon_exec=true, pub_exec=true`. It answers "is user X
+  an active member of organization Y" - the shape that was ruled unreachable when the
+  `*_for` helpers were revoked - and it is a SECURITY DEFINER, so it reads the
+  memberships table as postgres. What contained it was `db_schemas = public`, which is
+  a CONFIGURATION SETTING and not a boundary. `20261014001830` revokes it from PUBLIC
+  and ANON and grants it to `authenticated` explicitly - it is called by two policies,
+  and a policy's expression is evaluated as the QUERYING role, so revoking it from
+  `authenticated` would make every assignment write INVISIBLE rather than denied.
+- **`private.can_grant` NOW HAS NO CALLERS, AND ITS EXECUTE IS REVOKED.** Since
+  `20261014001780` every policy that grants a role calls `can_assign_role`, which is
+  the subset rule AND the owner-only clause. `can_grant` is the SUBSET rule alone - the
+  looser half - and it was executable by every signed-in role. A looser rule that is
+  callable is a trap: the next policy to call it would enforce half the ceiling, which
+  is exactly the hole the first review found. `20261014001830` revokes it from
+  `authenticated` as well, and the catalogue test now pins that.
+- **THE `POLICY_REFERENCED` INVENTORY IS NOW DERIVED FROM THE POLICIES, NOT HAND-KEPT.**
+  The list had drifted in BOTH directions: `can_grant` was in it after it stopped being
+  called, and `assignment_target_is_member` was MISSING although two policies call it.
+  So the EXECUTE of either could have been revoked and every assignment or invitation
+  write would have become invisible with no test failing.
+  `tests/integration/public-rpc-privileges.test.ts` now derives the set from
+  `pg_policies` and compares it with the list in both directions, and a new test pins
+  the private helpers' EXECUTE to exactly the roles that need it.
+- **`private.clinic_ids` RE-DERIVED THE MEMBERSHIP RULE, AND THE UNIT ASSERTION PINNED
+  THE DUPLICATE.** Its `mine` CTE asked for "an active membership in an active
+  organization" itself, while `private.is_member_for` owns exactly that rule - so the
+  rule had two copies, and the test enforced the duplication. `20261014001840` makes
+  `clinic_ids` ask `is_member_for`, and the unit assertion now pins the delegation and
+  asserts that none of the three re-derives the rule.
+- **THE SHELL COULD NOT TELL "NO MEMBERSHIP" FROM "A HIDDEN MEMBERSHIP".**
+  `organization_memberships_select`'s row filter is `private.is_member(organization_id)`,
+  so a member of a suspended tenant - and a member whose own membership is suspended -
+  see no membership rows at all. The shell read the empty list as "you belong to
+  nothing" and rendered the ONBOARDING screen, which OFFERED to create a second tenant
+  to a member the database was hiding. `public.has_any_membership()` (a definer, so it
+  sees the rows the policies hide, and it answers about the CALLER only) now tells the
+  two apart, and the shell's fourth state says "your access is not active" instead of
+  offering tenant creation.
+- **THE NEW MIGRATIONS ARE `01820`, `01830` AND `01840`** - the inviter is the caller,
+  the helpers' privileges, and the one membership rule with the shell's new state. All
+  applied; the history now has 57 rows.

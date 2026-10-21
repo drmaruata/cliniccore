@@ -1555,6 +1555,55 @@ dbDescribe("the role editor's clear-all button", () => {
   });
 });
 
+dbDescribe("the shell can tell 'no membership' from 'a hidden membership'", () => {
+  it("hides a suspended membership from its owner, and says it is there", async () => {
+    // The memberships table's row filter is `private.is_member(organization_id)`, and
+    // `is_member` requires an ACTIVE membership in an ACTIVE organization. So a
+    // suspended membership - and a membership of a suspended tenant - is filtered out
+    // before it reaches its owner.
+    //
+    // That made the shell's first branch wrong: an empty membership list reads as
+    // "you belong to nothing", and the shell answered that with the ONBOARDING screen,
+    // which offers to create an organization to a member the database is hiding.
+    //
+    // `public.has_any_membership()` answers the question RLS cannot - it is a
+    // definer, so it sees the hidden rows - and it answers about the CALLER only, so
+    // it is not an oracle about anybody else.
+    const session = await stage();
+    try {
+      await session.resetRole();
+      await session.query(
+        `update public.organization_memberships set status = 'suspended'
+          where organization_id = $1 and user_id = $2`,
+        [ORG_A, ALICE],
+      );
+
+      await become(session, ALICE);
+      // The row is invisible to her.
+      const visible = await session.query<{ n: string }>(
+        `select count(*)::text as n from public.organization_memberships where user_id = $1`,
+        [ALICE],
+      );
+      expect(Number(visible[0]?.n)).toBe(0);
+
+      // And the database says she does have one.
+      const any = await session.query<{ any: boolean }>(
+        `select public.has_any_membership() as any`,
+      );
+      expect(any[0]?.any).toBe(true);
+
+      // A user with no membership at all is told the truth.
+      await become(session, OPERATOR);
+      const none = await session.query<{ any: boolean }>(
+        `select public.has_any_membership() as any`,
+      );
+      expect(none[0]?.any).toBe(false);
+    } finally {
+      await session.rollback();
+    }
+  });
+});
+
 dbDescribe("private helpers are not oracles", () => {
   it("refuses a direct call to role_in_use, which answers for roles you cannot see", async () => {
     // role_in_use took a role_id and returned a boolean about ANY role, so a member
@@ -1624,6 +1673,39 @@ dbDescribe("the invitation grant ceiling", () => {
     ]);
     await session.query("set local role authenticated");
   }
+
+  it("refuses an invitation whose inviter is somebody else", async () => {
+    // THE INVITER IS THE CALLER. `private.accept_invitation` judges the grant ceiling
+    // for `invited_by` - the person who issued the invitation - so a column the
+    // caller supplies would make the SUBJECT of the ceiling attacker-chosen. The
+    // write-time ceiling still bounds the role, so this was not an escalation; but
+    // two ceilings that can diverge is not a thing to leave in place.
+    const session = await stage();
+    try {
+      await become(session, FRANK);
+      // FRANK names DAVE as the inviter. FRANK holds staff.manage, and the role
+      // named is one he may grant, so every other clause passes - and the policy
+      // refuses because the inviter is not the caller.
+      await expectRejection(
+        session,
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'someone@example.test', $2, 'hash-inviter', $3, now() + interval '1 day')`,
+        [ORG_A, ROLE_PARTIAL, DAVE],
+        /row-level security/i,
+      );
+
+      // Positive control: the same invitation, issued by the caller, is accepted.
+      const permitted = await session.query<{ id: string }>(
+        `insert into public.invitations (organization_id, email, role_id, token_hash, invited_by, expires_at)
+         values ($1, 'someone@example.test', $2, 'hash-inviter-ok', $3, now() + interval '1 day')
+         returning id`,
+        [ORG_A, ROLE_PARTIAL, FRANK],
+      );
+      expect(permitted).toHaveLength(1);
+    } finally {
+      await session.rollback();
+    }
+  });
 
   it("refuses an invitation naming a role the inviter may not grant", async () => {
     const session = await stage();

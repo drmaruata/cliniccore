@@ -142,6 +142,36 @@ export async function requireActiveOrg(): Promise<ActiveOrg> {
 }
 
 /**
+ * Whether the user has ANY membership, in any state.
+ *
+ * WHY THE SHELL NEEDS THIS. `organization_memberships_select`'s row filter is
+ * `private.is_member(organization_id)`, and `is_member` requires an ACTIVE membership
+ * in an ACTIVE organization. So a member of a suspended tenant, and a member whose own
+ * membership is suspended, see NO membership rows at all - the row is filtered out
+ * before it reaches them. An empty membership list therefore does NOT mean "you belong
+ * to nothing": it means "you belong to nothing you can see".
+ *
+ * That difference matters because the shell's first branch is the ONBOARDING screen -
+ * "create your organization" - and offering it to a member of a suspended tenant is
+ * offering a second tenant to somebody the database is hiding.
+ *
+ * WHY IT IS NOT AN ORACLE. It answers about the CALLER only, and it answers a boolean.
+ * A definer sees the rows the policies hide, and this one reports only whether the
+ * caller has any of them.
+ */
+export async function hasAnyMembership(): Promise<boolean> {
+  const supabase = await createServerClient();
+  const { data, error } = await supabase.rpc("has_any_membership");
+  if (error) {
+    // The house pattern for an advisory helper: an unreachable answer is not an
+    // answer. The shell then falls back to the onboarding screen, which is the
+    // behaviour that existed before this question could be asked.
+    return false;
+  }
+  return data === true;
+}
+
+/**
  * The organizations the given user may act in.
  *
  * WHY A MEMBERSHIP LOOKUP AND NOT AN ORGANIZATION LOOKUP. `organizations` has a SELECT

@@ -4026,3 +4026,96 @@ that was running, and the difference is silent.
 project after the runs: 0 organizations, 0 audit logs, 0 auth users, 0 unconfirmed
 users, 0 invitations, 0 memberships, 0 assignments, 0 clinics, 1 role, and the
 `tenant_creation_events` ledger back at its 29 pre-existing rows.
+
+## Task 16 - the third review: the inviter is the caller, the helpers' privileges, and the shell's fourth state
+
+The third Task 16 review found NO BLOCKER - Task 16 is judged done - and left five gaps
+and some false records.
+
+### THE GAPS, AND WHAT EACH ONE WAS
+
+**1. THE CEILING'S SUBJECT WAS A COLUMN THE CALLER SUPPLIED.**
+`private.accept_invitation` judges the grant ceiling for `invited_by`, and nothing
+constrained that column, so the SUBJECT of the ceiling was attacker-chosen. No
+escalation was found - the `role_id` is still bounded by the CALLER's own ceiling at
+write time, and widening a role's permissions needs `settings.manage` - but two
+ceilings that can diverge is not a thing to leave in place: if a role's permissions
+change between the write and the redemption, the ceiling judged for the wrong subject
+is the ceiling that decides. `20261014001820` adds
+`and invited_by = (select auth.uid())` to both invitations policies.
+
+**2. `private.assignment_target_is_member` WAS EXECUTE-able BY PUBLIC AND ANON.**
+MEASURED live before the fix: `anon_exec=true, pub_exec=true`. It answers "is user X an
+active member of organization Y" - the exact shape that was ruled unreachable when the
+`*_for` helpers were revoked - and it is a SECURITY DEFINER, so it reads the
+memberships table as postgres. What contained it was `db_schemas = public`, which is
+a CONFIGURATION SETTING and not a boundary. `20261014001830` revokes it from PUBLIC and
+ANON and grants it to `authenticated` explicitly: it is called by two policies, and a
+policy's expression is evaluated as the QUERYING role, so revoking it from
+`authenticated` would make every assignment write INVISIBLE rather than denied.
+
+**3. THE `POLICY_REFERENCED` INVENTORY WAS STALE IN BOTH DIRECTIONS.** It still
+listed `can_grant` after `20261014001780` stopped calling it, and it omitted
+`assignment_target_is_member` although two policies have called it since
+`20261014001810`. So the EXECUTE of either could have been revoked and every
+assignment or invitation write would have become invisible with no test failing. The
+catalogue test now DERIVES the set from `pg_policies` and compares it with the list in
+both directions, and a new test pins the private helpers' EXECUTE to exactly the roles
+that need it.
+
+**4. THE MEMBERSHIP RULE STILL HAD A SECOND COPY.** `private.clinic_ids` re-derived
+"an active membership in an active organization" in its `mine` CTE while
+`private.is_member_for` owns exactly that rule - and the unit assertion PINNED the
+duplicate, so the test enforced the duplication. `20261014001840` makes `clinic_ids`
+ask `is_member_for`, and the unit assertion now pins the delegation and asserts that
+none of `is_member`, `current_org_ids` and `clinic_ids` re-derives the rule.
+
+**5. THE SHELL'S STATES WERE NOT WHAT THE RECORD SAID.**
+`organization_memberships_select`'s USING is `private.is_member(organization_id)`,
+which requires an ACTIVE membership in an ACTIVE organization. So a member of a
+suspended tenant - and a member whose own membership is suspended - see NO membership
+rows at all, and `listMemberOrgs` returned an empty list for them. The shell read the
+empty list as "you belong to nothing" and rendered the ONBOARDING screen, so a member
+of a suspended tenant was being OFFERED THE CREATION OF A SECOND TENANT.
+
+`public.has_any_membership()` now answers the question RLS cannot - does the CALLER
+have any membership row at all, in any state - and it answers about the caller only,
+so it is not an oracle about anybody else. The shell has four states it can now tell
+apart: no membership (onboarding), memberships but all hidden ("your access is not
+active"), several active memberships with no choice (the picker), and an active
+organization (the shell).
+
+### THE NITS, AND THE FALSE RECORDS
+
+- **`private.can_grant` HAS NO CALLERS, AND ITS EXECUTE IS REVOKED.** Since
+  `20261014001780` every policy that grants a role calls `can_assign_role`, which is
+  the subset rule AND the owner-only clause. `can_grant` is the SUBSET rule alone - the
+  looser half - and it was executable by every signed-in role: a trap, because the next
+  policy to call it would enforce half the ceiling, which is exactly the hole the
+  first review found. `20261014001830` revokes it from `authenticated` too, and the
+  catalogue test pins that.
+- **THE CAP'S SQLSTATE CORRECTION.** The round-1 record said the cap is `23514`. It is
+  `53400` (`configuration_limit_exceeded`) since `20261014001800`; `23514` is
+  `check_violation`, a CLASS shared with every other check violation, and mapping it
+  would have reported all of them as the cap.
+- **THE MEMBERSHIP RULE'S HOME, CORRECTED.** The round-2 record said the membership
+  rule lives in `is_member_for`. It did not - `clinic_ids` still re-derived it - and it
+  does now.
+- **THE SHELL'S STATES, CORRECTED.** The "Task 16+" record said a member with a
+  membership but no active organization sees the PICKER. They saw the ONBOARDING
+  screen, because their membership row was hidden by RLS; they now see "your access is
+  not active".
+- **LOGIN CARRIES NO `next`, AND THAT IS A KNOWN LIMITATION.** The sign-in action
+  always redirects to `/app/dashboard`, so an invited user with no organization lands
+  on the onboarding screen and has NO ROUTE BACK to the pending invitation. The
+  invitation link still works - it is a capability and the invitee opens it directly -
+  but the product does not carry the user from the sign-in page to it.
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` and
+`npm run format:check` all exit 0. The E2E suite passes on chromium, including the new
+"suspended member is not offered a new organization" case. The live project after the
+runs: 0 organizations, 0 audit logs, 0 auth users, 0 invitations, 0 memberships, 0
+assignments, 0 clinics, 1 role, and the `tenant_creation_events` ledger back at its 29
+pre-existing rows.

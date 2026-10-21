@@ -121,23 +121,32 @@ describe("authorization helper functions", () => {
     // tenant left can() and clinic_ids() returning exactly what they returned
     // before - which undercuts platform.tenants.manage's own description.
     //
-    // `is_member` is a DELEGATION now: the membership rule lives in
-    // `is_member_for`, which takes the user as a parameter, and the wrapper supplies
-    // `auth.uid()`. `current_org_ids` is a delegation too - the SET version asks
-    // `is_member_for` for each organization rather than re-deriving the rule. So the
-    // rule is read where it lives, and the delegations are pinned separately, so
-    // neither can be re-implemented.
-    for (const name of ["is_member_for", "clinic_ids"]) {
-      expect(latestDefinition(name), `${name} must honour organizations.status`).toContain(
-        "o.status = 'active'",
-      );
-    }
+    // THE MEMBERSHIP RULE - "an active membership in an active organization" - lives
+    // in `private.is_member_for` and NOWHERE ELSE. `is_member`, `current_org_ids` and
+    // `clinic_ids` all ASK it, so the three of them cannot drift apart: a copy of the
+    // rule in any one of them is a second version of the question, and the version
+    // that drifts is the one nobody looks at.
+    //
+    // `clinic_ids` used to re-derive it - its `mine` CTE joined memberships to
+    // organizations and checked both statuses - and the unit assertion PINNED the
+    // duplicate, which made the duplication a requirement rather than an accident.
+    expect(latestDefinition("is_member_for")).toContain("o.status = 'active'");
     expect(latestDefinition("is_member")).toContain(
       "private.is_member_for((select auth.uid()), p_org_id)",
     );
     expect(latestDefinition("current_org_ids")).toContain(
       "private.is_member_for((select auth.uid()), o.id)",
     );
+    expect(latestDefinition("clinic_ids")).toContain(
+      "private.is_member_for((select auth.uid()), p_org_id)",
+    );
+    // And none of them re-derives it.
+    for (const name of ["is_member", "current_org_ids", "clinic_ids"]) {
+      expect(
+        latestDefinition(name),
+        `${name} must not re-derive the membership rule`,
+      ).not.toContain("m.status = 'active'");
+    }
   });
 });
 

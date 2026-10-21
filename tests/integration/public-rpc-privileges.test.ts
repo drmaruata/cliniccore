@@ -23,12 +23,27 @@ import { expect, it } from "vitest";
 
 import { beginSession, dbDescribe } from "./helpers/database";
 
-/** Functions an RLS policy expression calls, evaluated as the querying role. */
+/**
+ * Functions an RLS policy expression calls, evaluated as the querying role.
+ *
+ * THE LIST IS AN INVENTORY, AND A TEST PROVES IT IS COMPLETE. A policy's expression is
+ * evaluated as the QUERYING role, so revoking the EXECUTE of a function a policy
+ * calls does not DENY the write - it makes the row INVISIBLE, silently, and the
+ * operation simply stops happening.
+ *
+ * The list used to be a hand-kept list, and it had drifted in BOTH directions:
+ * `can_grant` was in it after 20261014001780 stopped calling it, and
+ * `can_assign_role` and `assignment_target_is_member` were MISSING although
+ * policies have called them since 20261014001760 and 20261014001810. So the EXECUTE of
+ * either of those could have been revoked and every assignment or invitation write
+ * would have become invisible with no test failing. The test below derives the set
+ * from the policies themselves and compares it with this list, in both directions.
+ */
 const POLICY_REFERENCED = [
   "assigned_to_self",
+  "assignment_target_is_member",
   "can",
   "can_assign_role",
-  "can_grant",
   "clinic_ids",
   "current_org_ids",
   "is_member",
@@ -38,6 +53,27 @@ const POLICY_REFERENCED = [
   "storage_path_is_safe",
 ];
 
+/**
+ * The helpers that answer about OTHER users, and the user-parameterised cores.
+ *
+ * `assignment_target_is_member` answers "is user X an active member of organization
+ * Y", which is the shape that was ruled unreachable when the `*_for` helpers were
+ * revoked in 20261014001750. It is a SECURITY DEFINER and it reads the memberships
+ * table as postgres. It has to stay executable by `authenticated` - two policies call
+ * it - but it must not be callable by anon, and it must not carry the DEFAULT grant to
+ * PUBLIC, which is what 20261014001830 took away.
+ *
+ * The `*_for` cores answer about other users too, and NOTHING calls them except the
+ * definer functions that own them, so they are executable by nobody.
+ */
+const CALLER_SCOPED_HELPERS = ["assignment_target_is_member"];
+const USER_PARAMETERISED_CORES = [
+  "is_member_for",
+  "can_for",
+  "can_grant_for",
+  "can_assign_role_for",
+];
+
 const PUBLIC_WRAPPERS = [
   "accept_invitation",
   "can",
@@ -45,6 +81,7 @@ const PUBLIC_WRAPPERS = [
   "delete_organization",
   "export_patients",
   "grantable_roles",
+  "has_any_membership",
   "write_audit",
 ];
 
@@ -68,7 +105,16 @@ const DELEGATING_WRAPPERS = [
 ];
 
 /** No policy, no trigger, and called by nothing. */
-const HARDENED = ["write_audit", "next_sequence_value", "create_organization_with_owner"];
+const HARDENED = [
+  "write_audit",
+  "next_sequence_value",
+  "create_organization_with_owner",
+  // The subset rule on its own - the LOOSER half of the ceiling. Since 20261014001780 no
+  // policy calls it: the assignment policies and the invitation policies all call
+  // `can_assign_role`, which is the subset rule AND the owner-only clause. A looser
+  // rule that is callable is a trap, so its EXECUTE was revoked in 20261014001830.
+  "can_grant",
+];
 
 dbDescribe("the public RPC surface", () => {
   it("exposes only our own functions in public, and nothing else", async () => {
@@ -147,6 +193,86 @@ dbDescribe("the public RPC surface", () => {
           row.auth,
           `private.${row.fn} must not be directly callable by a signed-in role - it is reachable only through its public wrapper`,
         ).toBe(false);
+      }
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("keeps the policy-referenced inventory in step with the policies themselves", async () => {
+    // THE LIST IS DERIVED FROM THE POLICIES, NOT HAND-KEPT. A stale list is a list
+    // that will not catch the next thing: `can_grant` sat in this list after
+    // 20261014001780 stopped calling it, and `assignment_target_is_member` was missing
+    // although two policies have called it since 20261014001810. Revoking the EXECUTE of
+    // either of those would have made an assignment or invitation write INVISIBLE
+    // rather than denied - a silent total failure - and no test would have failed.
+    //
+    // So the set is derived from `pg_policies` and compared with the list, in BOTH
+    // directions: a function a policy calls but the list omits fails here, and a
+    // function the list names but no policy calls fails here too.
+    const session = await beginSession();
+    try {
+      const rows = await session.query<{ qual: string | null; with_check: string | null }>(
+        `select qual, with_check from pg_catalog.pg_policies
+          where schemaname in ('public', 'storage')`,
+      );
+      const referenced = new Set<string>();
+      for (const row of rows) {
+        for (const text of [row.qual, row.with_check]) {
+          if (text === null) continue;
+          for (const match of text.matchAll(/private\.([a-z_0-9]+)\(/g)) {
+            referenced.add(match[1] as string);
+          }
+        }
+      }
+      expect([...referenced].sort()).toEqual([...POLICY_REFERENCED].sort());
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("keeps the private helpers' EXECUTE to exactly the roles that need it", async () => {
+    // A helper that answers about OTHER users is a capability, and the roles that may
+    // call it are a security decision that has to be asserted rather than assumed.
+    //
+    // `assignment_target_is_member` is called by two policies, and a policy's expression
+    // is evaluated as the QUERYING role - so `authenticated` must keep EXECUTE on it,
+    // and revoking it would make every assignment write INVISIBLE. But it must not be
+    // callable by anon, and it must not carry the DEFAULT grant to PUBLIC, which is
+    // what 20261014001830 took away: it answers "is user X an active member of
+    // organization Y" for ANY user and ANY organization.
+    //
+    // The `*_for` cores answer about other users too, and nothing calls them except the
+    // definer functions that own them, so they are executable by nobody at all.
+    const session = await beginSession();
+    try {
+      const rows = await session.query<{
+        fn: string;
+        auth: boolean;
+        anon: boolean;
+        pub: boolean;
+      }>(
+        `select p.proname as fn,
+                has_function_privilege('authenticated', p.oid, 'execute') as auth,
+                has_function_privilege('anon', p.oid, 'execute') as anon,
+                has_function_privilege('public', p.oid, 'execute') as pub
+           from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+          where n.nspname = 'private'
+            and p.proname = any($1::text[])
+          order by p.proname`,
+        [[...CALLER_SCOPED_HELPERS, ...USER_PARAMETERISED_CORES]],
+      );
+      expect(rows.length).toBe(CALLER_SCOPED_HELPERS.length + USER_PARAMETERISED_CORES.length);
+      for (const row of rows) {
+        const callerScoped = CALLER_SCOPED_HELPERS.includes(row.fn);
+        expect(row.anon, `private.${row.fn} must not be callable by anon`).toBe(false);
+        expect(row.pub, `private.${row.fn} must not carry the PUBLIC grant`).toBe(false);
+        expect(
+          row.auth,
+          callerScoped
+            ? `private.${row.fn} is called by a policy and must stay executable by authenticated`
+            : `private.${row.fn} answers about other users and must not be callable at all`,
+        ).toBe(callerScoped);
       }
     } finally {
       await session.rollback();

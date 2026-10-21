@@ -179,6 +179,35 @@ test.describe("Onboarding", () => {
     await expect(page.getByText("Working in all clinics")).toBeVisible();
   });
 
+  test("a member whose access is suspended is not offered a new organization", async ({ page }) => {
+    // THE SHELL'S THIRD STATE. The memberships table hides a suspended membership from
+    // its owner, so the shell's "you belong to nothing" branch would have offered
+    // the ONBOARDING screen - "create your organization" - to a member the database
+    // is hiding. The shell asks the database instead, and says what is true.
+    const user = await createProbeUser("suspended");
+    expect(await signIn(page, user.email, PASSWORD)).toBe("signed_in");
+
+    const slug = `probe-suspended-${Date.now()}-${process.pid}`;
+    probe.slugs.push(slug);
+    await page.goto("/app/onboarding");
+    await page.fill('input[id="name"]', "Probe Suspended Clinic");
+    await page.fill('input[id="slug"]', slug);
+    await page.getByRole("button", { name: "Create organization" }).click();
+    await expect(page).toHaveURL(/\/app\/dashboard$/);
+
+    // Suspend the member's own membership, the way an administrator would.
+    const { error } = await admin()
+      .from("organization_memberships")
+      .update({ status: "suspended" })
+      .eq("user_id", user.id);
+    if (error) throw new Error(`could not suspend the membership: ${error.message}`);
+
+    await page.goto("/app");
+    await expect(page.getByRole("heading", { name: "Your access is not active" })).toBeVisible();
+    // And NOT the offer to create a second organization.
+    await expect(page.getByRole("heading", { name: "Create your organization" })).toHaveCount(0);
+  });
+
   test("the shell's sign-out control ends the session", async ({ page }) => {
     // The shell's own control, and the one control Task 15 had to fake - Task 15
     // cleared the cookies by hand because there was no button to click. The shell only
