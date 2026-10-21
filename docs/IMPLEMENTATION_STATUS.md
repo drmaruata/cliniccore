@@ -3912,3 +3912,117 @@ tests (including the clinic-scope refusal) and 2 invitation tests. The live proj
 after the runs: 0 organizations, 0 audit logs, 0 auth users, 0 invitations, 0
 memberships, 0 assignments, 0 clinics, 1 role, and the `tenant_creation_events`
 ledger back at its 29 pre-existing rows.
+
+## Task 16 - the second review: ONE ceiling on every path, and a PROVEN address
+
+### THE BLOCKER: THERE WERE TWO CEILINGS, AND THEY CONTRADICTED EACH OTHER
+
+The ceiling was in the invitations INSERT and UPDATE policies. The DIRECT assignment
+path - `user_role_assignments_write` and `user_role_assignments_update` - still called
+`private.can_grant`, which is the SUBSET rule alone: every permission of the target
+role must already be held by the granter.
+
+The subset rule cannot tell an `organization_admin` from an `organization_owner`,
+because they carry BYTE-IDENTICAL permission sets - MEASURED by migration 01240 itself,
+in the live database. So the direct path was an escalation in one statement:
+
+    insert into public.user_role_assignments (organization_id, user_id, role_id)
+    select <org>, <self>, <the organization_owner role>
+
+and the granter became the tenant's owner - with `settings.manage` (which rewrites the
+slug, the currency and the timezone), `patients.export` and `subscription.manage` - and
+could then mint owners through the invitation path that the first review closed.
+
+`20261014001780` replaces both `with_check` clauses with
+`private.can_assign_role(organization_id, role_id)`, which is the subset rule AND the
+owner-only clause. The SUBSET rule is unchanged - it is the first half of
+`can_assign_role` - and the two paths now answer to ONE ceiling.
+
+The test that pinned the wrong behaviour is gone. It used to assert that "the
+admin-creates-owner flow keeps working, which is why the ceiling is a subset"; that was
+the hole, stated as a requirement. It is now "refuses an administrator the owner role,
+and allows a real owner", with a real owner staged for the positive control.
+
+### THE GAP: THE OWNER CLAUSE HAD NO ISOLATING TEST
+
+Every refusal in the invitation block was explained by the SUBSET rule, so deleting
+the owner clause from `can_assign_role_for` left the suite green. The new tests make
+the clause observable on its own: a granter who holds the owner's whole permission set
+but is not the owner - DAVE in the security fixture - is refused `organization_owner`
+on BOTH paths, each beside a positive control that a real owner is allowed.
+
+**MEASURED, THE MUTATION IS VISIBLE.** Replacing `private.can_assign_role_for` with
+`select private.can_grant_for(p_user_id, p_org_id, p_role_id)` - which deletes the
+owner clause and leaves the subset rule - fails EXACTLY TWO tests: "refuses an
+administrator the owner role, and allows a real owner" and "refuses an invitation for
+the owner role whose inviter is not an owner", both with "expected a failure matching
+... but the statement succeeded", which IS the escalation succeeding. The function was
+restored byte-for-byte: `md5(prosrc)` is back to
+`4a1f397ab625e129670c2de99a77eaf0`.
+
+### THE GAPS
+
+- **A CLAIM IS NOT A PROVEN ADDRESS.** The acceptance compared the invitation's
+  address with `auth.jwt() ->> 'email'`, which is AUTHENTIC but not CONFIRMED - and
+  `app/(auth)/signup/actions.ts` signs a user in immediately when "Confirm email" is
+  off, which it is here. So anybody could register the invited address and redeem.
+  The acceptance now also asks the ACCOUNT's own row - `auth.users.email_confirmed_at
+is not null` and `auth.users.email = the invitation's address` - and FAILS CLOSED.
+  The claim check stays, because it binds the SESSION to the invitation; the account
+  check binds the ACCOUNT. The E2E probe account is now confirmed EXPLICITLY through
+  the admin API, and the invitation spec passing is the proof that it is confirmed.
+- **CURRENCY AND LOCALE ARE ASSERTED NOW.** The creation function applies them after
+  the tenant exists, and nothing read them back, so dropping the UPDATE left the
+  suite green. `tests/integration/onboarding-rpc.test.ts` calls the public RPC with
+  `p_currency`/`p_locale` and reads `organizations.currency` and
+  `organizations.locale` back.
+- **A SUSPENDED MEMBER'S REDEMPTION NO LONGER BURNS THE TOKEN.** The acceptance
+  reused any membership row and did not reactivate it, so a suspended member's
+  redemption created an inert assignment, set `accepted_at`, and left the membership
+  suspended: the invitation was spent and the member still locked out. The acceptance
+  now refuses a membership that is not `active`, and it refuses BEFORE the acceptance
+  stamp - so the invitation is still redeemable once the membership is active again.
+  It does not quietly reactivate a suspended member either.
+
+### THE NITS
+
+- **THE CREATION CAP HAS ITS OWN SQLSTATE.** The onboarding action mapped `23514` -
+  `check_violation`, a CLASS shared with every other check violation - to "you have
+  created five clinics in the last day". The cap now raises `53400`,
+  `configuration_limit_exceeded`, and its rule lives in
+  `private.creation_cap_reached()`, so the rule and the code that reports it are in
+  one place. `23514` still has a mapping, and it is honest about being a class.
+- **A CONCURRENT ACCEPTANCE LOSES CLEANLY.** The membership insert's unique
+  violation is caught inside the function and turned into the same refusal as a used
+  invitation; the action maps `23505` as a backstop.
+- **`invitations.accepted_at` IS NO LONGER WRITABLE.** It was, so a staff manager
+  could clear it and re-issue a redeemed invitation - and the raw token is the
+  credential. The UPDATE policy now refuses any change to an accepted invitation. The
+  decision: one invitation means one membership, and a redeemed invitation is spent.
+- **`private.current_org_ids` IS NO LONGER A THIRD COPY OF THE MEMBERSHIP RULE.** It
+  asks `private.is_member_for` for each organization, so the set version and the
+  boolean version cannot disagree.
+
+### A REGRESSION THE SUITE CAUGHT, AND THE LESSON
+
+`01780` wrote the assignment policies out from the version in `01240`, which is NOT
+the version that was effective: `01660` had recreated them with
+`private.assignment_target_is_member(organization_id, user_id)` - the closure of gap
+A3, which stops an assignment being pre-staged for an account that belongs to no
+organization. `01780` dropped it, and the suite caught it immediately: "A3: an
+assignment cannot be pre-staged for a user in no organization" failed with "expected a
+failure matching /row-level security|violates/ but the statement succeeded" - the
+policy had become PERMISSIVE, which is the direction that matters. The correction is
+`20261014001810`.
+
+The lesson, and it is general: **before recreating a policy, read the LAST definition
+of it, not an earlier one.** A policy recreated from an old file is not the policy
+that was running, and the difference is silent.
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint`, `npm run test` (842), `npm run build` and
+`npm run format:check` all exit 0. The E2E suite passes on chromium (12). The live
+project after the runs: 0 organizations, 0 audit logs, 0 auth users, 0 unconfirmed
+users, 0 invitations, 0 memberships, 0 assignments, 0 clinics, 1 role, and the
+`tenant_creation_events` ledger back at its 29 pre-existing rows.

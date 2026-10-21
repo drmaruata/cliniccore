@@ -42,6 +42,15 @@ async function createProbeUser(prefix: string): Promise<{ id: string; email: str
   if (error || !data.user) {
     throw new Error(`could not create the probe account: ${error?.message}`);
   }
+  // The acceptance proves the acceptor's address is a CONFIRMED account - a claim is
+  // authentic, but the address behind it need not be - so the confirmation is made
+  // explicit here rather than left to what createUser happens to do.
+  const { error: confirmError } = await admin().auth.admin.updateUserById(data.user.id, {
+    email_confirm: true,
+  });
+  if (confirmError) {
+    throw new Error(`could not confirm the probe account: ${confirmError.message}`);
+  }
   probe.userIds.push(data.user.id);
   return { id: data.user.id, email };
 }

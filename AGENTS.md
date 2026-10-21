@@ -40,17 +40,18 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`01770` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`01810` (extensions, core functions, identity/tenancy
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
   then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
   gates, `01230`'s role guard and `01240`'s grant ceiling, then `01300`'s storage buckets,
   `01400`/`01410`'s storage hardening and `01420`'s MIME allowlist and path guard, then the
   `01600`–`01710` public RPC wrappers and their corrections, then Task 16's `01720`
-  invitations, `01730` digest correction, `01740` migration-history name fix, and the
-  review fixes `01750` ceiling parameterisation, `01760` invitation ceiling and `01770`
-  currency and locale), all
-  applied — 50 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  invitations, `01730` digest correction, `01740` migration-history name fix, `01750` ceiling
+  parameterisation, `01760` invitation ceiling, `01770` currency and locale, and the round-2
+  fixes `01780` every grant path, `01790` the proven address, `01800` the creation cap's
+  SQLSTATE and `01810` the restored pre-staging clause), all
+  applied — 54 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
@@ -812,3 +813,89 @@ around it. All of it is fixed; the facts a later agent must not have to rediscov
 - **THE THREE NEW MIGRATIONS ARE `01750`, `01760` AND `01770`** - the ceiling
   parameterisation, the invitation ceiling and acceptance rewrite, and the currency
   and locale. All applied; the history now has 50 rows.
+
+## Task 16 review, round 2 : ONE ceiling on EVERY path, and a PROVEN address
+
+The second Task 16 review found that the ceiling was still two ceilings, that the
+owner clause had no isolating test, and that the email binding was to a claim rather
+than to a proven address. All of it is fixed.
+
+- **THERE WERE TWO CEILINGS, AND THEY CONTRADICTED EACH OTHER.** The invitation path
+  used `private.can_assign_role` - the SUBSET rule plus the owner-only clause - while
+  `user_role_assignments_write` and `user_role_assignments_update` used
+  `private.can_grant`, which is the SUBSET rule ALONE. And the subset rule cannot
+  tell an `organization_admin` from an `organization_owner`, because they carry
+  BYTE-IDENTICAL permission sets (MEASURED by migration 01240 itself). So an
+  administrator could run one statement -
+  `insert into public.user_role_assignments (organization_id, user_id, role_id) select
+org, self, owner_role` - and become the tenant's owner, with `settings.manage`,
+  `patients.export` and `subscription.manage`, and could then mint owners through
+  the invitation path. **Both paths now call `private.can_assign_role`**, so there is
+  ONE ceiling and the SUBSET rule still holds inside it.
+- **THE OWNER CLAUSE HAS AN ISOLATING TEST NOW.** A granter who holds the owner's
+  whole permission set but is not the owner - DAVE in the security fixture - is
+  refused `organization_owner` on the DIRECT path and on the INVITATION path, each
+  beside a positive control that a REAL owner is allowed. Every earlier refusal in
+  that block was explained by the subset rule, so deleting the owner clause left the
+  suite green.
+- **MEASURED, THE OWNER CLAUSE IS MUTATION-VISIBLE.** Replacing
+  `private.can_assign_role_for` with `select private.can_grant_for(...)` - which
+  deletes the owner clause and leaves the subset rule - fails EXACTLY TWO tests:
+  "refuses an administrator the owner role, and allows a real owner" and "refuses an
+  invitation for the owner role whose inviter is not an owner", both with "expected a
+  failure matching ... but the statement succeeded", which IS the escalation
+  succeeding. The function was restored byte-for-byte: `md5(prosrc)` is back to
+  `4a1f397ab625e129670c2de99a77eaf0`.
+- **THE CEILING IS NOW ONE RULE, AND `private.can_assign_role` IS A DELEGATION.** The
+  earlier claim that there was "still ONE copy of each rule" was FALSE of the ceiling:
+  `can_grant` (the subset rule) and `can_assign_role` (the subset rule plus the owner
+  clause) were two. Now `can_grant_for` owns the subset rule and
+  `can_assign_role_for` owns the ceiling, and the two public entry points delegate.
+- **`private.current_org_ids` IS NO LONGER A THIRD COPY OF THE MEMBERSHIP RULE.** It
+  asks `private.is_member_for` for each organization now, so `is_member_for` owns the
+  membership rule and the set version and the boolean version cannot disagree.
+- **A CLAIM IS NOT A PROVEN ADDRESS.** The acceptance now requires the ACCEPTOR's
+  ACCOUNT to be confirmed (`auth.users.email_confirmed_at is not null`) and to carry
+  the invitation's address (`auth.users.email = the invitation's address`), and it
+  FAILS CLOSED - no row, an unconfirmed address, or a different address are all a
+  refusal. The claim check stays, because it binds the SESSION to the invitation.
+  This matters because the signup action signs a user in immediately when "Confirm
+  email" is off, which it is here - so anybody could otherwise register the invited
+  address and redeem. The E2E probe account is now confirmed EXPLICITLY through the
+  admin API, and the invitation spec passing is the proof that the account is
+  confirmed.
+- **A SUSPENDED MEMBER'S REDEMPTION NO LONGER BURNS THE TOKEN.** The acceptance
+  refuses a membership whose status is not `active` - and it refuses BEFORE the
+  acceptance stamp, so the invitation is still redeemable once the membership is
+  active again. It does not quietly reactivate a suspended member either.
+- **THE CURRENCY AND THE LOCALE ARE ASSERTED.** `tests/integration/
+onboarding-rpc.test.ts` calls the public RPC with `p_currency`/`p_locale` and reads
+  `organizations.currency` and `organizations.locale` back, because the function
+  applies them AFTER the tenant exists and nothing else read them back.
+- **THE CREATION CAP HAS ITS OWN SQLSTATE, `53400`** (`configuration_limit_exceeded`),
+  because `23514` is `check_violation` - a CLASS, shared with every other check
+  violation in the database - and the onboarding action was reporting all of them as
+  "you have created five clinics in a day". The cap's rule now lives in
+  `private.creation_cap_reached()`, so the rule and the code that reports it are in
+  one place.
+- **AN ACCEPTED INVITATION IS IMMUTABLE.** `invitations.accepted_at` was writable, so
+  a staff manager could clear it and re-issue a redeemed invitation - and the raw
+  token is the credential. The UPDATE policy now refuses any change to an accepted
+  invitation.
+- **A CONCURRENT ACCEPTANCE LOSES CLEANLY.** The membership insert's unique violation
+  is caught inside the function and turned into the same refusal as a used
+  invitation, and the action maps `23505` as a backstop.
+- **RECREATING A POLICY FROM AN OLDER MIGRATION FILE LOSES CLAUSES.** `01780` wrote
+  the assignment policies out from `01240`, which is NOT the version that was
+  effective: `01660` had recreated them with
+  `private.assignment_target_is_member(organization_id, user_id)` - the closure of
+  gap A3, which stops an assignment being pre-staged for an account that belongs to
+  no organization. `01780` dropped it, and the suite caught it: "A3: an assignment
+  cannot be pre-staged for a user in no organization" failed with "expected a failure
+  ... but the statement succeeded" - the policy had become PERMISSIVE, which is the
+  direction that matters. The correction is `20261014001810`, and the lesson general:
+  **before recreating a policy, read the LAST definition of it, not an earlier one.**
+- **THE NEW MIGRATIONS ARE `01780`, `01790`, `01800` AND `01810`** - the ceiling on
+  every grant path, the acceptance that proves the address, the creation cap's own
+  SQLSTATE, and the restoration of the pre-staging clause. All applied; the history
+  now has 54 rows.

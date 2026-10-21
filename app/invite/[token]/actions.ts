@@ -63,6 +63,14 @@ export async function acceptInvitation(token: string): Promise<SafeResponse | nu
         ),
       );
     }
+    if (error.code === "23505") {
+      // A unique violation. The acceptance turns the race into a refusal itself, so
+      // this is the backstop for a collision the function did not catch - and the
+      // user is told what it means.
+      return toSafeResponse(
+        new ValidationError("That invitation has already been used.", "invitation_already_used"),
+      );
+    }
     if (error.code === "42501") {
       return toSafeResponse(
         new ForbiddenError("Sign in to accept an invitation.", "not_signed_in"),

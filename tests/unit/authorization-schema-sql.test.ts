@@ -123,15 +123,20 @@ describe("authorization helper functions", () => {
     //
     // `is_member` is a DELEGATION now: the membership rule lives in
     // `is_member_for`, which takes the user as a parameter, and the wrapper supplies
-    // `auth.uid()`. So the rule is read where it lives - and the delegation is
-    // pinned separately, so the rule cannot be re-implemented in the wrapper.
-    for (const name of ["current_org_ids", "is_member_for", "clinic_ids"]) {
+    // `auth.uid()`. `current_org_ids` is a delegation too - the SET version asks
+    // `is_member_for` for each organization rather than re-deriving the rule. So the
+    // rule is read where it lives, and the delegations are pinned separately, so
+    // neither can be re-implemented.
+    for (const name of ["is_member_for", "clinic_ids"]) {
       expect(latestDefinition(name), `${name} must honour organizations.status`).toContain(
         "o.status = 'active'",
       );
     }
     expect(latestDefinition("is_member")).toContain(
       "private.is_member_for((select auth.uid()), p_org_id)",
+    );
+    expect(latestDefinition("current_org_ids")).toContain(
+      "private.is_member_for((select auth.uid()), o.id)",
     );
   });
 });

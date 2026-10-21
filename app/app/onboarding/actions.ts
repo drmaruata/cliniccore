@@ -66,14 +66,24 @@ export async function createOrganization(
         ),
       );
     }
-    if (error.code === "23514") {
-      // The creation cap: five organizations per user in any 24-hour window. The
-      // database refuses the sixth, and the user deserves to be told that rather
-      // than shown a generic failure.
+    if (error.code === "53400") {
+      // The creation cap: five organizations per user in any 24-hour window. It has
+      // its OWN SQLSTATE (configuration_limit_exceeded), so this message is about what
+      // actually happened rather than about every check violation in the database.
       return toSafeResponse(
         new ValidationError(
           "You have created five clinics in the last day. Wait a while, or contact support.",
           "creation_cap_reached",
+        ),
+      );
+    }
+    if (error.code === "23514") {
+      // A check violation, which is a CLASS and not a cause: the database refused
+      // these details for some reason it did not name.
+      return toSafeResponse(
+        new ValidationError(
+          "The clinic details were refused. Check the name, the address and the time zone.",
+          "invalid_clinic_details",
         ),
       );
     }

@@ -117,6 +117,33 @@ dbDescribe("create_organization_with_owner", () => {
     }
   });
 
+  it("applies the tenant's currency and locale, and reads them back", async () => {
+    // The creation function applies the currency and the locale AFTER the tenant
+    // exists - the private creator's signature is fixed by the file that owns the
+    // generated role seed - so nothing reads them back unless a test does. A dropped
+    // UPDATE would leave the column defaults in place with every other test green,
+    // and a clinic that asked for USD would have been given INR.
+    const { session } = await actAsFreshUser();
+    try {
+      const created = await session.query<{ org: string }>(
+        `select public.create_organization_with_owner(
+           'Money Org', 'money-org', 'Money Clinic', 'Asia/Kolkata', 'USD', 'en-US'
+         ) as org`,
+      );
+      const orgId = created[0]?.org;
+      expect(orgId).toMatch(/^[0-9a-f-]{36}$/);
+
+      const tenant = await session.query<{ currency: string; locale: string }>(
+        `select currency::text as currency, locale from public.organizations where id = $1`,
+        [orgId],
+      );
+      expect(tenant[0]?.currency).toBe("USD");
+      expect(tenant[0]?.locale).toBe("en-US");
+    } finally {
+      await session.rollback();
+    }
+  });
+
   it("gives the new owner real tenant authority and no platform authority", async () => {
     const { session } = await actAsFreshUser();
     try {
