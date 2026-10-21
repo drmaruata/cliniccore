@@ -44,7 +44,7 @@ export default function LoginPage() {
         <CardDescription>Enter your credentials to access your clinic</CardDescription>
       </CardHeader>
       <CardContent>
-        <form action={formAction} method="post" onSubmit={onSubmit} className="space-y-4">
+        <form action={formAction} onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
             <Input

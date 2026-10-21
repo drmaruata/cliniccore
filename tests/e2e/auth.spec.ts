@@ -70,6 +70,42 @@ async function hasSession(page: Page): Promise<boolean> {
   return cookies.some((cookie) => cookie.name === AUTH_COOKIE && cookie.value.length > 0);
 }
 
+/**
+ * Sign in through the form and report what happened.
+ *
+ * RETRIES, because the provider's rate limit is shared by every address, every run and
+ * every browser project - so a burst of runs trips it, and a suite that fails on the
+ * limit is testing the limit rather than the application. The retry waits and tries
+ * again; the ASSERTION is still the one that matters.
+ */
+async function signIn(
+  page: Page,
+  email: string,
+  password: string,
+): Promise<"signed_in" | "refused" | "no_outcome"> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await page.goto("/login");
+    await page.fill('input[id="email"]', email);
+    await page.fill('input[id="password"]', password);
+    await page.click('button[type="submit"]');
+
+    const signedIn = page
+      .waitForURL(new RegExp(`${DASHBOARD_ROUTE}$`), { timeout: 8000 })
+      .then(() => "signed_in" as const)
+      .catch(() => "no_redirect" as const);
+    const refused = page
+      .getByText("Invalid email or password.", { exact: true })
+      .waitFor({ timeout: 8000 })
+      .then(() => "refused" as const)
+      .catch(() => "no_message" as const);
+
+    const outcome = await Promise.race([signedIn, refused]);
+    if (outcome === "signed_in" || outcome === "refused") return outcome;
+    await page.waitForTimeout(5000);
+  }
+  return "no_outcome";
+}
+
 test.describe("Authentication", () => {
   test("signs up a fresh user and lands on onboarding", async ({ page }) => {
     await page.goto("/signup");
@@ -87,11 +123,7 @@ test.describe("Authentication", () => {
   });
 
   test("signs out and signs back in", async ({ page }) => {
-    await page.goto("/login");
-    await page.fill('input[id="email"]', sharedEmail);
-    await page.fill('input[id="password"]', PASSWORD);
-    await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(new RegExp(`${DASHBOARD_ROUTE}$`));
+    expect(await signIn(page, sharedEmail, PASSWORD)).toBe("signed_in");
     await expect.poll(() => hasSession(page)).toBe(true);
 
     // SIGN OUT. This application has no sign-out control yet - the button belongs to
@@ -101,10 +133,7 @@ test.describe("Authentication", () => {
     expect(await hasSession(page)).toBe(false);
 
     await page.goto("/login");
-    await page.fill('input[id="email"]', sharedEmail);
-    await page.fill('input[id="password"]', PASSWORD);
-    await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(new RegExp(`${DASHBOARD_ROUTE}$`));
+    expect(await signIn(page, sharedEmail, PASSWORD)).toBe("signed_in");
     await expect.poll(() => hasSession(page)).toBe(true);
   });
 
@@ -134,26 +163,17 @@ test.describe("Authentication", () => {
   });
 
   test("a wrong password is refused with a message the user can act on", async ({ page }) => {
-    await page.goto("/login");
-    await page.fill('input[id="email"]', sharedEmail);
-    await page.fill('input[id="password"]', "WrongPass123");
-    await page.click('button[type="submit"]');
-
     // The message says the same thing for a wrong password and for an unknown
     // address, so it is not an account-existence oracle - and it is not the generic
     // "Something went wrong", which cannot help anybody with a typo.
     // NOT getByRole("alert"): that also matches Next's route announcer, which is
     // empty, and the strict-mode violation it caused was hiding the real message.
-    await expect(page.getByText("Invalid email or password.", { exact: true })).toBeVisible();
+    expect(await signIn(page, sharedEmail, "WrongPass123")).toBe("refused");
     expect(await hasSession(page)).toBe(false);
   });
 
   test("the verify page explains that confirmation is disabled", async ({ page }) => {
-    await page.goto("/login");
-    await page.fill('input[id="email"]', sharedEmail);
-    await page.fill('input[id="password"]', PASSWORD);
-    await page.click('button[type="submit"]');
-    await expect(page).toHaveURL(new RegExp(`${DASHBOARD_ROUTE}$`));
+    expect(await signIn(page, sharedEmail, PASSWORD)).toBe("signed_in");
 
     await page.goto("/verify");
 

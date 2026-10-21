@@ -1,7 +1,12 @@
 "use server";
 
 import { resetPasswordFormSchema } from "@/lib/validation/auth";
-import { toSafeResponse, ValidationError, type SafeResponse } from "@/lib/errors";
+import {
+  toSafeResponse,
+  UnauthorizedError,
+  ValidationError,
+  type SafeResponse,
+} from "@/lib/errors";
 import { fieldErrorMessage, toActionInput } from "@/lib/auth/action-input";
 import { createServerClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
@@ -28,6 +33,15 @@ export async function resetPassword(
   }
 
   const supabase = await createServerClient();
+
+  // THE SESSION IS CHECKED HERE AS WELL AS IN THE PAGE. The page's check decides
+  // whether the form is shown; this one decides what a DIRECT post is answered, and
+  // "this link is no longer valid" is a far better answer than a generic 500.
+  const { data: userData, error: sessionError } = await supabase.auth.getUser();
+  if (sessionError || !userData.user) {
+    return toSafeResponse(new UnauthorizedError("This password reset link is no longer valid."));
+  }
+
   const { error } = await supabase.auth.updateUser({ password: parsed.data.password });
 
   if (error) {

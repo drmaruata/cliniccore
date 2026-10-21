@@ -48,7 +48,7 @@ export default function ResetPasswordForm() {
         <CardDescription>Enter your new password below</CardDescription>
       </CardHeader>
       <CardContent>
-        <form action={formAction} method="post" onSubmit={onSubmit} className="space-y-4">
+        <form action={formAction} onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="password">New password</Label>
             <Input

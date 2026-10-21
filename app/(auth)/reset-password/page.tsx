@@ -21,9 +21,36 @@ export const metadata: Metadata = {
  * not work - not a form that submits and then fails.
  */
 export default async function ResetPasswordPage() {
-  const user = await getUser();
+  // `getUser()` is a call to the auth server, so it can fail - and a failure
+  // there is not the same as "signed out". A blip answers the third thing, and the user
+  // is told to try again rather than being shown a page that claims they are a
+  // stranger.
+  let session: "signed_in" | "signed_out" | "unavailable" = "signed_out";
+  try {
+    session = (await getUser()) ? "signed_in" : "signed_out";
+  } catch {
+    session = "unavailable";
+  }
 
-  if (!user) {
+  if (session === "unavailable") {
+    return (
+      <Card className="w-full">
+        <CardHeader className="text-center">
+          <CardTitle className="text-2xl">
+            <h1>We could not check your session</h1>
+          </CardTitle>
+          <CardDescription>Please try again in a moment.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Button asChild className="w-full">
+            <Link href="/reset-password">Try again</Link>
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (session !== "signed_in") {
     return (
       <Card className="w-full">
         <CardHeader className="text-center">

@@ -21,8 +21,8 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1–14 of 20 are complete** (14 = the provider-agnostic payment seam, unconfigured).
-  **Task 15 is next.** Run `git log --oneline` and
+  **Tasks 1-15 of 20 are complete** (15 = the auth pages: signup, login, password reset
+  and verification). **Task 16 is next.** Run `git log --oneline` and
   `git status` before you start. Briefs, reports and review packages are in
   `.superpowers/sdd/cliniccore-foundation/`.
 
@@ -511,3 +511,59 @@ next agent must not have to rediscover:
   REFUND.** `RefundInput.organizationId` says whose money is being refunded;
   `WebhookEvent.refundId` is how a caller learns that an ASYNCHRONOUS refund finally
   succeeded or failed, which no return value can tell it.
+
+## Task 15+ : the auth pages exist, and the signed-in application does not yet
+
+Task 15 added the five auth routes, their four server actions, the code-exchange route
+handler and the first E2E spec. Consequences the next agent must not have to rediscover:
+
+- **THE URL CONTRACT IS `/app/...`, AND THE ROUTES DO NOT EXIST YET.** The plan states it
+  three times: Task 15's brief ("assert `/app/dashboard` reachable"), Task 16's
+  "Produces" line, and Task 16's Step 1 ("assert `/app` renders an onboarding screen").
+  The plan's FILE TREE spells the directory `(app)`, but the same tree lists the auth
+  group as `(auth)` while the brief lists those routes as `/login` - so the tree's group
+  names are not url segments, and the prose is the contract. **Task 16 creates
+  `app/app/...`**, and until it does, a successful sign-up lands on Next's 404 page.
+  The E2E spec therefore asserts the ROUTE and the SESSION COOKIE, not the destination's
+  content - the destination's content is Task 16's assertion, in Task 16's spec.
+- **THE PASSWORD RESET NEEDS A DEPLOYMENT STEP, AND IT IS NOT DONE.** The recovery mail
+  redirects to `${NEXT_PUBLIC_APP_URL}/api/auth/verify?next=/reset-password`, and
+  GoTrue refuses to send to a redirect the HOSTED project has not allow-listed.
+  `supabase/config.toml` only configures a local `supabase start` stack, so editing it
+  does not change the live project. **The hosted project's redirect allow-list must
+  include the app URL**, and until an operator does that, no reset mail is sent. Recorded
+  as BLOCKED, not as working.
+- **THE RESET MAIL CANNOT BE VERIFIED IN THIS ENVIRONMENT.** The E2E accounts are at
+  `example.com`, which has no MX record, so the provider refuses to send to a REAL
+  account - MEASURED, and it refuses with "Email address ... is invalid" while a
+  request for an UNKNOWN address returns 200. The spec therefore asserts the GENERIC
+  response, which is the enumeration guarantee and the thing that is verifiable here;
+  that a mail arrives is not verifiable without a mailbox.
+- **THE RESET EXCHANGE LIVES IN A ROUTE HANDLER, NOT A PAGE.** The recovery session has
+  to be written as a COOKIE, and a Server Component cannot set cookies. So
+  `app/api/auth/verify/route.ts` exchanges the code and redirects to a `next` that is
+  matched against an ALLOW-LIST - a `next` from the query string that was not checked
+  would be an open redirect. The reset PAGE then checks for a SESSION, which is a real
+  check, where checking that a `?code=` parameter exists is not.
+- **A PAGE TITLE MUST BE A HEADING, AND SHADCN'S `CardTitle` IS NOT.** `components/ui/
+card.tsx` renders the title as a `div`, so a page whose title is a `CardTitle` has no
+  heading at all - invisible to a screen reader navigating by heading, and to any test
+  that looks for one. The auth pages wrap their titles in an `<h1>`.
+- **`useActionState`'s DISPATCH RETURNS NOTHING.** `await formAction(data)` resolves at
+  once, so a loading state built on it is dead. `isPending` - the third element of the
+  hook - is the real signal, and it is what the four forms use.
+- **A SERVER ACTION MUST ACCEPT `FormData` AS WELL AS AN OBJECT.** A form with an
+  `action` and no `onSubmit` posts FormData, and a form with neither puts every field -
+  including the password - in the query string, which is browser history, an access log
+  and a Referer header. `lib/auth/action-input.ts` normalises both shapes.
+- **THE PROVIDER'S RATE LIMIT IS SHARED AND THE E2E SPEC RETRIES.** The public signup
+  endpoint allows about two or three calls a window, MEASURED, and the limit is per
+  project, so it is shared by every address, every run and every browser project. The
+  spec retries a refused call rather than failing on the limit.
+- **THE PLAYWRIGHT BROWSER MUST MATCH `@playwright/test`.** The installed browsers are
+  per-version, and a browser for an older Playwright leaves every spec failing to
+  launch with "Executable doesn't exist" - which reads as a broken test rather than a
+  missing browser. `npx playwright install` before the first E2E run.
+- **THE E2E SPEC LEAVES NOTHING BEHIND.** It creates ONE account with the admin API,
+  goes through the public endpoint exactly once, and removes both - the live database
+  reads 0 auth users after a run.

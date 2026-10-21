@@ -3526,3 +3526,106 @@ are caught by `npm run typecheck` rather than by `npm test`: an amount becoming 
 `WebhookEvent` and `RefundResult`; a field appearing in `CheckoutSession`; and a method
 appearing in `PaymentProvider`. All eight are caught, and the tuple in the error message
 says which position failed.
+
+## Task 15: the auth pages, and the two things the plan says in prose that its file tree contradicts
+
+### THE E2E SUITE HAD NEVER RUN, AND IT FAILED
+
+MEASURED: `npx playwright test --project=chromium` answered "4 failed, 2 passed". The
+Playwright browsers were installed for an OLDER version than `@playwright/test@1.64.0`
+wants (the installed set was 1208/1234/1243 and the version needs 1248), so every spec
+had been failing to LAUNCH with "Executable doesn't exist" - which reads as a broken
+test rather than a missing browser. The brief's Step 4 was not met, and nothing in the
+gates said so: `npm test` does not run the E2E suite, and the e2e scripts still carried
+`--pass-with-no-tests`.
+
+### AND THE ONE PASSING SPEC PASSED FOR THE WRONG REASON
+
+It asserted only a URL, and Next's 404 page satisfies a URL assertion. The build's
+route manifest held no `/app/onboarding` and no `/app/dashboard` route, so the sign-up
+landed on a 404 and the spec called it a success. The spec now asserts the SESSION
+COOKIE, which is the thing that says the user was actually signed in - and the cookie
+is what the 404 could not fake.
+
+### THE REDIRECT TARGETS, AND A CONTRADICTION INSIDE THE PLAN
+
+The plan states the url contract three times - Task 15's brief ("assert `/app/dashboard`
+reachable"), Task 16's "Produces" line, and Task 16's Step 1 ("assert `/app` renders an
+onboarding screen") - and its FILE TREE spells the same directory `(app)`. The same
+tree lists the auth group as `(auth)` while the brief lists those routes as `/login`,
+so the tree's group names are not url segments and the PROSE is the contract. The
+routes are `/app/dashboard` and `/app/onboarding`, and Task 16 creates them; until then
+a sign-up lands on a 404, which the spec records rather than papers over.
+
+### THE PASSWORD RESET WAS ENUMERABLE, AND COULD NOT WORK
+
+A success answered 200 and a failure answered 500 with "Something went wrong", so the
+two answers differed and the difference was an account-existence oracle. Every outcome
+is now the same 200 and the same body, and the error is logged on the server.
+
+The flow could not work either: the page checked that a `?code=` parameter EXISTED and
+nothing ever exchanged it for a session, and `updateUser` needs a session. The exchange
+now happens in a ROUTE HANDLER - the only place that can set a cookie - with the
+destination matched against an ALLOW-LIST, because a `next` from the query string that
+was not checked is an open redirect. The page then checks for a SESSION, which is a real
+check.
+
+MEASURED, and recorded as BLOCKED rather than as working: the recovery mail redirects
+to `${NEXT_PUBLIC_APP_URL}/api/auth/verify?next=/reset-password`, and GoTrue refuses to
+send to a redirect the HOSTED project has not allow-listed. `supabase/config.toml` only
+configures a local `supabase start` stack, so editing it cannot change the live project.
+**The hosted project's redirect allow-list must include the app URL**, and that is an
+operator's step.
+
+### THE OTHER ROUND-1 AND ROUND-2 FINDINGS
+
+- **A SIGN-UP COULD NOT BE COMPLETED WITHOUT A NAME**, though the field says
+  "(optional)". MEASURED with the repo's zod: `""` fails `min(1)` and `undefined`
+  passes, and the form seeded `""` - so the resolver never reached the server action.
+- **A WRONG PASSWORD WAS A GENERIC 500.** `toSafeResponse` only lets an `AppError`
+  contribute a message, and a Supabase `AuthError` is not one, so a typo was reported as
+  "Something went wrong. Please try again." MEASURED: the provider answers
+  "invalid login credentials" with the code `invalid_credentials` for BOTH a wrong
+  password and an unknown address, so "Invalid email or password." is
+  enumeration-safe - and the mapping is by CODE, because a code survives a wording change
+  that a message would not.
+- **THE PASSWORD REACHED THE URL WITHOUT JAVASCRIPT.** The forms had no action, so a
+  native submit GET the form and put every field - including the password - in the
+  query string: history, access log, Referer. The forms carry a real action and the
+  actions accept FormData as well as an object.
+- **THE VERIFY PAGE GUESSED INSTEAD OF DETECTING**, as the brief names: it was a client
+  component, its own comment said it could not see a session, and then it showed
+  "Already signed in" to EVERYONE. It is a Server Component now and asks. Its exchange
+  branch was keyed on a `type=email` parameter Supabase's links do not carry, and its
+  redirect was `redirect()` inside a client `setTimeout`, which throws `NEXT_REDIRECT`
+  outside a render and never redirects at all.
+- **THE PAGES ARE SERVER COMPONENTS WITH CLIENT FORMS**, which is the brief's structure,
+  and it puts each route's metadata and the session check where they belong - one
+  metadata title served all six routes before.
+- **A CARD TITLE IS NOT A HEADING.** shadcn's `CardTitle` renders a `div`, so the pages
+  had no heading at all - invisible to a screen reader navigating by heading, and to any
+  test looking for one. The auth pages wrap their titles in an `<h1>`.
+- **`useActionState`'s DISPATCH RETURNS NOTHING**, so a loading state built on awaiting
+  it is dead. `isPending` is the real signal.
+- **THE SPEC POLLUTED THE LIVE PROJECT.** It created five real accounts per run against
+  a rate-limited public endpoint and deleted none. It now creates ONE account with the
+  admin API, goes through the public endpoint exactly once, and removes both - the live
+  database reads 0 auth users after a run. It also RETRIES a refused call, because the
+  provider's limit is shared by every address, every run and every browser project.
+- **THE DEPENDENCIES.** zod is pinned again at 4.6.7, the new packages are pinned
+  exactly as every other dependency is, and `@radix-ui/react-label` is gone - the
+  unified `radix-ui` package every other component imports from already provides it.
+- **`--pass-with-no-tests` IS GONE** from the e2e scripts, as AGENTS.md requires of the
+  task that adds the first real spec.
+
+### THE RESIDUALS, STATED PLAINLY
+
+- **A SIGN-UP LANDS ON A 404 UNTIL TASK 16.** The routes are Task 16's, and the spec
+  asserts the route and the session rather than a page that does not exist yet.
+- **NO RESET MAIL IS SENT IN THIS ENVIRONMENT.** The E2E accounts are at `example.com`,
+  which has no MX record, so the provider refuses to send to a real account while a
+  request for an unknown address returns 200. That a mail ARRIVES is not verifiable here
+  without a mailbox; what is verifiable - the generic response - is asserted.
+- **THERE IS NO SIGN-OUT CONTROL.** The button belongs to the signed-in shell, which is
+  Task 16's, so the spec's "sign out" step clears the session cookie - the state a
+  sign-out leaves - and says so.

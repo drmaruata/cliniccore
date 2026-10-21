@@ -49,8 +49,7 @@ export async function signup(
     );
   }
 
-  // `/onboarding`, not `/app/onboarding`: `(app)` is a route group and adds no url
-  // segment. See the plan's file tree.
-  redirect("/onboarding");
+  // The signed-in application lives under `/app`. Task 16 creates the routes.
+  redirect("/app/onboarding");
   return null;
 }

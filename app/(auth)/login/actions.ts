@@ -2,6 +2,7 @@
 
 import { loginSchema } from "@/lib/validation/auth";
 import {
+  AppError,
   toSafeResponse,
   UnauthorizedError,
   ValidationError,
@@ -37,15 +38,28 @@ export async function login(
   });
 
   if (error) {
-    const invalidCredentials = /invalid login credentials/i.test(error.message);
-    return toSafeResponse(
-      invalidCredentials ? new UnauthorizedError("Invalid email or password.") : error,
-    );
+    // Logged on the server, WITHOUT the address: a login attempt is worth seeing in a
+    // log, and the address would put a patient or a clinician's identity in one.
+    console.error("login failed", error.code ?? "unknown", error.status ?? "unknown");
+    // BY THE ERROR CODE, NOT THE MESSAGE. MEASURED: the provider answers
+    // "invalid login credentials" with the code "invalid_credentials" for BOTH a wrong
+    // password and an unknown address, so the two are indistinguishable - and a code
+    // survives a wording change that a message would not. A rate limit is its own
+    // case, and it is the same for every account. Everything else is an outage, and
+    // the generic 500 says so without distinguishing anybody.
+    if (error.code === "invalid_credentials") {
+      return toSafeResponse(new UnauthorizedError("Invalid email or password."));
+    }
+    if (error.status === 429) {
+      return toSafeResponse(
+        new AppError("Too many attempts. Please try again shortly.", 429, "rate_limited"),
+      );
+    }
+    return toSafeResponse(error);
   }
 
-  // The route is `/dashboard`, not `/app/dashboard`: `(app)` is a ROUTE GROUP, and a
-  // parenthesised group adds no url segment. The plan's own file tree is
-  // `app/(app)/dashboard/page.tsx`.
-  redirect("/dashboard");
+  // The signed-in application lives under `/app`. Task 16 creates the routes; this
+  // task only decides where a successful sign-in goes.
+  redirect("/app/dashboard");
   return null;
 }

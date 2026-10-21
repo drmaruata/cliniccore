@@ -63,32 +63,26 @@ export type SignupInput = z.infer<typeof signupSchema>;
 export const forgotPasswordSchema = z.object({ email });
 
 /**
+ * No email field: the reset token identifies the account, and accepting an address here
+ * would invite callers to branch on it and accidentally reveal whether it is registered.
+ */
+export const resetPasswordSchema = z.object({ password });
+
+/**
  * The reset form, with the confirmation field.
  *
  * ONE schema for both sides. The client resolver and the server action must agree, or
  * the form accepts something the server refuses - and the disagreement is invisible
  * until a user hits it.
  */
-export const resetPasswordFormSchema = z
-  .object({
-    password: z
-      .string()
-      .min(8, "Use at least 8 characters")
-      .max(200, "That password is implausibly long")
-      .regex(/[A-Za-z]/, "Include at least one letter")
-      .regex(/[0-9]/, "Include at least one number"),
+export const resetPasswordFormSchema = resetPasswordSchema
+  .extend({
     confirmPassword: z.string(),
   })
   .refine((value) => value.password === value.confirmPassword, {
     message: "Passwords do not match",
     path: ["confirmPassword"],
   });
-
-/**
- * No email field: the reset token identifies the account, and accepting an address here
- * would invite callers to branch on it and accidentally reveal whether it is registered.
- */
-export const resetPasswordSchema = z.object({ password });
 
 /**
  * Mirrors what `organizations` actually stores. `slug` is the tenant key used in URLs, so

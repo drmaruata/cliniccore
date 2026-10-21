@@ -45,7 +45,7 @@ export default function SignupPage() {
         <CardDescription>Start managing your clinic with ClinicCore</CardDescription>
       </CardHeader>
       <CardContent>
-        <form action={formAction} method="post" onSubmit={onSubmit} className="space-y-4">
+        <form action={formAction} onSubmit={onSubmit} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
             <Input
@@ -71,7 +71,13 @@ export default function SignupPage() {
               placeholder="Dr. Jane Smith"
               {...form.register("fullName")}
               disabled={isPending}
+              aria-invalid={!!form.formState.errors.fullName}
             />
+            {form.formState.errors.fullName && (
+              <p className="text-sm text-destructive" role="alert">
+                {form.formState.errors.fullName.message}
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -91,8 +97,18 @@ export default function SignupPage() {
             )}
           </div>
 
-          {formState && (
-            <div className="text-sm text-destructive" role="alert">
+          {formState && formState.body.error && (
+            // NOT every message here is a failure. "Check your email to confirm your
+            // address" is what a SUCCESSFUL signup says when the deployment has
+            // confirmation switched on, and dressing it as an error says the opposite.
+            <div
+              className={
+                formState.body.code === "confirmation_required"
+                  ? "text-sm text-success"
+                  : "text-sm text-destructive"
+              }
+              role="alert"
+            >
               {formState.body.error}
             </div>
           )}
