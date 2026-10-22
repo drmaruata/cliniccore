@@ -1026,6 +1026,17 @@ next agent must not have to rediscover:
   not control whether the rest of the route renders, and layouts do not re-render on
   client-side navigation. A gate that only hides the UI while the data is still read
   is not a gate.
+- **THE DATA-LAYER REFUSAL IS NOW UNIT-TESTED, AND IT FAILS CLOSED ON A FAILED READ.**
+  `tests/unit/platform-console.test.ts` stubs `lib/supabase/server` and asserts that
+  `readTenantDirectory()` returns null for a caller who is not an administrator AND
+  that the `tenant_directory` RPC is **never called** - the refusal is BEFORE the read,
+  and a directory that was fetched and then discarded has still left the server.
+  MEASURED: deleting the refusal line fails THREE of the five tests with "expected
+  null but got rows" and "expected [ 'tenant_directory' ] to not include
+  'tenant_directory'"; `lib/auth/platform.ts` was restored byte-for-byte
+  (md5 `0CDA749F5DC889D5C6913BF704A485B1`). A failed READ now returns null as well -
+  half a directory is worse than none, because the caller cannot tell a truncated
+  answer from a whole one.
 - **THE DIRECTORY'S MEMBER COUNT HAD TO BE TAKEN BY A DEFINER, AND THAT IS MEASURED.**
   `organization_memberships_select`'s row filter is `private.is_member(organization_id)`,
   so a principal who belongs to no tenant sees NO membership rows - **MEASURED: a
@@ -1052,6 +1063,13 @@ test.ts` pins both halves.
   appointments or payments, because NONE of those exist in this release. The four
   feature cards each name something the codebase can be asked about. Full copy and the
   page set are Phase 4; this is the visual foundation, and the footer says so.
+  **AND THE COMPOSITE-KEY CLAIM IS NARROW ON PURPOSE.** MEASURED: of the 21 public
+  foreign keys, **5 are composite** - the three that tie a row to another tenant's
+  clinic, the one to a patient and the one to a membership. The three ROLE references
+  are single-column, and a role's organization scope is closed by
+  `private.guard_role_org_scope()` - a TRIGGER - and by the policies, not by the
+  schema. So the copy names the references that ARE composite instead of claiming
+  they all are.
 - **`types/database.types.ts` WAS REGENERATED, AND THE GENERATOR'S OUTPUT HAS CHANGED
   SINCE THE FILE WAS LAST WRITTEN.** The committed file was byte-equal to the
   generator's output after stripping whitespace, semicolons and union pipes - that was
@@ -1059,10 +1077,11 @@ test.ts` pins both halves.
   `Tables<>` helper with an extra fallback branch, an `Enums<>` keyed on `Enums` alone
   rather than on `Enums & CompositeTypes`, and `clinics.Insert.timezone` as REQUIRED
   (migration `01670` made the column NOT NULL, and the committed file predated it).
-  The regenerated file is 179 characters longer after normalisation, and the normalised
-  hash of the committed file and the generator's output now agree again. The app uses
-  none of the changed helpers, so nothing broke - but the diff is REAL and is not
-  formatting.
+  The regenerated file is **307** characters longer after normalisation - MEASURED:
+  13508 before, 13815 after, of which 129 are the two new RPC entries and 178 the
+  generator's changed helper shape - and the normalised hash of the committed file and
+  the generator's output now agree again. The app uses none of the changed helpers, so
+  nothing broke - but the diff is REAL and is not formatting.
 - **THE E2E SPEC FOR THIS TASK IS ONE FILE, `tests/e2e/platform-gate.spec.ts`, AND IT
   COVERS BOTH ROUTES.** The plan names one spec file, so the marketing shell's
   assertions live in it under their own `describe`. It creates its accounts through the
@@ -1072,12 +1091,25 @@ test.ts` pins both halves.
 - **THE OPERATOR IN THE E2E SPEC BELONGS TO NO TENANT, ON PURPOSE.** A member of the
   tenant it reads would see the member count whether the query were RLS-governed or
   not, so the count of 1 proves the definer path rather than the policy.
+- **THE REFUSED PAGE IS PROVEN TO CONTAIN NO TENANT AT ALL - NOT ONLY THE CALLER'S
+  OWN.** The owner's test seeds a SECOND tenant it has no membership in and asserts
+  that name is absent too, because asserting only the caller's own tenant would pass
+  for a console that leaked every OTHER tenant and none of the caller's.
+- **THE RPC SURFACE IS PROVEN OVER REAL HTTP FROM A NON-ADMINISTRATOR, BECAUSE THE
+  E2E CANNOT REACH THAT PATH.** The interface never issues `tenant_directory` for an
+  unauthorised caller - the route has already 404'd - so
+  `tests/integration/platform-console.test.ts` calls it over HTTPS with a real
+  signed-in user's JWT and asserts an empty directory. The impersonated transaction in
+  the same file proves the FUNCTION refuses; that one proves the SURFACE does.
 - **THE `tenant_creation_events` LEDGER IS NOW EMPTY, AND THAT IS A CHANGE THIS TASK
   MADE.** The ledger holds one row per tenant creation, it has NO foreign key, and
   every row in it belonged to an account that no longer exists - MEASURED: all 30 rows
   were orphans. Removing the two organizations a FAILED E2E run had left behind meant
-  removing the ledger rows for their accounts, and the cleanup removed every orphan
-  row rather than only the two that were this task's - so the 29 rows that predate this
+  removing the ledger rows for their accounts - and **the 30-orphan purge was a MANUAL
+  one-off, NOT the test helper's doing**: `tests/helpers/e2e-cleanup.ts` deletes ledger
+  rows BY `user_id`, for the accounts the probe created, so it cannot remove an orphan
+  of any other account. The manual purge removed every orphan row rather than only the
+  two that were this task's - so the 29 rows that predate this
   task are gone too. Nothing live was lost (an orphan row cannot count against any
   living account's creation cap), but the "the ledger holds 29 rows" record is no
   longer true, and the ledger is the rate-limit EVIDENCE for tenant creation - so a

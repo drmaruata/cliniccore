@@ -60,7 +60,10 @@ export async function readTenantDirectory(): Promise<TenantEntry[] | null> {
 
   const supabase = await createServerClient();
   const { data, error } = await supabase.rpc("tenant_directory");
-  if (error) throw error;
+  // FAIL CLOSED. A read that failed is not a directory, and half a directory is worse
+  // than none: the caller cannot tell a truncated answer from a whole one. The console
+  // turns a null into a 404, which is the honest answer for a caller it cannot serve.
+  if (error) return null;
 
   return (data ?? []).map((row) => ({
     name: row.name,

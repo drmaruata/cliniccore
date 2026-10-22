@@ -4096,14 +4096,16 @@ false`.
 - `types/database.types.ts` was regenerated with `SUPABASE_GENERATE_TYPESCRIPT_TYPES`,
   prettier-formatted, and compared with the generator's raw output after stripping
   whitespace, semicolons and union pipes: the normalised lengths and hashes now agree
-  (13815 characters, hash 1113706187). They did NOT agree before the regeneration — the
-  committed file was 179 characters shorter, because the generator's `Tables<>` helper
+  (13815 characters, hash 1113706187). They did NOT agree before the regeneration - the
+  committed file was **307** characters shorter after normalisation (MEASURED: 13508
+  before, 13815 after, of which 129 are the two new RPC entries and 178 the generator's
+  changed helper shape), because the generator's `Tables<>` helper
   has an extra fallback branch, its `Enums<>` is keyed on `Enums` alone rather than on
   `Enums & CompositeTypes`, and `clinics.Insert.timezone` is now REQUIRED (migration
   `01670` made the column NOT NULL and the committed file predated it). The earlier
   "the two files hash to the same value" record was true when it was measured and is
   false now; the file has been regenerated so that it is true again. The app uses none
-  of the changed helpers, so nothing broke — but the diff is real and is not
+  of the changed helpers, so nothing broke - but the diff is real and is not
   formatting.
 - The E2E spec: a clinic owner receives 404 from `/platform` with no table and no
   tenant name on the page, and a platform administrator sees the tenant, its status
@@ -4121,13 +4123,16 @@ role), and the `tenant_creation_events` ledger at **0** — see the correction b
 
 - **THE `tenant_creation_events` LEDGER IS NOW EMPTY, AND THAT IS A CHANGE THIS TASK
   MADE.** The ledger holds one row per tenant creation, it has NO foreign key, and
-  every row in it belonged to an account that no longer exists — MEASURED: all 30 rows
+  every row in it belonged to an account that no longer exists - MEASURED: all 30 rows
   were orphans. Removing the two organizations a FAILED E2E run had left behind meant
-  removing the ledger rows for their accounts, and the cleanup removed every orphan row
-  rather than only the two that were this task's — so the 29 rows that predate this
-  task are gone too. Nothing live was lost (an orphan row cannot count against any
-  living account's creation cap), but the earlier "the ledger holds 29 rows" record is
-  no longer true and is corrected here.
+  removing the ledger rows for their accounts - and **the 30-orphan purge was a MANUAL
+  one-off, not the test helper's doing**: `tests/helpers/e2e-cleanup.ts` deletes ledger
+  rows BY `user_id`, for the accounts the probe created, so it cannot remove an orphan
+  of any other account. The manual purge removed every orphan row rather than only the
+  two that were this task's, so the 29 rows that predate this task are gone too.
+  Nothing live was lost (an orphan row cannot count against any living account's
+  creation cap), but the earlier "the ledger holds 29 rows" record is no longer true
+  and is corrected here.
 - **THE ONBOARDING SPEC HAD A LATENT CROSS-TEST NAME COLLISION, AND THIS TASK'S SPEC
   FILE EXPOSED IT.** Both tests in `tests/e2e/onboarding.spec.ts` created an
   organization called "Probe Onboarding Clinic", and the suite runs its files in
@@ -4144,6 +4149,76 @@ role), and the `tenant_creation_events` ledger at **0** — see the correction b
   survived. The cleanup's own verification caught it ("cleanup left 1 organization(s)
   with the slug ..."), which is that helper working as designed. The two leftovers
   were removed by hand.
+
+## Task 17 review round 1 — the data-layer refusal, the other tenant, and three false records
+
+The review found no blocker and left two gaps and three false records. All are closed.
+
+### GAP 1 — THE DATA-LAYER REFUSAL WAS UNASSERTED, AND IT IS NOW
+
+`readTenantDirectory` is the check AGENTS.md calls "the data-layer one — the one that
+matters", and nothing imported it. With its refusal line deleted, it would have
+returned the directory to anybody, and EVERY test would still have passed: the
+integration suite proves the SQL refuses, and the E2E proves the route 404s — but the
+route never reaches the page for an unauthorised caller, so the page's own refusal was
+never exercised.
+
+`tests/unit/platform-console.test.ts` closes it. It imports `lib/auth/platform.ts`
+through the `server-only` alias `vitest.config.ts` already provides, stubs
+`lib/supabase/server`, and asserts:
+
+- the predicate false → `readTenantDirectory()` resolves to null;
+- the predicate false → the `tenant_directory` RPC is **never called**, and the only
+  call made was `is_platform_admin`. The refusal is BEFORE the read, and a directory
+  that was fetched and then discarded has still left the server;
+- the predicate true → the rows, with `member_count` mapped to `memberCount`;
+- the RPC errors → null. **A FAILED READ NOW FAILS CLOSED**: `lib/auth/platform.ts`
+  returned `null` instead of throwing, because half a directory is worse than none —
+  the caller cannot tell a truncated answer from a whole one;
+- the predicate cannot be asked → null, and the directory is not read.
+
+**MEASURED, THE MUTATION.** Deleting the single line
+`if (!(await isPlatformAdmin())) return null;` fails **THREE of the five tests**, with
+`expected [ { name: 'A tenant', …(2) } ] to be null` and
+`expected [ 'tenant_directory' ] to not include 'tenant_directory'`. The file was
+restored byte-for-byte: md5 `0CDA749F5DC889D5C6913BF704A485B1` before and after.
+
+### GAP 2 — THE OTHER TENANT, AND THE RPC SURFACE
+
+- `tests/e2e/platform-gate.spec.ts` now seeds a SECOND tenant the owner has no
+  membership in ("Probe Foreign Tenant") and asserts that its name is absent from the
+  refused page as well as the owner's own. Asserting only the caller's own tenant
+  would have passed for a console that leaked every OTHER tenant and none of the
+  caller's.
+- `tests/integration/platform-console.test.ts` now calls `tenant_directory` over REAL
+  HTTPS with a REAL signed-in user's JWT and asserts an empty directory. That is the
+  path the E2E cannot reach: the interface never issues the call for an unauthorised
+  caller, because the route has already 404'd. The impersonated transaction in the
+  same file proves the FUNCTION refuses; the HTTP call proves the SURFACE does.
+
+### THE THREE FALSE RECORDS, CORRECTED
+
+- **"179 characters longer" WAS WRONG. IT IS 307.** MEASURED: the normalised length of
+  `types/database.types.ts` went **13508 → 13815**, which is **307** characters — 129
+  of them the two new RPC entries and 178 the generator's changed helper shape.
+  Corrected in AGENTS.md and here.
+- **"the cleanup removed every orphan row" WAS WRONG.** `tests/helpers/e2e-cleanup.ts`
+  deletes ledger rows BY `user_id`, for the accounts the probe created, so it cannot
+  remove an orphan of any other account. The 30-orphan purge was a MANUAL one-off.
+  Corrected in AGENTS.md and here.
+- **"the foreign keys between them are composite" WAS OVERSTATED.** MEASURED: of the
+  21 public foreign keys, **5 are composite** — `clinic_memberships` → `clinics`,
+  `clinic_memberships` → `organization_memberships`, `patient_identifiers` → `patients`,
+  `patients` → `clinics` and `user_role_assignments` → `clinics`. The three ROLE
+  references are single-column, and a role's organization scope is closed by
+  `private.guard_role_org_scope()` — a TRIGGER — and by the policies, not by the
+  schema. The marketing copy now says "the foreign keys that tie a row to another
+  tenant's clinic or patient are composite", which is what the schema does.
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` and
+`npm run format:check` all exit 0. The E2E suite passes on chromium and firefox.
 
 ### THE LIMITATIONS
 

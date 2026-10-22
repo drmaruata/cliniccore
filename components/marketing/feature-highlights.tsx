@@ -4,18 +4,25 @@ import { Clock, KeyRound, Lock, Mail } from "lucide-react";
  * The feature highlights: four claims, each of which the codebase can be asked about.
  *
  * WHY THESE FOUR. Every one of them is true of the code that exists today, and each is
- * checkable against a specific part of it: the composite tenant keys, the fifteen seeded
- * roles and the single permission function, the invitation's digest and its proven
- * address, and the tenant's own time zone. The brief forbids claims that have not been
+ * checkable against a specific part of it: the composite tenant keys on the clinic and
+ * patient references, the fifteen seeded roles and the single permission function, the
+ * invitation's digest and its proven address, and the tenant's own time zone. The brief
+ * forbids claims that have not been
  * verified, and the temptation on a marketing page is to claim the features a clinic
  * management product is expected to have - patient records, appointments, payments -
  * none of which are in this release.
+ *
+ * AND THE COMPOSITE-KEY CLAIM IS NARROW ON PURPOSE. MEASURED: of the 21 public foreign
+ * keys, 5 are composite. The three role references are single-column, and a role's
+ * organization scope is closed by `private.guard_role_org_scope()` - a trigger - and by
+ * the policies, not by the schema. So the copy names the references that ARE composite
+ * rather than claiming they all are.
  */
 const FEATURES = [
   {
     icon: Lock,
     title: "Isolation the schema carries",
-    body: "Every tenant-owned table carries its organization, and the foreign keys between them are composite, so a row belonging to another clinic is not representable - not merely hidden.",
+    body: "Every tenant-owned table carries its organization, and the foreign keys that tie a row to another tenant's clinic or patient are composite - so a row pointing at another clinic is not representable, not merely hidden.",
   },
   {
     icon: KeyRound,

@@ -22,9 +22,22 @@
  * THE PRINCIPAL IS IMPERSONATED, NOT MOCKED. `set local role authenticated` plus
  * `select set_config('request.jwt.claim.sub', …, true)` is what PostgREST builds from a
  * JWT, and both are transaction-local - so the rollback leaves nothing behind.
+ *
+ * AND THE REAL TRANSPORT TOO, FOR THE REFUSAL. The impersonated call above proves the
+ * FUNCTION refuses; the second suite proves the RPC SURFACE refuses, over real HTTPS
+ * with a real signed-in user's JWT. The E2E cannot reach that path - the interface
+ * never issues the call for an unauthorised caller, because the route has already
+ * 404'd - so nothing else covers it.
  */
-import { expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 
+import {
+  PUBLISHABLE_KEY,
+  SUPABASE_URL,
+  createProbeSession,
+  decodeCookie,
+  deleteProbeUsers,
+} from "../helpers/auth-session-fixture";
 import { beginSession, dbDescribe } from "./helpers/database";
 
 const OPERATOR = "eeeeeeee-5555-4555-8555-eeeeeeee0001";
@@ -112,5 +125,39 @@ dbDescribe("the platform console's database access", () => {
     } finally {
       await session.rollback();
     }
+  });
+});
+
+dbDescribe("the platform console's RPC surface over HTTP", () => {
+  let accessToken = "";
+  const probeUserIds: string[] = [];
+
+  beforeAll(async () => {
+    // A REAL signed-in user, and not a platform administrator - the probe helper
+    // creates a plain account, so `profiles.is_platform_admin` is false.
+    const probe = await createProbeSession();
+    probeUserIds.push(probe.userId);
+    accessToken = String(decodeCookie(probe.cookie).access_token ?? "");
+  });
+
+  afterAll(async () => {
+    await deleteProbeUsers(probeUserIds);
+  });
+
+  it("answers an empty directory to a signed-in user who is not a platform administrator", async () => {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/tenant_directory`, {
+      method: "POST",
+      headers: {
+        apikey: PUBLISHABLE_KEY,
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: "{}",
+    });
+    // 200, and an EMPTY directory: the function's own gate holds over the real
+    // transport, with the real JWT, and not only in the impersonated transaction.
+    const body = await response.text();
+    expect(response.status, body).toBe(200);
+    expect(JSON.parse(body)).toEqual([]);
   });
 });

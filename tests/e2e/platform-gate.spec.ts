@@ -35,6 +35,15 @@ const PASSWORD = "Pr0be-Passw0rd!x";
  */
 const OWNER_TENANT_NAME = "Probe Owner Clinic";
 const DIRECTORY_TENANT_NAME = "Probe Platform Tenant";
+/**
+ * A THIRD TENANT, WHICH THE OWNER DOES NOT BELONG TO.
+ *
+ * The refused page has to be shown to contain NO tenant - not the caller's own and not
+ * somebody else's. Asserting only the caller's own tenant would pass for a console that
+ * leaked every OTHER tenant and none of the caller's, so the owner test seeds a tenant
+ * it has no membership in and asserts that one is absent too.
+ */
+const FOREIGN_TENANT_NAME = "Probe Foreign Tenant";
 
 /** What this worker created. The suite runs its tests in parallel, so it is per worker. */
 const probe = newProbeCleanup();
@@ -101,12 +110,24 @@ test.describe("the platform console", () => {
     await page.getByRole("button", { name: "Create organization" }).click();
     await expect(page).toHaveURL(/\/app\/dashboard$/);
 
+    // And a tenant the owner does NOT belong to, so "no tenant at all" has teeth: a
+    // console that leaked other tenants and not the caller's own would still fail.
+    const foreignSlug = `probe-platform-foreign-${Date.now()}-${process.pid}`;
+    probe.slugs.push(foreignSlug);
+    const { error: foreignError } = await admin()
+      .from("organizations")
+      .insert({ name: FOREIGN_TENANT_NAME, slug: foreignSlug });
+    if (foreignError) {
+      throw new Error(`could not seed the foreign tenant: ${foreignError.message}`);
+    }
+
     const response = await page.goto("/platform");
     expect(response?.status(), "the console must not answer a clinic owner").toBe(404);
     await expect(page.getByRole("heading", { name: "Tenants" })).toHaveCount(0);
     // No directory at all - not the owner's own tenant, and not anybody else's.
     await expect(page.getByRole("table")).toHaveCount(0);
     await expect(page.getByText(OWNER_TENANT_NAME)).toHaveCount(0);
+    await expect(page.getByText(FOREIGN_TENANT_NAME)).toHaveCount(0);
   });
 
   test("a platform administrator reads the tenant directory", async ({ page }) => {
