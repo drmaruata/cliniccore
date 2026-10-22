@@ -12,13 +12,10 @@ import type * as React from "react";
 
 import { cn } from "@/lib/utils/cn";
 
-/** `title` is omitted from the DOM props: the heading owns that name here. */
 export interface PageHeaderProps extends Omit<React.ComponentProps<"header">, "title"> {
   /** Page or section title. Rendered as the page's single `h1`. */
   title: React.ReactNode;
-  /** One line of context under the title. Omit to render a bare heading. */
   description?: React.ReactNode;
-  /** Buttons or a menu, right-aligned on wide viewports. */
   actions?: React.ReactNode;
 }
 
@@ -49,9 +46,8 @@ export function PageHeader({
         {children}
       </div>
       {actions !== undefined && (
-        // `data-slot` marks the slot's presence, the same convention shadcn's
-        // generated primitives use, so a caller or a test can tell "no actions
-        // were supplied" apart from "actions were supplied and rendered empty".
+        // `data-slot` marks the slot's presence, the convention shadcn's generated
+        // primitives use, so a test can tell "no actions" from "actions and rendered empty".
         <div data-slot="page-header-actions" className="flex shrink-0 flex-wrap items-center gap-2">
           {actions}
         </div>

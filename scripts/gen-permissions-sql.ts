@@ -20,6 +20,25 @@
  * Every statement carries an on-conflict clause so the seed is re-appliable.
  *
  * DO NOT EDIT THE OUTPUT BY HAND. Change the registry, regenerate.
+ *
+ * THE EMITTED GRANTS, AND WHY THEY LOOK AS THEY DO. The grant column list follows the
+ * plan's schema - `role_permissions(role_id, permission_key)` with `permission_key`
+ * referencing `permissions(key)`; there is no `permissions.id` and no `permission_id` to
+ * select (review round 1, C1). `on conflict (role_id, permission_key) do nothing` makes
+ * the statement re-appliable: grants are pure join rows with nothing to update, so a
+ * re-run must skip pairs that already exist rather than raise `unique_violation` on the
+ * primary key (review round 1, I2). The tuple separator is a lone `  ,` line rather than
+ * a trailing comma, so that every tuple line is exactly `  ('role', 'permission')`. The
+ * registry test's extractor pins that exact row shape, and the shape keeps the emitted
+ * SQL greppable one grant per line.
+ *
+ * WHY A KEY'S SHAPE AND A DESCRIPTION'S SHAPE ARE ENFORCED AT THE INPUT BOUNDARY. Keys
+ * are inlined into the emitted SQL, so they are validated rather than assumed, and a
+ * newline - legal inside a SQL literal - is rejected because it breaks the one-row-per-
+ * line shape that keeps the emitted SQL greppable.
+ *
+ * ORGANIZATION-SCOPED ROLES ARE SEEDED PER ORGANIZATION AT ONBOARDING - never globally -
+ * so `generateOrganizationScopedRoleSeedTemplate` is the only path that creates them.
  */
 
 import {
@@ -30,36 +49,24 @@ import {
   type RoleDefinition,
 } from "@/lib/permissions/registry";
 
-/** Replaced with a concrete organization id when Task 8 inlines the template. */
 export const ORGANIZATION_ID_PLACEHOLDER = "{{ORGANIZATION_ID}}";
 
 const NO_PERMISSIONS_COMMENT = "-- (no permissions in this scope; nothing to seed)";
 const NO_ROLES_COMMENT = "-- (no roles in this scope; nothing to seed)";
 const NO_GRANTS_COMMENT = "-- (no role-permission grants in this scope; nothing to seed)";
 
-/**
- * Keys are inlined into the emitted SQL, so their shape is enforced at the
- * input boundary rather than assumed. One or more lowercase snake_case
- * segments joined by dots — `patients.read`, `platform.tenants.manage`.
- */
+/** One or more lowercase snake_case segments joined by dots. */
 const PERMISSION_KEY_PATTERN = /^[a-z_]+(?:\.[a-z_]+)+$/;
 
-/** Role keys: a single lowercase snake_case word. */
 const ROLE_KEY_PATTERN = /^[a-z_]+$/;
 
-/**
- * A newline is legal inside a SQL literal but breaks the one-row-per-line
- * shape that keeps the emitted SQL greppable, so descriptions and names are
- * rejected if they span lines.
- */
+/** A newline is legal inside a SQL literal but breaks the one-row-per-line shape. */
 const NEWLINE_PATTERN = /[\r\n]/;
 
-/** Escape a SQL single-quoted literal (SQL-style: double the quote). */
 function escapeLiteral(value: string): string {
   return value.replace(/'/g, "''");
 }
 
-/** Validate the input before emitting anything. Throws on any defect. */
 function validateRegistry(input: RegistryInput): void {
   const permissionKeys = new Set<string>();
   for (const permission of input.permissions) {
@@ -165,24 +172,6 @@ function rolesBlock(roles: readonly RoleDefinition[], organizationIdSql: string)
   ].join("\n");
 }
 
-/**
- * Emit the (role, permission) grant pairs.
- *
- * The column list follows the plan's schema — `role_permissions(role_id,
- * permission_key)` with `permission_key` referencing `permissions(key)`;
- * there is no `permissions.id` and no `permission_id` to select (review
- * round 1, C1).
- *
- * `on conflict (role_id, permission_key) do nothing` makes the statement
- * re-appliable: grants are pure join rows with nothing to update, so a
- * re-run must skip pairs that already exist rather than raise
- * `unique_violation` on the primary key (review round 1, I2).
- *
- * The tuple separator is a lone `  ,` line rather than a trailing comma, so
- * that every tuple line is exactly `  ('role', 'permission')`. The registry
- * test's extractor pins that exact row shape, and the shape keeps the emitted
- * SQL greppable one grant per line.
- */
 function grantsBlock(
   grants: Array<{ role: string; permission: string }>,
   rolesJoin: string,
@@ -212,11 +201,6 @@ function header(scopeDescription: string): string[] {
   ];
 }
 
-/**
- * The platform scope: all permissions, the platform role at
- * `organization_id NULL`, and that role's grants. Applied once by Task 7's
- * authorization migration.
- */
 export function generatePlatformScopeSql(
   input: RegistryInput = { permissions: PERMISSIONS, roles: ROLES },
 ): string {
@@ -235,13 +219,6 @@ export function generatePlatformScopeSql(
   ].join("\n");
 }
 
-/**
- * The organization scope: the fourteen organization roles and their grants,
- * parameterised on the organization id. Task 8's onboarding RPC substitutes a
- * concrete id for `{{ORGANIZATION_ID}}`. Organization-scoped roles are seeded
- * per organization at onboarding — never globally — so this template is the
- * only path that creates them.
- */
 export function generateOrganizationScopedRoleSeedTemplate(
   input: RegistryInput = { permissions: PERMISSIONS, roles: ROLES },
 ): string {

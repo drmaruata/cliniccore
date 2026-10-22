@@ -19,12 +19,30 @@
  * particular only an existing `organization_owner` may mint another `organization_owner`.
  * The database owns that check (`private.can_assign_role`); do not assume this file
  * provides it.
+ *
+ * THE MATRIX RULINGS THE TESTS PIN EXPLICITLY.
+ *  - `organization_owner` and `organization_admin` hold every non-platform permission and
+ *    no platform permission - byte-identical sets, which is why only an owner may mint
+ *    an owner;
+ *  - `auditor` is read-only viewing plus `audit.read` - never `patients.update` or
+ *    `patients.export`;
+ *  - `lab_technician` fulfils investigation orders (verifies results) but never places
+ *    them and never prescribes - `investigations.order` belongs to the clinicians who
+ *    order the test, not the lab that runs it;
+ *  - `pharmacist` manages inventory but never prescribes;
+ *  - `platform_super_admin` is confined to the four platform-console permissions - it must
+ *    never see clinical data.
+ *
+ * THE SHAPES BELOW. `RegistryInput` is the shape the SQL generator accepts; the real
+ * registry satisfies it, and the tests pass synthetic registries through it to pin the
+ * generator's validation and determinism. `PERMISSIONS` is sorted by key, but only for
+ * convenience - the generator re-sorts regardless. `hasPermission` FAILS CLOSED: an
+ * unrecognised role key or permission key denies rather than throws, so a caller passing
+ * garbage can never get a grant out of it.
  */
 
-/** A permission key: one or more lowercase snake_case segments joined by dots. */
 export type PermissionKey = `${string}.${string}`;
 
-/** The fifteen roles the foundation brief mandates. */
 export type RoleKey =
   | "accountant"
   | "auditor"
@@ -49,28 +67,17 @@ export interface PermissionDefinition {
 
 export interface RoleDefinition {
   readonly key: RoleKey;
-  /** Human-readable name, Title Case. */
   readonly name: string;
   /** Platform roles are seeded once at `organization_id NULL`, never per tenant. */
   readonly isPlatform: boolean;
   readonly permissions: readonly PermissionKey[];
 }
 
-/**
- * The registry shape as the SQL generator accepts it. The real registry satisfies this;
- * tests pass synthetic registries through it to pin the generator's validation and
- * determinism.
- */
 export interface RegistryInput {
   readonly permissions: readonly PermissionDefinition[];
   readonly roles: readonly RoleDefinition[];
 }
 
-/**
- * Every permission ClinicCore gates on, with a one-line description of what holding it
- * means. Sorted by key; the generator relies on that only for convenience - it re-sorts
- * regardless.
- */
 export const PERMISSIONS: readonly PermissionDefinition[] = [
   { key: "appointments.manage", description: "Book, reschedule, cancel and confirm appointments" },
   { key: "audit.read", description: "Read the organization audit log" },
@@ -98,20 +105,6 @@ export const PERMISSIONS: readonly PermissionDefinition[] = [
   { key: "subscription.manage", description: "View and change the organization subscription" },
 ];
 
-/**
- * The role × permission matrix. Matrix rulings the tests pin explicitly:
- *
- *  - `organization_owner` and `organization_admin` hold every non-platform permission and
- *    no platform permission;
- *  - `auditor` is read-only viewing plus `audit.read` - never `patients.update` or
- *    `patients.export`;
- *  - `lab_technician` fulfils investigation orders (verifies results) but never places
- *    them and never prescribes - `investigations.order` belongs to the clinicians who
- *    order the test, not the lab that runs it;
- *  - `pharmacist` manages inventory but never prescribes;
- *  - `platform_super_admin` is confined to the four platform-console permissions - it must
- *    never see clinical data.
- */
 export const ROLES: readonly RoleDefinition[] = [
   {
     key: "accountant",
@@ -301,7 +294,6 @@ export const ROLES: readonly RoleDefinition[] = [
   },
 ];
 
-/** Look up the permissions a role holds. Throws on an unknown role key. */
 export function defaultPermissionsFor(roleKey: RoleKey): readonly PermissionKey[] {
   const role = ROLES.find((candidate) => candidate.key === roleKey);
   if (role === undefined) {
@@ -310,12 +302,6 @@ export function defaultPermissionsFor(roleKey: RoleKey): readonly PermissionKey[
   return role.permissions;
 }
 
-/**
- * Whether any of the held roles grants the permission.
- *
- * Fails closed: an unrecognised role key or an unrecognised permission key denies rather
- * than throws, so a caller passing garbage can never get a grant out of it.
- */
 export function hasPermission(roles: readonly RoleKey[], permission: PermissionKey): boolean {
   return roles.some((role) =>
     ROLES.some((candidate) => candidate.key === role && candidate.permissions.includes(permission)),

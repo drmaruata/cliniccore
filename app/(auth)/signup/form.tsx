@@ -30,10 +30,10 @@ export default function SignupPage() {
     },
   });
 
-  // The dispatch returns nothing, so awaiting it resolved at once and the loading
-  // state was dead. `isPending` is the real signal, and ONLY inside a transition:
-  // MEASURED with React 19.3.0, dispatched outside one it never became true, so a
-  // double click fired TWO server actions.
+  // The dispatch returns nothing, so awaiting it resolved at once and the loading state
+  // was dead. `isPending` is the real signal, and ONLY inside a transition: MEASURED with
+  // React 19.3.0, dispatched outside one it never became true, so a double click fired TWO
+  // server actions.
   const onSubmit = form.handleSubmit((data) => {
     startTransition(() => {
       formAction(data);
@@ -108,9 +108,8 @@ export default function SignupPage() {
           </div>
 
           {formState && formState.body.error && (
-            // NOT every message here is a failure. "Check your email to confirm your
-            // address" is what a SUCCESSFUL signup says when the deployment has
-            // confirmation switched on, and dressing it as an error says the opposite.
+            // NOT every message here is a failure: "Check your email to confirm your
+            // address" is what a SUCCESSFUL signup says.
             <div
               className={
                 formState.body.code === "confirmation_required"

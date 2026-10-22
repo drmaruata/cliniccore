@@ -13,7 +13,6 @@ import type * as React from "react";
 
 import { cn } from "@/lib/utils/cn";
 
-/** `title` is omitted from the DOM props: the heading owns that name here. */
 export interface EmptyStateProps extends Omit<React.ComponentProps<"div">, "title"> {
   /**
    * Icon or short glyph. `lucide-react` icons at `size-5` are the house
@@ -22,9 +21,7 @@ export interface EmptyStateProps extends Omit<React.ComponentProps<"div">, "titl
   icon?: React.ReactNode;
   /** What is missing, in the user's words: "No patients yet". */
   title: React.ReactNode;
-  /** Why it is empty and what to do next. Optional. */
   description?: React.ReactNode;
-  /** Primary next step. Usually the action that creates the first row. */
   action?: React.ReactNode;
 }
 

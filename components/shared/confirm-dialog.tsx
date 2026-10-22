@@ -75,17 +75,9 @@ export interface ConfirmDialogProps {
   title: React.ReactNode;
   /** Required. What happens, and what cannot be undone. */
   description: React.ReactNode;
-  /**
-   * The action being confirmed - usually the mutation itself. Called on confirm and
-   * nowhere else, and it may be async. **This component does not close itself**; the
-   * caller closes it from inside the callback once the mutation has succeeded. See the
-   * file header for the full contract. A rejection is caught and rendered in the dialog
-   * as an alert, so nothing escapes as an unhandled rejection.
-   */
   onConfirm: () => void | Promise<void>;
   confirmLabel?: React.ReactNode;
   cancelLabel?: React.ReactNode;
-  /** `destructive` for anything irreversible. */
   tone?: ConfirmDialogTone;
 }
 
@@ -102,11 +94,8 @@ export function ConfirmDialog({
   const [pending, setPending] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Drop a stale failure when the dialog is reopened. `handleConfirm` clears `error` on
-  // the NEXT press, which is too late: a dialog closed on failure and reopened for an
-  // unrelated action would greet the user with the previous action's error still on
-  // screen. The closed -> open edge is the only moment the old error is provably about
-  // something that is no longer happening.
+  // Drop a stale failure when the dialog is reopened: `handleConfirm` clears `error` on
+  // the NEXT press, which is too late for an unrelated action.
   const wasOpen = React.useRef(open);
   React.useEffect(() => {
     if (open && !wasOpen.current) setError(null);
@@ -119,13 +108,10 @@ export function ConfirmDialog({
     try {
       await onConfirm();
     } catch (cause) {
-      // Swallowing this would strand the user: the dialog stays open with an unexplained
-      // failure. Reporting it in place keeps the dialog usable and keeps the rejection
-      // from escaping as an unhandled promise rejection.
+      // Reported in place: swallowing it would strand the user with no explanation.
       setError(cause instanceof Error ? cause.message : "Something went wrong. Try again.");
     } finally {
-      // Reset even if onConfirm throws: a stuck `pending` disables the button for the
-      // rest of the session with no way out.
+      // Reset even if onConfirm throws: a stuck `pending` disables the button for good.
       setPending(false);
     }
   }
@@ -148,8 +134,6 @@ export function ConfirmDialog({
             variant={tone === "destructive" ? "destructive" : "default"}
             disabled={pending}
             onClick={(event) => {
-              // Keep the dialog mounted while onConfirm runs so a failure can be reported
-              // inside it; a throw otherwise escapes the handler.
               event.preventDefault();
               void handleConfirm();
             }}

@@ -52,10 +52,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const SERVICE_ROLE_ENV = "SUPABASE_SERVICE_ROLE_KEY";
 
-/** The single source file permitted to read the service role key. */
 const ALLOWED_SERVICE_ROLE_FILES = ["lib/supabase/server.ts"];
 
-/** Path prefixes (repo-relative, forward-slash) where references are allowed. */
 const ALLOWED_SERVICE_ROLE_PREFIXES = ["tests/"];
 
 /**
@@ -74,10 +72,8 @@ const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"]
  * `.md`, `.json`, `.yml` and friends are deliberately NOT here. The plan
  * document under `docs/superpowers/plans/` carries illustrative credentials
  * (`postgres://user:hunter2@`, `sb_secret_replace_me`) that are part of its
- * prose, so widening the walk to prose or data files would make those permanent
- * false positives and train people to ignore the gate. `.env*` is handled
- * separately, by name, because it is both the highest-value target and the one
- * case where a blanket rule would be wrong.
+ * prose, so widening the walk to prose would make those permanent false
+ * positives and train people to ignore the gate.
  */
 const CREDENTIAL_SCAN_EXTENSIONS = [...SOURCE_EXTENSIONS, ".sql"];
 
@@ -95,15 +91,13 @@ const CREDENTIAL_SCAN_EXTENSIONS = [...SOURCE_EXTENSIONS, ".sql"];
  * developer credentials by design - `.env.local` is the file you are told to
  * put the service-role key in - so scanning them would make `check:secrets`
  * permanently red in every correctly configured checkout. A gate people have
- * to disable is not a gate, and that is worse than the gap it closes.
+ * to disable is not a gate.
  *
  * The exclusion is checked against the real `.gitignore` by the unit test
  * "skips every env file git ignores and reads every one git does not" in
  * tests/unit/check-no-secrets.test.ts. Scope limit: that test probes a fixed
- * list of env-file names, so it catches drift for those names only. Un-ignoring
- * a DIFFERENT name (e.g. adding `!.env.sample` to .gitignore) would leave this
- * constant stale and the gate blind without failing any test - recorded as a
- * residual in the round-5 report.
+ * list of env-file names, so it catches drift for those names only - recorded as
+ * a residual in the round-5 report.
  */
 const TRACKED_ENV_FILES = [".env.example"];
 
@@ -139,21 +133,15 @@ const SECRET_LITERAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
  * tripping rule 4.
  *
  * Two files the walk reads carry the literal `sb_secret_replace_me`, and both
- * are load-bearing:
- *
- *   1. `tests/unit/check-no-secrets.test.ts` - the allowlist has to be
- *      exercised against a literal string, or the assertion testing it is
- *      meaningless. Emptied, this fails:
- *        - "allows documented placeholders like sb_secret_replace_me"
- *        - "is clean against the real repository tree"
- *        - "keeps .env.example green because its values are inert, not
- *           because it is exempt"
- *        - "does not apply the code rules to .env or .sql files"
- *   2. `.env.example` line 14 - `SUPABASE_SERVICE_ROLE_KEY=sb_secret_replace_me`.
- *      That file is walked, so it is a SECOND live reason the list must exist.
- *      It was not one before the `.env*` walk change; the comment this replaces
- *      claimed it was not one at all, which was wrong. Re-measured after the
- *      walk widened, not inherited.
+ * are load-bearing: `tests/unit/check-no-secrets.test.ts` (the allowlist has to
+ * be exercised against a literal string, or the assertion testing it is
+ * meaningless - emptying it fails the tests "allows documented placeholders
+ * like sb_secret_replace_me", "is clean against the real repository tree",
+ * "keeps .env.example green because its values are inert, not because it is
+ * exempt" and "does not apply the code rules to .env or .sql files") and
+ * `.env.example` line 14, which the walk reads too - it was not one before the
+ * `.env*` walk change, and the comment this replaces claimed it was not one at
+ * all, which was wrong. Re-measured after the walk widened, not inherited.
  *
  * `replace_me` is a marker, not a credential. If a real key ever reaches either
  * site it does not contain `replace_me` and the gate still fails - see the
@@ -161,13 +149,10 @@ const SECRET_LITERAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
  */
 const PLACEHOLDER_ALLOWLIST = [/replace_me/];
 
-/** Module specifiers that are rooted at the repo, written without `./`. */
 const ROOTED_SPECIFIER_PREFIXES = ["app/", "components/", "lib/", "scripts/", "tests/"];
 
 export interface SecretCheckInput {
-  /** Repo-relative path, forward-slash separated. */
   path: string;
-  /** Full file contents. */
   contents: string;
 }
 
@@ -182,7 +167,6 @@ function toPosix(path: string): string {
   return path.replace(/\\/g, "/");
 }
 
-/** Collapse `.` and `..` segments and drop empty ones. */
 export function normalizePath(path: string): string {
   const out: string[] = [];
   for (const segment of toPosix(path).split("/")) {
@@ -245,15 +229,11 @@ export function stripComments(source: string): string {
 }
 
 const IMPORT_SPECIFIER_PATTERNS: RegExp[] = [
-  // import ... from "x" / export ... from "x"  (stops at ; or a quote)
   /(?:^|[;\n}])\s*(?:import|export)\s[^;'"]*?from\s*["']([^"']+)["']/g,
-  // side-effect import: import "x"
   /(?:^|[;\n}])\s*import\s*["']([^"']+)["']/g,
-  // dynamic import("x") and require("x")
   /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g,
 ];
 
-/** Every static/dynamic module specifier appearing in `contents`. */
 export function extractImportSpecifiers(contents: string): string[] {
   const code = stripComments(contents);
   const found = new Set<string>();
@@ -283,13 +263,11 @@ export function resolveImportSpecifier(specifier: string, fromPath: string): str
   return null;
 }
 
-/** True when `specifier`, imported from `fromPath`, reaches `lib/supabase/`. */
 export function resolvesIntoServerModule(specifier: string, fromPath: string): boolean {
   const resolved = resolveImportSpecifier(specifier, fromPath);
   return resolved !== null && resolved.startsWith(SERVER_MODULE_PREFIX);
 }
 
-/** Server-module specifiers imported by a file, deduped. */
 export function findServerModuleImports(file: SecretCheckInput): string[] {
   return extractImportSpecifiers(file.contents).filter((specifier) =>
     resolvesIntoServerModule(specifier, file.path),
@@ -298,7 +276,6 @@ export function findServerModuleImports(file: SecretCheckInput): string[] {
 
 /* ---- Rules ---- */
 
-/** True when the file declares itself a client component (first statement). */
 export function isClientFile(contents: string): boolean {
   return /^\s*(?:\/\/[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*\s*(?:"use client"|'use client')/.test(contents);
 }
@@ -319,7 +296,6 @@ export function isSourceFilePath(path: string): boolean {
   return SOURCE_EXTENSIONS.some((ext) => base.endsWith(ext));
 }
 
-/** True when `path` is permitted to reference the service role key. */
 export function isAllowedServiceRolePath(path: string): boolean {
   const normalized = normalizePath(path);
   if (ALLOWED_SERVICE_ROLE_FILES.some((allowed) => normalized === allowed)) {
@@ -328,9 +304,6 @@ export function isAllowedServiceRolePath(path: string): boolean {
   return ALLOWED_SERVICE_ROLE_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
-/**
- * Evaluate one file. Returns the list of violations found (empty when clean).
- */
 export function findViolations(file: SecretCheckInput): SecretViolation[] {
   const violations: SecretViolation[] = [];
   const client = isClientFile(file.contents);
@@ -338,8 +311,7 @@ export function findViolations(file: SecretCheckInput): SecretViolation[] {
 
   // Rules 1–3 read code. `.env*` and `.sql` files are walked for rule 4 only:
   // an env template has to name SUPABASE_SERVICE_ROLE_KEY on its assignment
-  // line, and a migration may name it in a `--` comment, so applying the code
-  // rules to them would fail on correct files rather than on leaks.
+  // line, and a migration may name it in a `--` comment.
   if (isSourceFilePath(file.path)) {
     if (code.includes(SERVICE_ROLE_ENV)) {
       if (client) {
@@ -367,9 +339,7 @@ export function findViolations(file: SecretCheckInput): SecretViolation[] {
 
   // Rule 4 is enforced EVERYWHERE, including under tests/. There is no path-based
   // exemption: it is the only rule that catches a hard-coded credential, and a
-  // leaked key need not appear under the env-var name or a module path. Test
-  // fixtures that need a secret-shaped literal build it at runtime instead —
-  // see the note above tests/unit/check-no-secrets.test.ts.
+  // leaked key need not appear under the env-var name or a module path.
   for (const { name, pattern } of SECRET_LITERAL_PATTERNS) {
     const match = file.contents.match(pattern)?.[0] ?? "";
     if (match && !PLACEHOLDER_ALLOWLIST.some((allowed) => allowed.test(match))) {
@@ -380,10 +350,7 @@ export function findViolations(file: SecretCheckInput): SecretViolation[] {
   return violations;
 }
 
-/**
- * Brief Step 4 contract: `true` when every file is clean, `false` otherwise.
- * Accepts either tuples or objects.
- */
+/** Accepts either tuples or objects. */
 export type SecretCheckEntry = SecretCheckInput | readonly [string, string];
 
 export function check(files: readonly SecretCheckEntry[]): boolean {
@@ -432,7 +399,6 @@ function collectFiles(root: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Walk the whole repo and return human-readable violation lines. */
 export function run(repoRoot: string): string[] {
   const violations: SecretViolation[] = [];
   for (const file of collectFiles(repoRoot)) {

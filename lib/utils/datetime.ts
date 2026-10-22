@@ -46,21 +46,12 @@
  */
 const HOUR = 3_600_000;
 /**
- * Walk step. This has to be SHORTER than the shortest run of a single local date that
- * exists anywhere in tzdata, because the walk finds a run by stepping away from the
- * instant and skipping one is how a run gets bridged across a gap.
- *
- * MEASURED shortest run: 60 seconds, at America/St_Johns on 2005-10-30, where local
- * time passes 00:59 of 2005-10-30 and then reverts to 2005-10-29. At a 300-second step
- * that run is stepped straight over and the result is a 25-hour window that contains the
- * instant and spans the gap - which passes a containment check while being the wrong
- * answer, and is only caught by a tiling check. 30 seconds is a 2x margin.
- *
- * If a future tzdata produces a shorter run, MAX_RUN_MS is the backstop that refuses the
- * implausible result rather than billing against it.
+ * Walk step. MEASURED shortest run of a single local date anywhere in tzdata: 60 s
+ * (America/St_Johns, 2005-10-30), so 30 s is a 2x margin; a 300 s step steps OVER that
+ * run and returns a 25-hour window that contains the instant and spans the gap.
  */
 const COARSE_STEP = 30_000;
-/** No real local date occupies more than about 32 hours; anything longer spans a gap. */
+/** No real local date occupies more than about 32 hours; the backstop that refuses an implausible run. */
 const MAX_RUN_MS = 32 * HOUR;
 const MAX_TIME = 8.64e15;
 
@@ -82,9 +73,8 @@ function dateFormatter(timeZone: string, locale: string): Intl.DateTimeFormat {
 }
 
 /**
- * YYYY-MM-DD in `timeZone`, always zero-padded. The padding is load-bearing: a locale's
- * own pattern renders year 1 as "1" and year 999 as "999", which breaks both a caller
- * that slices this string and the string comparison the day search below relies on.
+ * YYYY-MM-DD, always zero-padded: a locale's own pattern renders year 1 as "1", which
+ * breaks the string comparison the day search relies on.
  */
 function localDate(at: Date, timeZone: string): string {
   const parts = dateFormatter(timeZone, "en-CA").formatToParts(at);
@@ -92,7 +82,6 @@ function localDate(at: Date, timeZone: string): string {
   return `${field("year").padStart(4, "0")}-${field("month").padStart(2, "0")}-${field("day").padStart(2, "0")}`;
 }
 
-/** The calendar date an instant falls on in `timezone`, as a padded YYYY-MM-DD. */
 export function formatInClinicTz(iso: string, timezone: string): string {
   const at = new Date(iso);
   if (Number.isNaN(at.getTime())) {
@@ -101,7 +90,6 @@ export function formatInClinicTz(iso: string, timezone: string): string {
   return localDate(at, timezone);
 }
 
-/** First millisecond of the maximal CONTIGUOUS run of local day `day` containing `at`. */
 function runStart(day: string, at: number, timeZone: string): number {
   let cursor = at;
   while (
@@ -110,7 +98,6 @@ function runStart(day: string, at: number, timeZone: string): number {
   ) {
     cursor -= COARSE_STEP;
   }
-  // `cursor` is on `day`, `cursor - COARSE_STEP` is not, so the boundary is in between.
   let low = Math.max(-MAX_TIME, cursor - COARSE_STEP);
   let high = cursor;
   while (high - low > 1) {
@@ -121,7 +108,6 @@ function runStart(day: string, at: number, timeZone: string): number {
   return high;
 }
 
-/** One millisecond past the end of that run - the first instant NOT on `day`. */
 function runEnd(day: string, at: number, timeZone: string): number {
   let cursor = at;
   while (
@@ -140,12 +126,6 @@ function runEnd(day: string, at: number, timeZone: string): number {
   return high;
 }
 
-/**
- * The clinic-local calendar day containing `date`, as an exclusive-end ISO window.
- * The window always contains the input instant. It spans whatever the zone's local
- * midnights actually span - between 17 and 31 hours across the real-world offsets, not
- * the 23-to-25 hours daylight saving alone implies.
- */
 export function clinicDayBounds(
   date: Date,
   timezone: string,
@@ -156,13 +136,6 @@ export function clinicDayBounds(
   const at = date.getTime();
   const day = localDate(date, timezone);
 
-  // Memoised per zone and local day. Every hit is VERIFIED before it is used: a local day
-  // can occupy several disjoint runs, so a cached window is only correct for instants
-  // inside it and anything else recomputes. That check is what makes the day-only key
-  // sound. An hour bucket would NOT be sound on its own - America/St_Johns on 2005-10-30
-  // puts 2005-10-30 into a single minute and then drops back to 2005-10-29 for another
-  // hour - and without the check a stale window is returned and the self-check below
-  // fires on a date that works when called first.
   const key = `${timezone}|${day}`;
   let run = runCache.get(key);
   if (!run || at < run.start || at >= run.end) {
@@ -172,10 +145,7 @@ export function clinicDayBounds(
   const start = new Date(run.start);
   const end = new Date(run.end);
 
-  // Self-check. Every real offset change this was designed to survive lands here as a
-  // pass; a date outside Intl's representable year range, where the local day cannot be
-  // established, lands here as a loud refusal instead of a window that silently excludes
-  // the instant that produced it.
+  // Self-check: a loud refusal rather than a window that silently excludes the instant.
   if (at < start.getTime() || at >= end.getTime() || end <= start) {
     throw new RangeError(
       `Could not bound ${date.toISOString()} to a local day in ${timezone} (${day})`,

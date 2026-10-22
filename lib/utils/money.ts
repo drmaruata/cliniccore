@@ -52,7 +52,6 @@
 export type Minor = bigint;
 
 const DEFAULT_LOCALE = "en-IN";
-/** Refuses pathological input before a multi-megabyte digit string becomes a BigInt. */
 const MAX_INPUT_LENGTH = 256;
 
 const formatters = new Map<string, Intl.NumberFormat>();
@@ -83,11 +82,10 @@ function assertCurrency(currency: string): void {
 const escapeForRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\\-]/g, "\\$&");
 
 interface Grammar {
-  /** `digits (group digits)* (decimal up-to-two-digits)?`, anchored. */
+  /** The locale's own separators and the anchored shape they imply. */
   shape: RegExp;
   group: string;
   decimal: string;
-  /** Whole literal strings the formatter emits, taken from both sign renderings. */
   literals: string[];
 }
 
@@ -124,7 +122,6 @@ function grammar(locale: string, currency: string): Grammar {
   return built;
 }
 
-/** The decimal digit string, validated against the locale's real grouping. */
 function assertGrouping(digits: string, group: string, original: string): void {
   if (!digits.includes(group)) return;
   const groups = digits.split(group);
@@ -145,7 +142,6 @@ function assertGrouping(digits: string, group: string, original: string): void {
 
 const BIDI_MARKS = /[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g;
 
-/** Renders paise as a currency string. Display only - never feed this to arithmetic. */
 export function formatMinor(amount: Minor, currency: string, locale = DEFAULT_LOCALE): string {
   if (typeof amount !== "bigint") {
     throw new TypeError(`formatMinor needs bigint paise, received ${typeof amount}`);
@@ -154,10 +150,6 @@ export function formatMinor(amount: Minor, currency: string, locale = DEFAULT_LO
   return numberFormat(locale, currency).format(Number(amount) / 100);
 }
 
-/**
- * Parses a rendered amount back into paise. The exact inverse of formatMinor for a string
- * that formatMinor produced in the SAME locale and currency. Throws rather than guessing.
- */
 export function parseMinor(text: string, currency: string, locale = DEFAULT_LOCALE): Minor {
   if (typeof text !== "string") {
     throw new TypeError(`parseMinor needs a string, received ${typeof text}`);
@@ -188,13 +180,10 @@ export function parseMinor(text: string, currency: string, locale = DEFAULT_LOCA
     body = body.slice(1, -1).trim();
   }
 
-  // Literals come off BEFORE the sign is read, not after. Several locales put the
-  // minus in the MIDDLE - de-CH renders a negative as "\u20b9-1'234.56" - so reading the sign
-  // while the currency symbol is still attached sees an "internal" minus and rejects the
-  // formatter's own output. MEASURED: 10 locales, 126 040 negative renderings.
-  //
-  // Removing whole literal STRINGS is also what stops a localised currency name that
-  // contains the locale's decimal separator from deleting the real one.
+  // Literals come off BEFORE the sign is read: several locales put the minus in the
+  // MIDDLE - de-CH renders a negative as "\u20b9-1'234.56" - so reading the sign while
+  // the currency symbol is still attached sees an "internal" minus. MEASURED: 10
+  // locales, 126 040 negative renderings.
   let numeric = body;
   for (const literal of literals) {
     if (literal) numeric = numeric.split(literal).join("");

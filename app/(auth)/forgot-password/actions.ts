@@ -20,6 +20,12 @@ import { createServerClient } from "@/lib/supabase/server";
  * is missing the url would be the literal "undefined/reset-password", and Supabase
  * would reject the request - so the missing variable is a server-side fault to log,
  * not something to send.
+ *
+ * WHY THE EXCHANGE LIVES IN A ROUTE HANDLER. A Server Component cannot set cookies, and
+ * the recovery session has to be established before the form can change a password.
+ *
+ * WHY THE FAILURE LOG CARRIES NO ADDRESS, like the login log: an address is a person's,
+ * and a log is the one place a whole list of them accumulates.
  */
 const GENERIC_RESPONSE: SafeResponse = {
   status: 200,
@@ -32,9 +38,8 @@ export async function forgotPassword(
 ): Promise<SafeResponse | null> {
   const parsed = forgotPasswordSchema.safeParse(toActionInput(data));
   if (!parsed.success) {
-    // A malformed address is not a valid address, and saying so reveals nothing about
-    // whether the account exists - but it DOES reveal that the address is malformed,
-    // which is a property of the input and not of the account.
+    // A malformed address is not a valid address: saying so reveals nothing about whether
+    // the account exists, only about the input.
     return toSafeResponse(new ValidationError(fieldErrorMessage(parsed.error)));
   }
 
@@ -46,15 +51,12 @@ export async function forgotPassword(
 
   const supabase = await createServerClient();
   const { error } = await supabase.auth.resetPasswordForEmail(parsed.data.email, {
-    // The exchange happens in a ROUTE HANDLER, because a Server Component cannot set
-    // cookies and the recovery session has to be established before the form can
-    // change a password.
+    // The exchange happens in a ROUTE HANDLER: a Server Component cannot set cookies.
     redirectTo: `${appUrl}/api/auth/verify?next=/reset-password`,
   });
 
   if (error) {
-    // WITHOUT THE ADDRESS, like the login log: an address is a person's, and a log is
-    // the one place a whole list of them accumulates.
+    // WITHOUT THE ADDRESS, like the login log.
     console.error("forgotPassword: the reset request failed", error.code ?? "unknown");
   }
 

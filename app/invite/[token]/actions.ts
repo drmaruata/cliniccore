@@ -64,9 +64,8 @@ export async function acceptInvitation(token: string): Promise<SafeResponse | nu
       );
     }
     if (error.code === "23505") {
-      // A unique violation. The acceptance turns the race into a refusal itself, so
-      // this is the backstop for a collision the function did not catch - and the
-      // user is told what it means.
+      // A unique violation: the backstop for a race the acceptance function did not
+      // catch, and the user is told what it means.
       return toSafeResponse(
         new ValidationError("That invitation has already been used.", "invitation_already_used"),
       );
@@ -85,8 +84,7 @@ export async function acceptInvitation(token: string): Promise<SafeResponse | nu
     );
   }
 
-  // The membership names the organization, and the new member is dropped straight into
-  // the clinic they just joined.
+  // The membership names the organization, and the new member joins it directly.
   const { data: membership } = await supabase
     .from("organization_memberships")
     .select("organization_id")
@@ -96,8 +94,7 @@ export async function acceptInvitation(token: string): Promise<SafeResponse | nu
     await setActiveOrg(membership.organization_id);
   }
 
-  // The redirect is outside the try: `redirect()` throws a sentinel, and catching it
-  // would swallow the navigation.
+  // The redirect is outside the try: `redirect()` throws a sentinel.
   redirect("/app/dashboard");
   return null;
 }

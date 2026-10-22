@@ -20,8 +20,20 @@ import { createOrganizationSchema } from "@/lib/validation/auth";
  * `ConflictError` - and the mapping is BY CODE, not by message, because a message can
  * be reworded and a code cannot.
  *
+ * THE SQLSTATEs THIS MAPS, AND WHAT EACH ONE ACTUALLY MEANS. 23505 is a unique
+ * violation - the slug is taken. 53400 is `configuration_limit_exceeded`, the creation
+ * cap, and it has its OWN code so the message is about what actually happened rather
+ * than about every check violation in the database. 23514 is a check violation, which is
+ * a CLASS and not a cause, so its message is deliberately vague. 22023 is
+ * `invalid_parameter_value` - the time zone was refused, and ICU rejects every IANA name
+ * in `pg_timezone_names` except PostgreSQL's own placeholder, `Factory`.
+ *
  * WHY THE RAW DATABASE MESSAGE NEVER REACHES THE USER. Only an `AppError` contributes
- * a message to a response, so the words on screen are the ones written here.
+ * a message to a response, so the words on screen are the ones written here. The first
+ * clinic takes the organization's name - a separate field would be one more thing to get
+ * wrong on the first screen, and the clinic can be renamed - and the currency and locale
+ * are set at creation, because the currency is the unit every amount in this organization
+ * will be denominated in and a later settings screen must not change it.
  */
 export async function createOrganization(
   _prev: SafeResponse | null,
@@ -40,13 +52,8 @@ export async function createOrganization(
     const response = await supabase.rpc("create_organization_with_owner", {
       p_name: parsed.data.name,
       p_slug: parsed.data.slug,
-      // The first clinic takes the organization's name. A separate field would be one
-      // more thing to get wrong on the first screen, and the clinic can be renamed.
       p_clinic_name: parsed.data.name,
       p_timezone: parsed.data.timezone,
-      // The tenant's money and locale. The currency is the unit every amount in this
-      // organization will be denominated in, so it is set at creation rather than
-      // left at the column default for a later settings screen to change.
       p_currency: parsed.data.currency,
       p_locale: parsed.data.locale,
     });
@@ -67,9 +74,7 @@ export async function createOrganization(
       );
     }
     if (error.code === "53400") {
-      // The creation cap: five organizations per user in any 24-hour window. It has
-      // its OWN SQLSTATE (configuration_limit_exceeded), so this message is about what
-      // actually happened rather than about every check violation in the database.
+      // The creation cap: five organizations per user in any 24-hour window.
       return toSafeResponse(
         new ValidationError(
           "You have created five clinics in the last day. Wait a while, or contact support.",
@@ -78,8 +83,7 @@ export async function createOrganization(
       );
     }
     if (error.code === "23514") {
-      // A check violation, which is a CLASS and not a cause: the database refused
-      // these details for some reason it did not name.
+      // A check violation, which is a CLASS and not a cause.
       return toSafeResponse(
         new ValidationError(
           "The clinic details were refused. Check the name, the address and the time zone.",
@@ -88,6 +92,7 @@ export async function createOrganization(
       );
     }
     if (error.code === "22023") {
+      // invalid_parameter_value: the time zone name was refused.
       return toSafeResponse(
         new ValidationError(
           "The clinic details were refused. Check the time zone - it must be a canonical IANA name such as Asia/Kolkata.",
@@ -104,8 +109,6 @@ export async function createOrganization(
     );
   }
 
-  // The new organization becomes the active one, so the user lands in the tenant they
-  // just created rather than being asked to choose.
   await setActiveOrg(orgId);
 
   // The redirect is outside the try: `redirect()` throws a sentinel, and catching it

@@ -38,15 +38,10 @@ import {
 import { cn } from "@/lib/utils/cn";
 
 export interface DataTableColumn<T> {
-  /** Stable identity for the column. Used as a React key and for testing. */
   key: string;
-  /** Column heading content. */
   header: React.ReactNode;
-  /** Renders one cell. Evaluated on the server for a server-rendered table. */
   cell: (row: T) => React.ReactNode;
-  /** `right` for figures and dates, `left` for names and labels. */
   align?: "left" | "right";
-  /** Extra classes for this column's cells. */
   cellClassName?: string;
 }
 
@@ -57,14 +52,10 @@ export interface DataTableProps<T> extends Omit<React.ComponentProps<"div">, "ch
   getRowKey: (row: T, index: number) => string;
   /** Accessible caption. Also renders visibly, so make it useful. */
   caption?: React.ReactNode;
-  /** Replaces the default empty state entirely. */
   empty?: React.ReactNode;
-  /** Default empty-state copy, used when `empty` is not supplied. */
   emptyTitle?: React.ReactNode;
   emptyDescription?: React.ReactNode;
-  /** Draws placeholder rows instead of data. */
   loading?: boolean;
-  /** Placeholder row count while `loading`. */
   loadingRows?: number;
 }
 

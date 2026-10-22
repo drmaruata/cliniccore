@@ -30,8 +30,7 @@
 import { z } from "zod";
 
 // Transform, THEN validate: Zod checks the format against the INPUT string, so
-// ` Dr@clinic.test ` was rejected as malformed when `.trim().toLowerCase()` was
-// chained after `z.email()`. `.max(254)` is the RFC's forward-path cap.
+// ` Dr@clinic.test ` was rejected when `.trim().toLowerCase()` was chained after `z.email()`.
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
 
 const password = z
@@ -43,8 +42,8 @@ const password = z
 
 export const loginSchema = z.object({
   email,
-  // No minimum beyond non-empty: refusing a login because of a PASSWORD RULE would
-  // leak, by timing and by message, that the password exists and merely fails a rule.
+  // No minimum beyond non-empty: a PASSWORD RULE refusal would leak that the password
+  // exists and merely fails a rule.
   password: z.string().min(1, "Enter your password").max(200),
 });
 export type LoginInput = z.infer<typeof loginSchema>;
@@ -52,10 +51,8 @@ export type LoginInput = z.infer<typeof loginSchema>;
 export const signupSchema = z.object({
   email,
   password,
-  // An EMPTY name is ABSENT, not invalid: the field is labelled optional, and one that
-  // is optional in the label but required in practice cannot be submitted at all.
-  // MEASURED: the form seeds `fullName: ""`, and `min(1)` rejected it, so the
-  // resolver never reached the server action.
+  // An EMPTY name is ABSENT, not invalid. MEASURED: the form seeds `fullName: ""`, and
+  // `min(1)` rejected it, so the resolver never reached the server action.
   fullName: z.string().trim().max(120, "That name is implausibly long").optional(),
 });
 export type SignupInput = z.infer<typeof signupSchema>;

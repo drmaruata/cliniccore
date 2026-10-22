@@ -26,8 +26,8 @@ interface AssignmentRow {
 
 export default async function DashboardPage() {
   const org = await getActiveOrg();
-  // The shell renders the onboarding screen in this state and does not render the
-  // page at all, so this is only reached in a race the layout has already answered.
+  // The shell renders the onboarding screen in this state, so this is a race the layout
+  // has already answered.
   if (!org) return null;
 
   const claims = await getClaims().catch(() => null);
@@ -40,16 +40,14 @@ export default async function DashboardPage() {
     .eq("organization_id", org.id)
     .eq("user_id", userId);
 
-  // The embed's shape is declared here rather than inferred: the generated types
-  // describe the RELATIONSHIP, not the shape of the embedded row.
+  // The embed's shape is declared here: the generated types describe the RELATIONSHIP.
   const assignments = (data ?? []) as unknown as AssignmentRow[];
 
   const activeClinicId = await readActiveClinicId();
   let activeClinicName: string | null = null;
   if (activeClinicId) {
-    // SCOPED TO THE ACTIVE ORGANIZATION, like the switcher that wrote the cookie. The
-    // `clinics` SELECT policy spans every organization the user belongs to, so a
-    // lookup by id alone would name another tenant's clinic.
+    // SCOPED TO THE ACTIVE ORGANIZATION, like the switcher that wrote the cookie: the
+    // `clinics` SELECT policy spans every organization the user belongs to.
     const { data: clinic } = await supabase
       .from("clinics")
       .select("name")

@@ -38,16 +38,13 @@ export interface KpiDelta {
 }
 
 export interface KpiCardProps extends React.ComponentProps<typeof Card> {
-  /** What the number measures. */
   label: React.ReactNode;
   /**
    * The figure, pre-formatted. Money arrives as a string built from bigint
    * minor units; this component never parses or divides it.
    */
   value: React.ReactNode;
-  /** Secondary context under the label. */
   hint?: React.ReactNode;
-  /** Period-over-period change. Omit when there is no comparison to make. */
   delta?: KpiDelta;
 }
 
