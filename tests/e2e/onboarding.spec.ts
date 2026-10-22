@@ -110,14 +110,18 @@ test.describe("Onboarding", () => {
     const slug = `probe-clinic-${Date.now()}-${process.pid}`;
     probe.slugs.push(slug);
 
+    // A NAME OF ITS OWN. The test above asserts that no organization called "Probe
+    // Onboarding Clinic" exists, and the two tests run in parallel - so this one must
+    // not create an organization under that name, or it fails on its neighbour. The
+    // collision was latent until Task 17's spec file changed the worker schedule.
     await page.goto("/app/onboarding");
-    await page.fill('input[id="name"]', "Probe Onboarding Clinic");
+    await page.fill('input[id="name"]', "Probe Created Clinic");
     await page.fill('input[id="slug"]', slug);
     await page.getByRole("button", { name: "Create organization" }).click();
 
     await expect(page).toHaveURL(/\/app\/dashboard$/);
     // The organization name, read from the database, and not a placeholder.
-    await expect(page.getByRole("heading", { name: "Probe Onboarding Clinic" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Probe Created Clinic" })).toBeVisible();
   });
 
   test("the clinic switcher refuses a clinic from another organization", async ({ page }) => {

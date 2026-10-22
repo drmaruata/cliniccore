@@ -792,7 +792,15 @@ docs/*.md                            15 artefacts
 
 **Files:**
 - Create: `app/(marketing)/layout.tsx`, `app/(marketing)/page.tsx`, `components/marketing/*`
-- Create: `app/(platform)/layout.tsx`, `app/(platform)/page.tsx`
+- Create: `app/platform/layout.tsx`, `app/platform/page.tsx`
+  - CORRECTED during Task 17. This list originally said `app/(platform)/...`, which
+    contradicts this task's own `Produces` line (`/platform`) and the design spec's route
+    table. A route group is pathless, so `(platform)/page.tsx` would serve `/` and
+    collide with the marketing root page - the same collision Task 16 found for
+    `(app)/`, and the same correction.
+- Create: `app/(marketing)/page.tsx` REPLACES the root `app/page.tsx`, which is deleted.
+  A route group is pathless, so `(marketing)/page.tsx` serves `/` - and two pages serving
+  one url is a build conflict, not two routes.
 - Test: `tests/e2e/platform-gate.spec.ts`
 
 **Interfaces:**
@@ -811,7 +819,7 @@ docs/*.md                            15 artefacts
 
 - [ ] **Step 4: Implement the platform gate**
 
-  The `(platform)` layout calls `private.is_platform_admin()` server-side on every request and renders `notFound()` otherwise. It reads the tenant directory — organization names, statuses, member counts only. **No patient data is reachable from this route.**
+  The `app/platform` layout calls the platform-administrator predicate server-side on every request and renders `notFound()` otherwise. The predicate is `private.is_platform_admin()`, which the browser cannot reach (PostgREST serves the `public` schema only), so the implementation asks a `public` wrapper over it rather than reimplementing the rule in TypeScript. The PAGE's data access refuses to read the directory too — a layout does not control whether the rest of the route renders. It reads the tenant directory — organization names, statuses, member counts only. **No patient data is reachable from this route.**
 
 - [ ] **Step 5: Run the E2E test to verify it passes** → PASS.
 

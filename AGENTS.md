@@ -21,9 +21,8 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1-16 of 20 are complete** (16 = the signed-in application shell, organization
-  onboarding, the tenant switcher and the invitation flow). **Task 17 is next.** Run
-  `git log --oneline` and
+  **Tasks 1-17 of 20 are complete** (17 = the marketing shell and the platform-admin
+  gate). **Task 18 is next.** Run `git log --oneline` and
   `git status` before you start. Briefs, reports and review packages are in
   `.superpowers/sdd/cliniccore-foundation/`.
 
@@ -40,7 +39,7 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`01840` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`01850` (extensions, core functions, identity/tenancy
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
   then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
@@ -50,9 +49,10 @@ npm run build && npm run format:check`.
   invitations, `01730` digest correction, `01740` migration-history name fix, `01750` ceiling
   parameterisation, `01760` invitation ceiling, `01770` currency and locale, the round-2 fixes
   `01780` every grant path, `01790` the proven address, `01800` the creation cap's SQLSTATE and
-  `01810` the restored pre-staging clause, and the round-3 fixes `01820` the inviter is the
-  caller, `01830` the helpers' privileges and `01840` the one membership rule), all
-  applied — 57 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  `01810` the restored pre-staging clause, the round-3 fixes `01820` the inviter is the
+  caller, `01830` the helpers' privileges and `01840` the one membership rule, and Task 17's
+  `01850` the platform console's two public functions, all
+  applied — 58 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
@@ -701,11 +701,13 @@ invitation flow. Consequences the next agent must not have to rediscover:
     passing the bare stem instead of the file name broke
     `tests/integration/tenancy-schema.test.ts`, which asserts the history names every
     migration file exactly once).
-- **THE PUBLIC RPC SURFACE NOW HAS EIGHT FUNCTIONS** (it had seven when this line was
-  written; `has_any_membership` was added by `20261014001840`), and
+- **THE PUBLIC RPC SURFACE NOW HAS TEN FUNCTIONS** (it had seven when this line was
+  written; `has_any_membership` was added by `20261014001840`, and
+  `is_platform_admin` and `tenant_directory` by `20261014001850`), and
   `tests/integration/public-rpc-privileges.test.ts` pins the list: `accept_invitation`,
   `can`, `create_organization_with_owner`, `delete_organization`, `export_patients`,
-  `grantable_roles`, `has_any_membership`, `write_audit`. `private.can_assign_role` and
+  `grantable_roles`, `has_any_membership`, `is_platform_admin`, `tenant_directory`,
+  `write_audit`. `private.can_assign_role` and
   `private.assignment_target_is_member` are POLICY-referenced, so they must stay
   executable by `authenticated` - revoking either would make an assignment or an
   invitation write INVISIBLE rather than denied.
@@ -993,3 +995,107 @@ gaps and some false records. All of it is closed.
   the spec's tree said `(app)/`; BOTH have been corrected, because they contradicted the
   url contract that four separate statements in the two documents agree on. `app/app/` is
   the shape that satisfies the contract, and it is the only one that does.
+
+## Task 17+ : the marketing shell and the platform console exist, and `/platform` is a REAL segment
+
+Task 17 added the public marketing shell and the operator console. Consequences the
+next agent must not have to rediscover:
+
+- **THE MARKETING SHELL REPLACED THE ROOT PAGE, AND THE ROOT PAGE IS GONE.**
+  `app/(marketing)/page.tsx` serves `/`, and `app/page.tsx` was DELETED. A route group
+  is pathless, so the group adds no segment - and two pages serving `/` is a BUILD
+  CONFLICT, not two routes. The ROOT layout (`app/layout.tsx`, which owns `<html>` and
+  `<body>`) stays where it is: a route group cannot have a root layout.
+- **THE PLATFORM CONSOLE IS AT `app/platform/`, A REAL SEGMENT - NOT
+  `app/(platform)/`.** The same rule as the application shell: a pathless group would
+  serve `/` and collide with the marketing root. The design spec's route table is the
+  authority; its parenthesised names are shorthand for a url prefix.
+- **`private.is_platform_admin()` IS UNREACHABLE FROM POSTGREST, SO
+  `public.is_platform_admin()` WRAPS IT.** MEASURED (and already recorded above):
+  PostgREST exposes the `public` schema only, and a POST to `/rest/v1/rpc/<fn>` naming
+  a `private.*` function answers PGRST202 naming `public` as the schema it searched.
+  The console's gate could not be evaluated at all until `20261014001850` added the
+  wrapper. **Do not reimplement the predicate in TypeScript** - reading
+  `profiles.is_platform_admin` in the application would put the rule in two places,
+  which is how the platform-key clause and the grant ceiling each drifted once.
+- **THE CONSOLE'S GATE IS TWO CHECKS, AND THE DATA-LAYER ONE IS THE ONE THAT MATTERS.**
+  `app/platform/layout.tsx` calls the predicate and renders `notFound()` otherwise -
+  that is what produces the 404 RESPONSE. `app/platform/page.tsx` asks
+  `lib/auth/platform.ts` for the directory, and that module REFUSES to read it for an
+  unauthorised caller. Next.js's own authentication guide is the reason: a layout does
+  not control whether the rest of the route renders, and layouts do not re-render on
+  client-side navigation. A gate that only hides the UI while the data is still read
+  is not a gate.
+- **THE DIRECTORY'S MEMBER COUNT HAD TO BE TAKEN BY A DEFINER, AND THAT IS MEASURED.**
+  `organization_memberships_select`'s row filter is `private.is_member(organization_id)`,
+  so a principal who belongs to no tenant sees NO membership rows - **MEASURED: a
+  platform administrator reads ZERO membership rows for a tenant with one member,
+  while `public.tenant_directory()` reports that member as 1.** A count taken from an
+  ordinary read would be zero for every tenant. `tests/integration/platform-console.
+test.ts` pins both halves.
+- **`public.tenant_directory()` RETURNS EXACTLY THREE COLUMNS - NAME, STATUS AND
+  MEMBER_COUNT - AND THAT IS THE WHOLE BOUNDARY.** It cannot return an id, a slug or a
+  clinical row, so "no patient data is reachable from this route" is a property of the
+  function's SIGNATURE and not of a reviewer's reading of the page. The count is an
+  aggregate: it says how many staff a tenant has, never who they are.
+- **THE CONSOLE ANSWERS 404, NOT A REDIRECT.** A redirect would tell a clinic owner
+  that something exists at `/platform`; a 404 does not. `notFound()` also makes Next
+  emit a `noindex` robots tag, and the layout's own metadata says
+  `robots: { index: false }`.
+- **THE MARKETING PAGE IS PUBLIC AND READS NOTHING.** There is no session read
+  anywhere in `app/(marketing)/` or `components/marketing/`: a header or a hero that
+  changed for a signed-in visitor would disclose that somebody is signed in. The E2E
+  spec asserts it - the public header still offers "Sign in" to a signed-in visitor,
+  and the application shell's "Sign out" is absent.
+- **THE MARKETING COPY MAKES NO CLAIM THAT HAS NOT BEEN VERIFIED.** No testimonials,
+  no customer counts, no uptime, no certification - and no mention of patient records,
+  appointments or payments, because NONE of those exist in this release. The four
+  feature cards each name something the codebase can be asked about. Full copy and the
+  page set are Phase 4; this is the visual foundation, and the footer says so.
+- **`types/database.types.ts` WAS REGENERATED, AND THE GENERATOR'S OUTPUT HAS CHANGED
+  SINCE THE FILE WAS LAST WRITTEN.** The committed file was byte-equal to the
+  generator's output after stripping whitespace, semicolons and union pipes - that was
+  MEASURED once, and it is now FALSE. MEASURED: the current generator emits a
+  `Tables<>` helper with an extra fallback branch, an `Enums<>` keyed on `Enums` alone
+  rather than on `Enums & CompositeTypes`, and `clinics.Insert.timezone` as REQUIRED
+  (migration `01670` made the column NOT NULL, and the committed file predated it).
+  The regenerated file is 179 characters longer after normalisation, and the normalised
+  hash of the committed file and the generator's output now agree again. The app uses
+  none of the changed helpers, so nothing broke - but the diff is REAL and is not
+  formatting.
+- **THE E2E SPEC FOR THIS TASK IS ONE FILE, `tests/e2e/platform-gate.spec.ts`, AND IT
+  COVERS BOTH ROUTES.** The plan names one spec file, so the marketing shell's
+  assertions live in it under their own `describe`. It creates its accounts through the
+  ADMIN API (the public signup endpoint is rate limited to two or three calls a
+  window) and sets `is_platform_admin` through the SERVICE ROLE - never from the
+  browser, because `private.guard_platform_admin()` refuses any other writer.
+- **THE OPERATOR IN THE E2E SPEC BELONGS TO NO TENANT, ON PURPOSE.** A member of the
+  tenant it reads would see the member count whether the query were RLS-governed or
+  not, so the count of 1 proves the definer path rather than the policy.
+- **THE `tenant_creation_events` LEDGER IS NOW EMPTY, AND THAT IS A CHANGE THIS TASK
+  MADE.** The ledger holds one row per tenant creation, it has NO foreign key, and
+  every row in it belonged to an account that no longer exists - MEASURED: all 30 rows
+  were orphans. Removing the two organizations a FAILED E2E run had left behind meant
+  removing the ledger rows for their accounts, and the cleanup removed every orphan
+  row rather than only the two that were this task's - so the 29 rows that predate this
+  task are gone too. Nothing live was lost (an orphan row cannot count against any
+  living account's creation cap), but the "the ledger holds 29 rows" record is no
+  longer true, and the ledger is the rate-limit EVIDENCE for tenant creation - so a
+  later agent should know the history was cleared rather than assume it never
+  existed.
+- **THE ONBOARDING SPEC HAD A LATENT CROSS-TEST NAME COLLISION, AND THIS TASK'S SPEC
+  FILE EXPOSED IT.** Both tests in `tests/e2e/onboarding.spec.ts` created an
+  organization called "Probe Onboarding Clinic", and the suite runs its files in
+  parallel - so the test that asserts "no organization with that name was created"
+  could see its NEIGHBOUR's. The collision was invisible while the file was the only
+  one of its kind; adding a third spec file changed the worker schedule and made it
+  fire. Fixed by giving the second test its own name. A spec whose assertion depends
+  on a GLOBAL name is a spec that depends on the schedule.
+- **A FAILED E2E RUN CAN LEAVE AN ORGANIZATION BEHIND, AND THE CLEANUP THEN REFUSES
+  TO DELETE IT.** MEASURED: when the create action was still in flight when the
+  assertion timed out, the cleanup deleted the assignments and the action's own
+  assignment landed afterwards - so the cascade delete of the organization hit
+  `private.guard_role_delete` (the role was in use again) and the organization
+  survived. The cleanup's own verification caught it ("cleanup left 1 organization(s)
+  with the slug ..."), which is that helper working as designed. The two leftovers
+  were removed by hand, and the ledger correction above is the consequence.

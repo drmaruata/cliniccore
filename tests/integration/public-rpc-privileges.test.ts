@@ -82,6 +82,8 @@ const PUBLIC_WRAPPERS = [
   "export_patients",
   "grantable_roles",
   "has_any_membership",
+  "is_platform_admin",
+  "tenant_directory",
   "write_audit",
 ];
 
@@ -96,11 +98,17 @@ const PUBLIC_WRAPPERS = [
  *
  * `public.grantable_roles` is not among them for the same reason: it calls
  * `private.can_assign_role`, which is a different function with a different signature.
+ *
+ * `public.tenant_directory` is not among them either, and for a third reason: it has no
+ * private original AND it is the console's data access rather than a wrapper. It reads
+ * the directory itself and refuses a caller who is not a platform administrator, which
+ * is the boundary the platform gate needs.
  */
 const DELEGATING_WRAPPERS = [
   "accept_invitation",
   "can",
   "create_organization_with_owner",
+  "is_platform_admin",
   "write_audit",
 ];
 

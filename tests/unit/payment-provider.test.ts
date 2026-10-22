@@ -104,6 +104,13 @@ const ALLOWED_BILLING_IMPORTS = new Set(["server-only", "@/lib/errors", "@/lib/u
  * there. `@supabase/ssr` and `@supabase/supabase-js` ARE HTTP clients, and they are
  * here on purpose - they are the sanctioned way for this application to talk to
  * Supabase, and the rule is that there is no OTHER way.
+ *
+ * `react` joined the list in Task 17, for `lib/auth/platform.ts`'s `cache()` - React's
+ * per-request memoisation, which is how a layout and a page share one database round
+ * trip inside a request. It is a framework runtime and not a way to reach the
+ * network, which is what this list is about.
+ *
+ * PHASE 8 EXTENDS THIS LIST, to admit the provider's SDK.
  */
 const SANCTIONED_LIB_PACKAGES = new Set([
   "@supabase/ssr",
@@ -111,6 +118,7 @@ const SANCTIONED_LIB_PACKAGES = new Set([
   "clsx",
   "next/headers",
   "next/server",
+  "react",
   "server-only",
   "tailwind-merge",
   "zod",

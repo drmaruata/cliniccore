@@ -2234,8 +2234,13 @@ describe("the hex rule is not vacuous", () => {
     // lib/validation/invitations.ts. None is UI surface in the strict sense, but all
     // sit under scan roots, and a module that slipped past the gate would let a
     // hard-coded hex into the codebase unnoticed. 46 -> 64 code files.
-    expect(code.length + css.length).toBe(66);
-    expect(code.length).toBe(64);
+    // Task 17 added 9 and removed 1, on the same reasoning: the marketing shell
+    // (app/(marketing)/** and components/marketing/**), the platform console
+    // (app/platform/**), lib/auth/platform.ts - and the root app/page.tsx, which the
+    // marketing group REPLACES rather than joins, because a route group is pathless and
+    // two pages serving `/` is a build conflict. 64 -> 72 code files.
+    expect(code.length + css.length).toBe(74);
+    expect(code.length).toBe(72);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was

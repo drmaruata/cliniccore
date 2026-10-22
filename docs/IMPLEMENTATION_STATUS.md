@@ -4027,6 +4027,136 @@ project after the runs: 0 organizations, 0 audit logs, 0 auth users, 0 unconfirm
 users, 0 invitations, 0 memberships, 0 assignments, 0 clinics, 1 role, and the
 `tenant_creation_events` ledger back at its 29 pre-existing rows.
 
+## Task 17 — Marketing shell and platform-admin gate
+
+Branch: `feature/foundation`
+
+### WHAT WAS BUILT
+
+- `app/(marketing)/layout.tsx`, `app/(marketing)/page.tsx` and
+  `components/marketing/{site-header,hero,feature-highlights,site-footer}.tsx` — the
+  public shell. The root `app/page.tsx` was DELETED, because a route group is pathless
+  and `app/(marketing)/page.tsx` serves `/`: two pages serving one url is a build
+  conflict, not two routes. The root layout stays where it is — a route group cannot
+  have a root layout.
+- `app/platform/layout.tsx` and `app/platform/page.tsx` — the operator console, at a
+  REAL segment `/platform`, not `app/(platform)/`. A pathless group would serve `/`
+  and collide with the marketing root.
+- `lib/auth/platform.ts` — the console's data access. It asks the DATABASE for the
+  predicate and refuses to read the directory for an unauthorised caller.
+- `supabase/migrations/20261014001850_platform_console.sql` —
+  `public.is_platform_admin()` and `public.tenant_directory()`. Applied through the
+  Composio MCP; the history now has 58 rows.
+- `tests/e2e/platform-gate.spec.ts` (the plan names one spec file, so it covers both
+  routes) and `tests/integration/platform-console.test.ts`.
+
+### THE RULINGS, AND WHY
+
+- **THE GATE IS ASKED OF THE DATABASE, NOT OF THE APPLICATION.**
+  `private.is_platform_admin()` owns the rule, and PostgREST serves the `public` schema
+  only — MEASURED: a POST to `/rest/v1/rpc/<fn>` naming a `private.*` function answers
+  PGRST202 naming `public` as the schema it searched. The console's gate could not be
+  evaluated at all until `20261014001850` added the wrapper. The alternative — reading
+  `profiles.is_platform_admin` in TypeScript — would put the rule in two places, which
+  is how the platform-key clause and the grant ceiling each drifted once.
+- **THE GATE IS CHECKED TWICE, AND THE DATA-LAYER CHECK IS THE ONE THAT MATTERS.** The
+  layout's `notFound()` produces the 404 response; the page's data access refuses to
+  read the directory. Next.js's authentication guide is the reason: a layout does not
+  control whether the rest of the route renders, and it does not re-render on
+  client-side navigation.
+- **THE DIRECTORY IS THREE COLUMNS, AND THE COUNT IS TAKEN BY A DEFINER.** The brief
+  names organization names, statuses and member counts, and the function returns exactly
+  those — so "no patient data is reachable from this route" is a property of the
+  function's SIGNATURE. MEASURED: a platform administrator reads ZERO membership rows
+  for a tenant with one member, because `organization_memberships_select` filters on
+  `private.is_member(organization_id)` and the operator belongs to no tenant — while
+  `public.tenant_directory()` reports that member as 1. A count taken from an ordinary
+  read would be zero for every tenant.
+- **THE CONSOLE ANSWERS 404, NOT A REDIRECT**, so the existence of the console is not
+  disclosed to a clinic owner. `notFound()` also makes Next emit a `noindex` tag, and
+  the layout's metadata says `robots: { index: false }`.
+- **THE MARKETING PAGE READS NOTHING.** No session read anywhere in the group: a
+  header that changed for a signed-in visitor would disclose that somebody is signed
+  in. The E2E asserts it.
+- **THE COPY MAKES NO CLAIM THAT HAS NOT BEEN VERIFIED.** No testimonials, no customer
+  counts, no uptime, no certification — and no mention of patient records, appointments
+  or payments, because none of those exist in this release. Full copy and the page set
+  are Phase 4; the footer says the release is the foundation.
+
+### THE MEASUREMENTS
+
+- The two new public functions: `prosecdef = true`, `proconfig = {search_path=""}"`,
+  `has_function_privilege('authenticated') = true`, and `anon` and `public` both
+  false. Read back from `pg_proc` after the apply — the apply response body was not
+  trusted.
+- A platform administrator reads 0 membership rows and 1 organization, and
+  `public.tenant_directory()` returns the tenant with `member_count = 1`. The same
+  principal, not promoted, gets 0 rows from the directory and `is_platform_admin() =
+false`.
+- `types/database.types.ts` was regenerated with `SUPABASE_GENERATE_TYPESCRIPT_TYPES`,
+  prettier-formatted, and compared with the generator's raw output after stripping
+  whitespace, semicolons and union pipes: the normalised lengths and hashes now agree
+  (13815 characters, hash 1113706187). They did NOT agree before the regeneration — the
+  committed file was 179 characters shorter, because the generator's `Tables<>` helper
+  has an extra fallback branch, its `Enums<>` is keyed on `Enums` alone rather than on
+  `Enums & CompositeTypes`, and `clinics.Insert.timezone` is now REQUIRED (migration
+  `01670` made the column NOT NULL and the committed file predated it). The earlier
+  "the two files hash to the same value" record was true when it was measured and is
+  false now; the file has been regenerated so that it is true again. The app uses none
+  of the changed helpers, so nothing broke — but the diff is real and is not
+  formatting.
+- The E2E spec: a clinic owner receives 404 from `/platform` with no table and no
+  tenant name on the page, and a platform administrator sees the tenant, its status
+  and the member count of 1 — for a tenant the operator does not belong to.
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` and
+`npm run format:check` all exit 0. The E2E suite passes on chromium and firefox — 32
+tests, 0 failures. The live project after the runs: 0 organizations, 0 audit logs, 0
+auth users, 0 invitations, 0 memberships, 0 assignments, 0 clinics, 1 role (the platform
+role), and the `tenant_creation_events` ledger at **0** — see the correction below.
+
+### THE CORRECTIONS, AND THE STATE I CHANGED
+
+- **THE `tenant_creation_events` LEDGER IS NOW EMPTY, AND THAT IS A CHANGE THIS TASK
+  MADE.** The ledger holds one row per tenant creation, it has NO foreign key, and
+  every row in it belonged to an account that no longer exists — MEASURED: all 30 rows
+  were orphans. Removing the two organizations a FAILED E2E run had left behind meant
+  removing the ledger rows for their accounts, and the cleanup removed every orphan row
+  rather than only the two that were this task's — so the 29 rows that predate this
+  task are gone too. Nothing live was lost (an orphan row cannot count against any
+  living account's creation cap), but the earlier "the ledger holds 29 rows" record is
+  no longer true and is corrected here.
+- **THE ONBOARDING SPEC HAD A LATENT CROSS-TEST NAME COLLISION, AND THIS TASK'S SPEC
+  FILE EXPOSED IT.** Both tests in `tests/e2e/onboarding.spec.ts` created an
+  organization called "Probe Onboarding Clinic", and the suite runs its files in
+  parallel — so the test that asserts "no organization with that name was created"
+  could see its NEIGHBOUR's. The collision was invisible while the file was the only
+  one of its kind; adding a third spec file changed the worker schedule and made it
+  fire. Fixed by giving the second test its own name. A spec whose assertion depends
+  on a GLOBAL name is a spec that depends on the schedule.
+- **A FAILED E2E RUN CAN LEAVE AN ORGANIZATION BEHIND, AND THE CLEANUP THEN REFUSES
+  TO DELETE IT.** MEASURED: when the create action was still in flight when the
+  assertion timed out, the cleanup deleted the assignments and the action's own
+  assignment landed afterwards — so the cascade delete of the organization hit
+  `private.guard_role_delete` (the role was in use again) and the organization
+  survived. The cleanup's own verification caught it ("cleanup left 1 organization(s)
+  with the slug ..."), which is that helper working as designed. The two leftovers
+  were removed by hand.
+
+### THE LIMITATIONS
+
+- The console shows a DIRECTORY and nothing else: no tenant can be suspended,
+  restored or deleted from it, and `public.delete_organization` is the only destructive
+  path in the schema (and it refuses an organization that still has roles). The
+  platform's write actions are later work.
+- The marketing page set is one page. Features, pricing, security, legal and SEO are
+  Phase 4, and the footer says so rather than linking to pages that would answer 404.
+- The member count is of membership ROWS in any state, so a suspended membership is
+  counted. Splitting it would mean deciding what a platform operator should see about a
+  tenant's internal staff state, which is a product decision, not a bug.
+
 ## Task 16 - the third review: the inviter is the caller, the helpers' privileges, and the shell's fourth state
 
 The third Task 16 review found NO BLOCKER - Task 16 is judged done - and left five gaps
