@@ -4220,6 +4220,105 @@ restored byte-for-byte: md5 `0CDA749F5DC889D5C6913BF704A485B1` before and after.
 `npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` and
 `npm run format:check` all exit 0. The E2E suite passes on chromium and firefox.
 
+## Task 17 review round 2 — a positive control, three narrowed claims, two corrected records
+
+The second review found no blocker and left three gaps and two nits. All are closed.
+
+### GAP 1 — THE HTTPS ASSERTION HAD NO POSITIVE CONTROL
+
+`tests/integration/platform-console.test.ts` asserted that `tenant_directory` answers
+`[]` to a non-administrator over real HTTPS — and the live database held **0
+organizations**, so an UNGUARDED function would have answered `[]` too. The assertion
+proved the transport and not the refusal.
+
+Three things fix it, and all three are needed:
+
+1. **the predicate is asserted over the SAME token** — `public.is_platform_admin()` is
+   `false` — a precondition that does not depend on the directory's contents;
+2. **one organization is SEEDED through the service role and KEPT** for the assertion,
+   so an empty directory means REFUSED rather than "there was nothing there";
+3. **an ADMINISTRATOR'S TOKEN** — a second real account, promoted through the service
+   role, because the flag is read from the PROFILE and not from the JWT, so the token
+   issued before the promotion is the token used after it — **receives that row**, so
+   the pair can only pass if the guard is what separates them.
+
+**MEASURED, THE MUTATION.** The applied migration is never edited, so the mutation was
+applied as a correction: `20261014001860_tenant_directory_unguarded_probe.sql` removes
+the `where (select private.is_platform_admin())` clause, and
+`20261014001870_tenant_directory_restore.sql` puts it back. With the probe applied,
+**BOTH** assertions fail — the impersonated one and the HTTPS one:
+
+```
+AssertionError: expected [ { …(3) } ] to deeply equal []
++ Received
++ [ { "member_count": 0, "name": "Console HTTP Tenant", "status": "active" } ]
+```
+
+and the administrator's positive control still passes, which is what makes the pair a
+pair. The function body was restored **byte-for-byte**: `md5(prosrc)` is
+`5365ccdf74d4d73685c9afbd763d1bdf` before the probe (`7f711424161804d1115614ffebf8340f`
+with it) and after the restore. Both files are in the migration history on purpose —
+that history is the record of the measurement — and the window in which the function
+was unguarded was the measurement itself, which is recorded here rather than glossed
+over.
+
+### GAP 2 — "EVERY TENANT-OWNED TABLE CARRIES ITS ORGANIZATION" IS NOT LITERALLY TRUE
+
+MEASURED from `pg_attribute`: of the 16 public tables, **10 carry an `organization_id`
+and 6 do not** — `organizations` is the tenant root, `permissions`,
+`platform_settings` and `tenant_creation_events` are global, `profiles` is per-user,
+and `role_permissions` hangs off a ROLE, which carries the organization. Two of the ten
+that have the column have it NULLABLE: `audit_logs` (a platform event has no tenant)
+and `roles` (a platform role belongs to no organization).
+
+The copy now says **"every row of your clinic's own data is tied to the organization it
+belongs to"** — a claim about ROWS, which is true, and not about columns, which is
+not. It does not overstate in the other direction either: the composite-key claim is
+still the narrow one (5 of 21 public foreign keys are composite; the three role
+references are single-column and a role's organization scope is closed by
+`private.guard_role_org_scope()`, a trigger, and by the policies).
+
+### GAP 3 — TWO OLDER RECORDS IN `AGENTS.md` WERE FALSE
+
+Both are corrected **in place**, in the Task 13+ section that carried them, and each
+names the correction and its date:
+
+- **"An organization that has roles cannot be deleted … every org the product creates is
+  undeletable"** was true before `20261014001670` and is false now. That migration
+  (applied **2026-10-20**) made `private.guard_role_delete` return early when the
+  role's organization no longer exists — the cascade of an organization's deletion
+  rather than a deliberate attempt to delete a role that is still in use. A DELIBERATE
+  role delete that still holds grants or assignments is still refused. And
+  `public.delete_organization(p_org_id)` — added by `20261014001692` on the same day,
+  requiring `settings.manage` in that organization — is the product-level remedy the
+  old record said did not exist.
+- **"`clinics.timezone` is still nullable"** is false: the column is `NOT NULL` since
+  `20261014001670`, and a BEFORE INSERT trigger (`private.default_clinic_timezone()`)
+  fills it from the organization's own zone, because a column default cannot express
+  that zone.
+
+### THE TWO NITS
+
+- **THE HERO NO LONGER CONTRADICTS ITSELF.** It said "Inside it are your clinics, your
+  staff and the roles they hold" — and the product creates exactly ONE clinic per
+  organization, and the roster shows a member's identifier and nothing else
+  (`profiles` is readable only by its owner). It now says "the people you have given
+  access to, and the roles they hold", which is what a membership is.
+- **THE CONSOLE'S MEMBER COLUMN IS LABELLED, NOT NARROWED.** The count is of
+  membership ROWS in any state, so a suspended member is counted. The column header
+  now reads "Members (any status)" and the table caption says what the number counts.
+  The alternative — counting only active memberships — would have made the console
+  report a smaller number than the tenant has, which is a product decision about
+  somebody else's staff, and this console is a directory rather than a tenant's
+  roster.
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` and
+`npm run format:check` all exit 0. The E2E suite passes on chromium and firefox. The
+live project after the runs: 0 organizations, 0 audit logs, 0 auth users, 0 invitations,
+0 memberships, 0 assignments, 0 clinics, 1 role, and 60 migration history rows.
+
 ### THE LIMITATIONS
 
 - The console shows a DIRECTORY and nothing else: no tenant can be suspended,

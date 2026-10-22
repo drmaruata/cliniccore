@@ -28,12 +28,31 @@
  * with a real signed-in user's JWT. The E2E cannot reach that path - the interface
  * never issues the call for an unauthorised caller, because the route has already
  * 404'd - so nothing else covers it.
+ *
+ * AND THAT SUITE HAS A POSITIVE CONTROL BESIDE THE REFUSAL, WHICH IT DID NOT HAVE
+ * ONCE. The first version asserted only that a non-administrator receives an empty
+ * directory - and the database held no organization at all, so an UNGUARDED
+ * `tenant_directory` would have answered `[]` too. The assertion proved the transport
+ * and not the refusal. Three things fix that, and all three are needed:
+ *
+ *   1. the predicate is asserted over the SAME token, so the test knows which
+ *      principal it is talking about without looking at the directory's contents;
+ *   2. ONE ORGANIZATION IS SEEDED and kept, so an empty directory means REFUSED
+ *      rather than "there was nothing there";
+ *   3. an ADMINISTRATOR'S TOKEN is asked for the same directory and must receive that
+ *      row, so the pair can only pass if the guard is what separates them.
+ *
+ * MEASURED: with the `where (select private.is_platform_admin())` clause removed from
+ * the function (by a temporary correction, never by editing an applied migration), the
+ * non-administrator's assertion FAILS - it receives the seeded row - and the
+ * administrator's still passes.
  */
 import { afterAll, beforeAll, expect, it } from "vitest";
 
 import {
   PUBLISHABLE_KEY,
   SUPABASE_URL,
+  admin,
   createProbeSession,
   decodeCookie,
   deleteProbeUsers,
@@ -128,36 +147,105 @@ dbDescribe("the platform console's database access", () => {
   });
 });
 
+/** The tenant the HTTP suite seeds, so that an empty directory means REFUSED. */
+const HTTP_TENANT_NAME = "Console HTTP Tenant";
+
 dbDescribe("the platform console's RPC surface over HTTP", () => {
-  let accessToken = "";
+  let nonAdminToken = "";
+  let adminToken = "";
   const probeUserIds: string[] = [];
+  const seededOrgIds: string[] = [];
 
-  beforeAll(async () => {
-    // A REAL signed-in user, and not a platform administrator - the probe helper
-    // creates a plain account, so `profiles.is_platform_admin` is false.
-    const probe = await createProbeSession();
-    probeUserIds.push(probe.userId);
-    accessToken = String(decodeCookie(probe.cookie).access_token ?? "");
-  });
-
-  afterAll(async () => {
-    await deleteProbeUsers(probeUserIds);
-  });
-
-  it("answers an empty directory to a signed-in user who is not a platform administrator", async () => {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/tenant_directory`, {
+  const rpc = async (fn: string, token: string): Promise<{ status: number; body: string }> => {
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
       method: "POST",
       headers: {
         apikey: PUBLISHABLE_KEY,
         "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
       },
       body: "{}",
     });
-    // 200, and an EMPTY directory: the function's own gate holds over the real
-    // transport, with the real JWT, and not only in the impersonated transaction.
-    const body = await response.text();
-    expect(response.status, body).toBe(200);
-    expect(JSON.parse(body)).toEqual([]);
+    return { status: response.status, body: await response.text() };
+  };
+
+  beforeAll(async () => {
+    // A REAL signed-in user who is not a platform administrator: the probe helper
+    // creates a plain account, so `profiles.is_platform_admin` is false.
+    const plain = await createProbeSession();
+    probeUserIds.push(plain.userId);
+    nonAdminToken = String(decodeCookie(plain.cookie).access_token ?? "");
+
+    // A SECOND real account, promoted through the service role - the only door into
+    // the flag. The JWT does not carry it: the predicate reads the PROFILE, so the
+    // token issued before the promotion is the token used after it.
+    const administrator = await createProbeSession();
+    probeUserIds.push(administrator.userId);
+    adminToken = String(decodeCookie(administrator.cookie).access_token ?? "");
+
+    const { error: flagError } = await admin()
+      .from("profiles")
+      .update({ is_platform_admin: true })
+      .eq("id", administrator.userId);
+    if (flagError) {
+      throw new Error(`could not promote the probe administrator: ${flagError.message}`);
+    }
+
+    // AND A TENANT TO LOOK AT. Without it the directory is empty for everybody, and
+    // "empty" would prove nothing about the refusal.
+    const slug = `console-http-${Date.now()}-${process.pid}`;
+    const { data: org, error: orgError } = await admin()
+      .from("organizations")
+      .insert({ name: HTTP_TENANT_NAME, slug })
+      .select("id")
+      .single();
+    if (orgError || !org) {
+      throw new Error(`could not seed the tenant: ${orgError?.message}`);
+    }
+    seededOrgIds.push(org.id);
+  });
+
+  afterAll(async () => {
+    // The tenant first: it is the parent of everything else.
+    for (const id of seededOrgIds) {
+      await admin().from("organization_memberships").delete().eq("organization_id", id);
+      await admin().from("clinics").delete().eq("organization_id", id);
+      await admin().from("organizations").delete().eq("id", id);
+    }
+    await deleteProbeUsers(probeUserIds);
+  });
+
+  it("refuses the directory to a signed-in user who is not a platform administrator", async () => {
+    // THE PRECONDITION, which does not depend on the directory's contents: this
+    // principal is not a platform administrator.
+    const predicate = await rpc("is_platform_admin", nonAdminToken);
+    expect(predicate.status, predicate.body).toBe(200);
+    expect(JSON.parse(predicate.body)).toBe(false);
+
+    // And the refusal, with a tenant in the database to refuse.
+    const response = await rpc("tenant_directory", nonAdminToken);
+    expect(response.status, response.body).toBe(200);
+    expect(JSON.parse(response.body)).toEqual([]);
+  });
+
+  it("answers the same directory to an administrator", async () => {
+    // THE POSITIVE CONTROL BESIDE THE REFUSAL. The same function, the same tenant and
+    // the same transport - and this principal IS a platform administrator.
+    const predicate = await rpc("is_platform_admin", adminToken);
+    expect(predicate.status, predicate.body).toBe(200);
+    expect(JSON.parse(predicate.body)).toBe(true);
+
+    const response = await rpc("tenant_directory", adminToken);
+    expect(response.status, response.body).toBe(200);
+    const rows = JSON.parse(response.body) as Array<{
+      name: string;
+      status: string;
+      member_count: number;
+    }>;
+    // Scoped to THIS tenant: the suite runs its files in parallel, so another file's
+    // tenant may be in the directory at the same time.
+    expect(rows.filter((row) => row.name === HTTP_TENANT_NAME)).toEqual([
+      { name: HTTP_TENANT_NAME, status: "active", member_count: 0 },
+    ]);
   });
 });

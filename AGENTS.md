@@ -51,8 +51,9 @@ npm run build && npm run format:check`.
   `01780` every grant path, `01790` the proven address, `01800` the creation cap's SQLSTATE and
   `01810` the restored pre-staging clause, the round-3 fixes `01820` the inviter is the
   caller, `01830` the helpers' privileges and `01840` the one membership rule, and Task 17's
-  `01850` the platform console's two public functions, all
-  applied — 58 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  `01850` the platform console's two public functions, `01860`/`01870` the measurement
+  probe that removes the console's guard and the correction that restores it, all
+  applied — 60 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
@@ -345,13 +346,15 @@ landed with it.
   counter BUMPER is an abuse vector. It matters because `patient_identifiers` INSERT is
   granted to `authenticated` and the column has no default calling the counter, so
   whoever builds patient registration must settle how the number is obtained.
-- **An organization that has roles cannot be deleted.** `private.guard_role_delete`
-  refuses to delete a role that still has grants or assignments, and it fires on a CASCADE
-  delete of the organization too. MEASURED: every org the onboarding RPC creates has
-  fourteen roles, so every org the product creates is undeletable - and the PUBLIC RPC
-  makes undeletable tenants cheap to create. The fix is to make the guard distinguish a
-  cascade from a deliberate role deletion - a change to a security trigger, and therefore
-  a separate piece of work with its own review.
+- **An organization that has roles CAN be deleted, and this record was WRONG until
+  Task 17's second review.** The original finding was that `private.guard_role_delete`
+  fires on the CASCADE of the organization too, so every organization the product
+  creates - fourteen roles each - was undeletable. **CORRECTED by
+  `20261014001670` on 2026-10-20**: the guard now returns early when the role's
+  organization no longer exists, which is the cascade of an organization's deletion
+  rather than a deliberate attempt to delete a role that is still in use. A DELIBERATE
+  role delete that still holds grants or assignments is still refused. MEASURED: the
+  E2E runs leave 0 organizations behind, and Task 17's own records say so.
 - **Tenant creation validates at the door AND in the table, on EVERY write path.** The
   slug is the tenant key used in URLs, so a slash in it breaks routing "far from here" -
   and the browser is now the only path that creates a tenant. CHECK constraints on
@@ -363,17 +366,20 @@ landed with it.
   across tzdata releases. MEASURED: of the 598 names in `pg_timezone_names`, ICU rejects
   exactly one - `Factory`, PostgreSQL's own placeholder - so "the database knows the name"
   is not the same as "the application can use it".
-- **The public surface can CREATE a tenant but cannot delete or deactivate one**, and a
-  created tenant is undeletable anyway. `DELETE /rest/v1/organizations` as `service_role`
-  returns 400 "role accountant is still in use" - `private.guard_role_delete` fires on the
-  CASCADE too. So a user who creates a tenant by mistake has no product-level remedy.
-- **A clinic with NO time zone is a landmine, and the column is still nullable.**
-  `clinics.timezone` is nullable by design (migration 00300), and
+- **The public surface CAN delete a tenant, and a created tenant is NOT undeletable.**
+  `public.delete_organization(p_org_id)`, added by `20261014001692` on 2026-10-20,
+  deletes an organization the calling user administers - it requires `settings.manage`
+  in that organization - together with everything under it. The old record that
+  `DELETE /rest/v1/organizations` as `service_role` returned 400 "role accountant is
+  still in use" was true BEFORE `20261014001670` and is false now, for the reason above.
+- **A clinic with NO time zone WAS a landmine, and the column is NOT NULL now.**
+  `clinics.timezone` was nullable by design (migration 00300), and
   `Intl.DateTimeFormat` treats a nullish zone as "use the runtime's zone" rather than
-  throwing - MEASURED. So such a clinic would bill in the SERVER's day.
-  The fix is to make `clinics.timezone` NOT NULL with a default, the way
-  `organizations.timezone` already is; that is a nullability change and therefore a
-  product decision, not a validation detail.
+  throwing - MEASURED - so such a clinic would have billed in the SERVER's day.
+  **CORRECTED by `20261014001670` on 2026-10-20**: the column is `NOT NULL`, and a
+  BEFORE INSERT trigger (`private.default_clinic_timezone()`) fills it from the
+  organization's own zone, because a column default cannot express that zone. The claim
+  that the column is still nullable is FALSE.
 - **Audit metadata must be identifiers and codes, not phrases.** A string value with
   whitespace in it, or a key that names clinical free text, is refused - and the refusal
   names the key and the reason. This is a VALUE rule, not a key-name screen: the harm is in
@@ -1101,6 +1107,41 @@ test.ts` pins both halves.
   `tests/integration/platform-console.test.ts` calls it over HTTPS with a real
   signed-in user's JWT and asserts an empty directory. The impersonated transaction in
   the same file proves the FUNCTION refuses; that one proves the SURFACE does.
+- **AND THAT HTTP ASSERTION HAS A POSITIVE CONTROL, BECAUSE WITHOUT ONE IT PROVED
+  THE TRANSPORT AND NOT THE REFUSAL.** The first version asserted only that a
+  non-administrator receives an empty directory - and the database held no
+  organization, so an UNGUARDED function would have answered `[]` too. It now asserts
+  three things: the predicate is `false` over the SAME token; ONE ORGANIZATION IS
+  SEEDED AND KEPT, so an empty directory means REFUSED rather than "there was nothing
+  there"; and an ADMINISTRATOR'S TOKEN receives that row, so the pair can only pass if
+  the guard is what separates them. **MEASURED:** with the
+  `where (select private.is_platform_admin())` clause removed - by a temporary
+  correction, never by editing an applied migration - the non-administrator receives
+  the seeded row and BOTH assertions fail, while the administrator's still passes. The
+  function body was restored byte-for-byte: `md5(prosrc)` is
+  `5365ccdf74d4d73685c9afbd763d1bdf` before the probe and after the restore. The
+  probe and the restore are `20261014001860` and `20261014001870`, and they are in the
+  migration history on purpose: that history is the record of the measurement.
+- **THE MARKETING COPY'S TENANCY CLAIM IS ABOUT ROWS, NOT ABOUT COLUMNS.** MEASURED
+  from `pg_attribute`: of the 16 public tables, 10 carry an `organization_id` and 6 do
+  not - `organizations` is the tenant root, `permissions`, `platform_settings` and
+  `tenant_creation_events` are global, `profiles` is per-user, and `role_permissions`
+  hangs off a ROLE, which carries the organization. Two of the ten have the column
+  NULLABLE (`audit_logs`, `roles` - a platform role belongs to no organization). So the
+  copy says "every row of your clinic's own data is tied to the organization it
+  belongs to", which is true of ROWS, and not "every tenant-owned table carries its
+  organization", which is false of columns.
+- **THE CONSOLE'S MEMBER COLUMN IS LABELLED, NOT NARROWED.** The count is of
+  membership ROWS in any state, so a suspended member is counted. The column header
+  says "Members (any status)" and the table's caption says what the number counts,
+  because how a tenant suspends its staff is the tenant's own business and the
+  console is a directory, not a tenant's roster. Changing the SQL to count only active
+  memberships would have been the other way to close it, and would have made the
+  console report a smaller number than the tenant has.
+- **TWO OLDER RECORDS IN THIS FILE WERE FALSE, AND ARE NOW CORRECTED IN PLACE:** the
+  "an organization that has roles cannot be deleted" finding, and the "clinics.timezone
+  is still nullable" finding. Both were fixed by `20261014001670` on 2026-10-20, and
+  this file's Task 13+ section says so now.
 - **THE `tenant_creation_events` LEDGER IS NOW EMPTY, AND THAT IS A CHANGE THIS TASK
   MADE.** The ledger holds one row per tenant creation, it has NO foreign key, and
   every row in it belonged to an account that no longer exists - MEASURED: all 30 rows

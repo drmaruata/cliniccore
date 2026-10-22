@@ -12,17 +12,26 @@ import { Clock, KeyRound, Lock, Mail } from "lucide-react";
  * management product is expected to have - patient records, appointments, payments -
  * none of which are in this release.
  *
- * AND THE COMPOSITE-KEY CLAIM IS NARROW ON PURPOSE. MEASURED: of the 21 public foreign
- * keys, 5 are composite. The three role references are single-column, and a role's
- * organization scope is closed by `private.guard_role_org_scope()` - a trigger - and by
- * the policies, not by the schema. So the copy names the references that ARE composite
- * rather than claiming they all are.
+ * AND THE CLAIMS ARE NARROW ON PURPOSE, BOTH OF THEM. MEASURED from `pg_attribute`:
+ * of the 16 public tables, 10 carry an `organization_id` and 6 do not -
+ * `organizations` is the tenant root, `permissions`, `platform_settings` and
+ * `tenant_creation_events` are global, `profiles` is per-user, and `role_permissions`
+ * hangs off a ROLE, which carries the organization. Two of the ten that have the
+ * column have it NULLABLE (`audit_logs`, `roles` - a platform role belongs to no
+ * organization). So the claim is about ROWS and not about columns: every tenant-owned
+ * ROW is tied to its organization, directly or through the role it belongs to.
+ *
+ * MEASURED on the foreign keys too: of the 21 public foreign keys, 5 are composite.
+ * The three role references are single-column, and a role's organization scope is
+ * closed by `private.guard_role_org_scope()` - a trigger - and by the policies, not by
+ * the schema. So the copy names the references that ARE composite rather than claiming
+ * they all are.
  */
 const FEATURES = [
   {
     icon: Lock,
     title: "Isolation the schema carries",
-    body: "Every tenant-owned table carries its organization, and the foreign keys that tie a row to another tenant's clinic or patient are composite - so a row pointing at another clinic is not representable, not merely hidden.",
+    body: "Every row of your clinic's own data is tied to the organization it belongs to, and the foreign keys that tie a record to another tenant's clinic or patient are composite - so a record pointing at another clinic is not representable, not merely hidden.",
   },
   {
     icon: KeyRound,

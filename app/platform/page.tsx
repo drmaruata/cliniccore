@@ -18,6 +18,12 @@ import { readTenantDirectory } from "@/lib/auth/platform";
  * can return nothing else: `public.tenant_directory()` returns a name, a status and a
  * count, so no identifier, no slug and no clinical row is reachable from this route. The
  * count is an aggregate - it says how many people a tenant has, and never who they are.
+ *
+ * WHY THE COLUMN SAYS "ANY STATUS". The count is of membership ROWS in any state, so a
+ * suspended member is counted - see the migration's own note. The count is LABELLED
+ * rather than narrowed: how a tenant chooses to suspend its staff is the tenant's own
+ * business, and the platform console is a directory, not a tenant's roster. The reader is
+ * told what the number counts instead of being given a number that means something else.
  */
 const STATUS_TONES: Record<string, StatusTone> = {
   active: "success",
@@ -33,11 +39,11 @@ export default async function PlatformPage() {
     <div className="space-y-6">
       <PageHeader
         title="Tenants"
-        description="Every organization on the platform, with its status and its member count."
+        description="Every organization on the platform, with its status and how many membership rows it has."
       />
 
       <DataTable
-        caption="Organizations on the platform"
+        caption="Organizations on the platform. The count is of membership rows in any state, so a suspended member is counted."
         rows={tenants}
         getRowKey={(tenant, index) => `${tenant.name}-${index}`}
         emptyTitle="No tenants yet"
@@ -60,7 +66,7 @@ export default async function PlatformPage() {
           },
           {
             key: "members",
-            header: "Members",
+            header: "Members (any status)",
             align: "right",
             cell: (tenant) => tenant.memberCount,
           },
