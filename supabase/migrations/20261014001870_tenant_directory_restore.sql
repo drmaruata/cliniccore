@@ -6,12 +6,17 @@
 -- `tests/integration/platform-console.test.ts` can fail. It did: the non-administrator
 -- received the seeded organization.
 --
--- This file puts the function back, BYTE-FOR-BYTE. MEASURED: `md5(prosrc)` is
--- 5365ccdf74d4d73685c9afbd763d1bdf before the probe and after this file - the same
--- value, which is what "restored byte-for-byte" means for a function body.
---
--- The body below is the 01850 body verbatim. It is copied, not re-derived, because a
--- re-derivation is a second spelling of the same function and the two would drift.
+-- This file puts the function back FUNCTIONALLY IDENTICAL to the 01850 body: the same
+-- guard, the same SECURITY DEFINER, the same search_path and the same grants, all
+-- confirmed live. It is NOT byte-identical, and the earlier version of this comment
+-- said it was. MEASURED: 01850's body carried an inline SQL comment inside the
+-- function's dollar-quotes, so its md5(prosrc) was f4ca0a10932b35517f42fed887a3b82d
+-- (615 characters); this file dropped that comment, so the body is 288 characters and
+-- its md5(prosrc) is 5365ccdf74d4d73685c9afbd763d1bdf - the live value. A comment
+-- inside a function body is prosrc, so "restored" here means the BEHAVIOUR and the
+-- definitions, not the bytes. The body is copied from 01850 rather than re-derived,
+-- because a re-derivation would be a second spelling of the same function and the two
+-- would drift.
 
 create or replace function public.tenant_directory()
 returns table (

@@ -22,7 +22,7 @@ export function Hero() {
       <div className="mx-auto max-w-5xl px-6 py-16">
         <p className="text-sm font-medium text-primary-ink">Multi-tenant clinic management</p>
         <h1 className="mt-3 max-w-3xl font-heading text-4xl font-semibold tracking-tight text-brand-navy sm:text-5xl">
-          Each clinic gets its own workspace, and the database keeps them apart.
+          Every organization is its own isolated workspace, and the database keeps them apart.
         </h1>
         <p className="mt-5 max-w-prose text-base text-muted-foreground">
           An organization is your clinic. Inside it are the people you have given access to, and the

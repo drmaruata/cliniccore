@@ -1118,10 +1118,18 @@ test.ts` pins both halves.
   `where (select private.is_platform_admin())` clause removed - by a temporary
   correction, never by editing an applied migration - the non-administrator receives
   the seeded row and BOTH assertions fail, while the administrator's still passes. The
-  function body was restored byte-for-byte: `md5(prosrc)` is
-  `5365ccdf74d4d73685c9afbd763d1bdf` before the probe and after the restore. The
-  probe and the restore are `20261014001860` and `20261014001870`, and they are in the
-  migration history on purpose: that history is the record of the measurement.
+  function body was restored FUNCTIONALLY IDENTICAL, not byte-identically: the guard,
+  the definer, the `search_path` and the grants are all confirmed live, but the restore
+  dropped an inline SQL comment `01850` carried inside its dollar-quotes. MEASURED:
+  `01850`'s body was 615 characters with `md5(prosrc)` `f4ca0a10932b35517f42fed887a3b82d`;
+  the restored body is 288 characters with `md5(prosrc)`
+  `5365ccdf74d4d73685c9afbd763d1bdf` - the live value. The first version of this record
+  said "byte-for-byte, before the probe and after the restore", and the pre-probe value
+  was the other one: MEASURED and corrected on the third review. The probe and the
+  restore are `20261014001860` and `20261014001870`, and they are in the migration
+  history on purpose - that history is the record of the measurement. A clean
+  migrate-from-zero ends functionally identical to `01850`: same guard, same signature,
+  same grants, one comment shorter.
 - **THE MARKETING COPY'S TENANCY CLAIM IS ABOUT ROWS, NOT ABOUT COLUMNS.** MEASURED
   from `pg_attribute`: of the 16 public tables, 10 carry an `organization_id` and 6 do
   not - `organizations` is the tenant root, `permissions`, `platform_settings` and
