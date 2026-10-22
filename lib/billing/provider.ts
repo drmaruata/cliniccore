@@ -10,39 +10,29 @@
  * billing is functional now and the seam must not pretend otherwise: every call refuses,
  * and the refusal is loud.
  *
- * WHY ONE FACTORY, AND WHY isPaymentConfigured ASKS THE PROVIDER. A second source of
- * truth about whether payments work is a second thing to get out of step with the
- * first. `isPaymentConfigured()` therefore asks the provider it would hand out, so a
- * provider that becomes configured - and only that - changes the answer.
- *
- * WHY THE TYPES CARRY DOMAIN FACTS. A `CheckoutSession` describes what a clinic's
- * checkout IS, not what one provider's checkout endpoint accepts, so the provider's own
- * shape stays inside the provider implementation and swapping providers does not reach
- * every caller. The one place a provider's vocabulary is deliberately kept is
- * `WebhookEvent.eventType`: a seam that translated every provider's event names would be
- * a second, lossy translation layer, and the interpretation belongs to the subscription
- * state machine that Phase 8 adds.
- *
- * WHY THE INTERFACE MEMBERS ARE PROPERTIES AND NOT METHODS. `strictFunctionTypes` does
- * not check the parameters of a METHOD declaration, so an implementation could narrow
- * `verifyWebhook(payload: string | Uint8Array, ...)` to `string` and still typecheck -
- * which is precisely the mistake the raw-body contract exists to prevent. As a property
- * of function type, the parameter is checked contravariantly and the narrowing is a
- * compile error.
- *
- * WHY MONEY IS THE HOUSE `Minor` TYPE. The standing rule for this project is money in
- * minor units as bigint, with no floating point anywhere in a money path. `Minor` is
- * that type, so the seam cannot describe an amount in anything but paise, and a provider
- * that speaks in floats is not a provider this seam can describe.
- *
- * WHY THE MODULE IS SERVER-ONLY, AND THE TRAP THAT COMES WITH IT. A configured provider
- * holds a secret key, and a client component that imported this would eventually ship
- * that key to a browser. `import "server-only"` makes that a build error rather than a
- * review comment. The trap: `verbatimModuleSyntax` is on, so `import { type X } from
- * "@/lib/billing/provider"` still EMITS a runtime import and still trips the guard - a
- * client component must use a top-level `import type { X }`.
+ * THE RULINGS THAT BIND THIS FILE.
+ * - The types carry DOMAIN facts, not provider facts, so swapping providers does not
+ *   reach every caller. The one exception is `WebhookEvent.eventType`, which stays the
+ *   provider's own vocabulary: a seam that translated every event name would be a second,
+ *   lossy translation layer.
+ * - Money is the house `Minor` type - bigint paise, no floating point - so the seam cannot
+ *   describe an amount in anything but minor units.
+ * - `import "server-only"` guards the secret key, and it is the guard that fails at
+ *   bundle time. The trap: `verbatimModuleSyntax` is on, so `import { type X }` still
+ *   EMITS a runtime import and still trips it - a client component must use a top-level
+ *   `import type { X }`.
+ * - `isPaymentConfigured()` asks the provider it would hand out, so a second source of
+ *   truth about whether payments work cannot drift from the first.
+ * - The members of `PaymentProvider` are PROPERTIES, not methods, and `configured` is one
+ *   of them for a second reason: the contract is that every METHOD of a provider refuses,
+ *   so a method that answered "am I configured?" would have to answer with a boolean
+ *   (which breaks the contract) or refuse (which answers nothing). A property cannot do
+ *   either, so the boolean lives beside the contract rather than inside it. As properties
+ *   of function type, the parameters are also checked contravariantly, which
+ *   `strictFunctionTypes` does NOT do for a method declaration - so an implementation
+ *   could narrow `verifyWebhook(payload: string | Uint8Array, ...)` to `string` and still
+ *   typecheck, which is exactly the mistake the raw-body contract exists to prevent.
  */
-
 import "server-only";
 
 import type { Minor } from "@/lib/utils/money";
@@ -53,20 +43,15 @@ export { PaymentNotConfiguredError, PaymentVerificationError } from "@/lib/error
 
 /** A checkout request. Every field is the server's resolution, never a client-supplied one. */
 export interface CheckoutInput {
-  /** The tenant buying. */
   organizationId: string;
-  /** The plan being bought, as the plan registry names it. */
   planCode: string;
-  /** What to charge, in minor units (paise). */
   amountMinor: Minor;
-  /** ISO 4217 currency code. */
   currency: string;
-  /** The line item shown to the payer. */
   description: string;
   /**
-   * A stable key for THIS attempt to charge, so that a retry maps to the same provider
-   * order rather than creating a second one. A caller that generates a fresh key on
-   * every retry gets a second charge.
+   * A stable key for THIS attempt to charge, so a retry maps to the same provider order
+   * rather than creating a second one. A caller that generates a fresh key on every
+   * retry gets a second charge.
    */
   idempotencyKey: string;
 }
@@ -75,30 +60,21 @@ export interface CheckoutInput {
 export interface CheckoutSession {
   /**
    * The provider's identifier for THIS checkout. The seam names the STAGE, not the
-   * provider's noun: a hosted flow may call it a payment link and an in-page flow may
-   * call it an order, and the implementation maps whichever native identifier it has
-   * onto this one. It is not null - a checkout that was created has an identifier.
+   * provider's noun: a hosted flow may call it a payment link and an in-page flow an
+   * order. It is not null - a checkout that was created has an identifier.
    */
   providerSessionId: string;
-  /**
-   * The provider's identifier for the order behind the checkout, where the provider
-   * keeps one separately. Null where it does not.
-   */
   providerOrderId: string | null;
   /**
-   * Where the payer is sent to complete payment. This is a HOSTED page on the provider's
-   * own domain, not a client-side SDK payload: the seam is server-only, and describing
-   * an in-page checkout would put provider vocabulary into the browser. A provider that
-   * cannot offer a hosted page is not a provider this seam can describe - and that is a
-   * real limit, not a hypothetical, so it is stated here rather than left to be
-   * discovered in Phase 8.
+   * Where the payer is sent to complete payment: a HOSTED page on the provider's own
+   * domain, not a client-side SDK payload. A provider whose flow needs a publishable key
+   * and provider parameters IN THE BROWSER cannot be described by this seam as it stands
+   * - a real limit, stated here rather than discovered in Phase 8.
    */
   url: string;
-  /** What is being charged, in minor units. */
   amountMinor: Minor;
-  /** ISO 4217 currency code. */
   currency: string;
-  /** ISO 8601 instant at which the checkout expires, where the provider expires it. */
+  /** ISO 8601 instant at which the provider expires the checkout. */
   expiresAt: string | null;
 }
 
@@ -108,23 +84,17 @@ export interface WebhookEvent {
   eventId: string;
   /** The provider's own event name, verbatim. */
   eventType: string;
-  /** ISO 8601 instant the event happened. */
   occurredAt: string;
-  /** The checkout the event is about, where it names one. */
   providerSessionId: string | null;
-  /** The order the event is about, where it names one. */
   providerOrderId: string | null;
-  /** The payment the event is about, where it names one. */
   providerPaymentId: string | null;
   /**
-   * The refund the event is about, where it names one. A refund is ASYNCHRONOUS, so
-   * the result of asking for one is not the end of it - this is how a caller learns
-   * that the refund finally succeeded or finally failed.
+   * The refund the event is about, where it names one. A refund is ASYNCHRONOUS, so the
+   * result of asking for one is not the end of it - this is how a caller learns that the
+   * refund finally succeeded or finally failed.
    */
   refundId: string | null;
-  /** The amount involved, in minor units, where the event carries one. */
   amountMinor: Minor | null;
-  /** ISO 4217 currency code, where the event carries one. */
   currency: string | null;
 }
 
@@ -132,59 +102,41 @@ export interface WebhookEvent {
 export interface RefundInput {
   /** The tenant whose money is being refunded. The same tenant the checkout was for. */
   organizationId: string;
-  /** The payment being refunded. */
+  /** The payment being refunded - a provider refunds a payment, not a checkout. */
   providerPaymentId: string;
-  /** How much to refund, in minor units. */
   amountMinor: Minor;
   /** A code for why, not a sentence. */
   reasonCode: string;
-  /**
-   * A stable key for THIS attempt to refund, so that a retry maps to the same provider
-   * refund rather than refunding twice. See `CheckoutInput.idempotencyKey`.
-   */
+  /** A stable key for THIS attempt to refund. See `CheckoutInput.idempotencyKey`. */
   idempotencyKey: string;
 }
 
 /** The outcome of a refund request. */
 export interface RefundResult {
-  /** The provider's identifier for this refund. */
   refundId: string;
-  /** The payment the refund was against. */
   providerPaymentId: string;
-  /** How much was refunded, in minor units. */
   amountMinor: Minor;
-  /** ISO 4217 currency code. */
   currency: string;
-  /** Where the refund has got to. */
   status: "pending" | "succeeded" | "failed";
 }
 
-/**
- * What a payment provider must be able to do.
- *
- * `configured` is a PROPERTY rather than a method on purpose. The contract is that every
- * METHOD of a provider refuses, so a method that answered "am I configured?" would have
- * to do one of two things: answer with a boolean, which breaks the contract, or refuse,
- * which answers nothing. A property cannot do either, so the boolean lives beside the
- * contract rather than inside it.
- */
+/** What a payment provider must be able to do. */
 export interface PaymentProvider {
   /** Whether this provider can actually take money. False for the unconfigured stub. */
   readonly configured: boolean;
   /** Start a checkout and return where the payer goes to pay. */
   createCheckout: (input: CheckoutInput) => Promise<CheckoutSession>;
   /**
-   * Authenticate a webhook payload against its signature and return what it means.
-   *
-   * The payload is the RAW BODY, exactly as it arrived. A signature is computed over
-   * bytes, so a payload that has been parsed and re-serialised is a different byte
-   * sequence and will fail the check for reasons that look like a forgery. The union
-   * exists because a framework may hand over either the bytes or the text.
+   * Authenticate a webhook payload against its signature and return what it means. The
+   * payload is the RAW BODY, exactly as it arrived - the union exists because a framework
+   * may hand over either the bytes or the text. A signature is computed over bytes, so a
+   * parsed and re-serialised payload is a different byte sequence and fails the check
+   * looking like a forgery.
    *
    * A signature that does not verify MUST reject with `PaymentVerificationError`, and
    * MUST NOT resolve to an event. A provider that is unreachable is a DIFFERENT failure
-   * and must not be reported as a verification failure: one is an attack, the other is
-   * an outage, and an operator reads them differently.
+   * and must not be reported as this one - one is an attack, the other an outage, and an
+   * operator reads them differently.
    */
   verifyWebhook: (payload: string | Uint8Array, signature: string) => Promise<WebhookEvent>;
   /** Refund a payment. */

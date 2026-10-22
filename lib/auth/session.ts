@@ -23,11 +23,10 @@ import { cookies } from "next/headers";
 export const ACTIVE_ORG_COOKIE = "cc_active_org";
 
 /**
- * Cookie name for the chosen clinic.
- *
- * THE SAME RULE AS THE ORGANIZATION COOKIE, AND THE SAME CAVEAT: it records which
- * clinic the user last chose, and it is re-validated against the clinics the user can
- * REACH on every read. A clinic id in this cookie is not evidence of anything.
+ * Cookie name for the chosen clinic. The same rule as the organization cookie, and the
+ * same caveat: it records which clinic the user last chose, and it is re-validated
+ * against the clinics the user can REACH on every read. A clinic id in this cookie is not
+ * evidence of anything.
  */
 export const ACTIVE_CLINIC_COOKIE = "cc_active_clinic";
 
@@ -35,10 +34,9 @@ export const ACTIVE_CLINIC_COOKIE = "cc_active_clinic";
 const MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 
 /**
- * The organization id from the cookie, or null.
- *
- * Returns the raw string. Whether that id still means anything is decided against the
- * database, never here - this function deliberately has no opinion about validity.
+ * The organization id from the cookie, or null. Returns the raw string. Whether that id
+ * still means anything is decided against the database, never here - this function
+ * deliberately has no opinion about validity.
  */
 export async function readActiveOrgId(): Promise<string | null> {
   const cookieStore = await cookies();

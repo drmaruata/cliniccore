@@ -39,8 +39,7 @@ export default function ResetPasswordForm() {
     // INSIDE A TRANSITION, WHICH IS NOT OPTIONAL. MEASURED with the repo's React
     // 19.3.0: dispatched outside a transition, `isPending` never became true - the
     // values were [false, false] - so the button never disabled, a double click fired
-    // TWO server actions, and React logged an error on every submit. `isPending` is
-    // only the real signal inside one.
+    // TWO server actions, and React logged an error on every submit.
     startTransition(() => {
       formAction(data);
     });

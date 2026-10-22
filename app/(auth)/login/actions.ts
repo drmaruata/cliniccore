@@ -71,8 +71,6 @@ export async function login(
     return toSafeResponse(error);
   }
 
-  // The signed-in application lives under `/app`. Task 16 creates the routes; this
-  // task only decides where a successful sign-in goes.
   redirect("/app/dashboard");
   return null;
 }

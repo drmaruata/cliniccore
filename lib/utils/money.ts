@@ -23,28 +23,24 @@
  * instead of 1, because "د.إ." contributed a "." that was indistinguishable from the
  * decimal point and the real separator was deleted with it. So the literal substrings are
  * removed as whole strings, and whatever remains must match the numeric grammar exactly.
- *
- * THE LITERAL ALPHABET IS TAKEN FROM BOTH SIGN RENDERINGS. A previous version sampled
- * only the negative form. In de-CH the negative rendering carries no non-breaking space
- * and the positive one does, so `parseMinor(formatMinor(100n, "CHF", "de-CH"))` threw on
- * the formatter's own output - a hard break for de-CH, en-CH, it-CH and lo.
+ * THE LITERAL ALPHABET IS TAKEN FROM BOTH SIGN RENDERINGS: a previous version sampled
+ * only the negative form, and in de-CH the negative rendering carries no non-breaking
+ * space while the positive one does - so `parseMinor(formatMinor(100n, "CHF", "de-CH"))`
+ * threw on the formatter's own output, a hard break for de-CH, en-CH, it-CH and lo.
  *
  * WHY GROUPING IS CHECKED. Removing non-digits is not enough: "₹1,234,56" would parse as
  * 12345600 rather than 123456. The integer part's group widths are therefore validated
- * against the grouping the locale actually uses - a final group of three digits, and
- * two or three elsewhere, which covers both western (1,234,567) and Indian (12,34,567)
+ * against the grouping the locale actually uses - a final group of three digits, and two
+ * or three elsewhere, which covers both western (1,234,567) and Indian (12,34,567)
  * grouping while rejecting misplaced separators.
  *
- * WHY UNBALANCED PARENTHESES THROW. Negatives in parentheses are what
- * `Intl` emits under `currencySign: "accounting"`, and what Indian accounting packages
- * print, so they must parse as negative - a credit note read as positive is a charge.
- * But a single stray bracket must not silently negate a charge: "₹5.00)" has to fail
- * rather than become -500.
- *
- * THE LOCALE MUST MATCH ON BOTH SIDES. Separators come from `Intl` rather than being
- * assumed, so `de-DE`'s "1.234,56" and `fr-FR`'s space grouping both work. It follows
- * that a string formatted in one locale and read under another is refused rather than
- * misread - the grammar check is what makes that a refusal.
+ * WHY UNBALANCED PARENTHESES THROW. Negatives in parentheses are what `Intl` emits under
+ * `currencySign: "accounting"`, and what Indian accounting packages print, so they must
+ * parse as negative - a credit note read as positive is a charge. But a single stray
+ * bracket must not silently negate a charge: "₹5.00)" has to fail rather than become
+ * -500. THE LOCALE MUST MATCH ON BOTH SIDES: separators come from `Intl` rather than
+ * being assumed, so a string formatted in one locale and read under another is refused
+ * rather than misread.
  *
  * KNOWN LIMIT, DOCUMENTED RATHER THAN HANDLED: locales whose digits are not ASCII
  * (ar-EG, bn-IN, fa-IR and about a dozen others) throw. A throw is the correct failure -

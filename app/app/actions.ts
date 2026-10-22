@@ -28,15 +28,22 @@ import { createServerClient, getUser } from "@/lib/supabase/server";
  * WHY A REFUSAL IS A RESPONSE AND NOT A THROW. A thrown action leaves the user with no
  * message and ejects them to the global error page; `(app)` has no `error.tsx`. So the
  * failures are turned into `SafeResponse`s by the one sanctioned path.
+ *
+ * WHY A CLINIC MUST BELONG TO THE ACTIVE ORGANIZATION. The `clinics` SELECT policy spans
+ * every organization the user is a member of, so a lookup by id alone would accept the
+ * other tenant's clinic - and a cookie naming it is a cross-tenant filter the moment a
+ * clinical screen reads it. The active organization is resolved first and the clinic has
+ * to be in it. The reach check is then the policy: the same SELECT policy is the
+ * organization's clinics AND the ones the user can reach, so a query for one clinic id
+ * answers only for a clinic the user may read.
+ *
+ * WHY THE REDIRECT IS OUTSIDE THE TRY. `redirect()` throws a sentinel, and catching it
+ * would swallow the redirect and leave the user on a page they are no longer signed in
+ * to. The sign-out call itself is guarded, because a failure there must not leave the
+ * user stuck in the application with a session they asked to end.
  */
 
-/**
- * Point the session at another organization the user belongs to.
- *
- * THE MEMBERSHIP CHECK IS NOT A LOOKUP THE CLIENT CAN SKIP. The organization id
- * arrives from the browser, so it is untrusted input: the list of organizations the
- * user actually belongs to is fetched from the database and the id has to be in it.
- */
+/** Point the session at another organization the user belongs to. */
 export async function switchOrganization(orgId: string): Promise<SafeResponse | null> {
   const parsed = z.uuid().safeParse(orgId);
   if (!parsed.success) {
@@ -60,20 +67,7 @@ export async function switchOrganization(orgId: string): Promise<SafeResponse | 
   return null;
 }
 
-/**
- * Point the session at another clinic the user can reach.
- *
- * THE CLINIC MUST BELONG TO THE ACTIVE ORGANIZATION. The `clinics` SELECT policy spans
- * every organization the user is a member of, so a lookup by id alone would accept the
- * other tenant's clinic - and a cookie naming it is a cross-tenant filter the moment a
- * clinical screen reads it. The active organization is resolved first and the clinic
- * has to be in it.
- *
- * THE REACH CHECK IS THE POLICY. The same SELECT policy is the organization's clinics
- * AND the ones the user can reach, so a query for one clinic id answers only for a
- * clinic the user may read. A clinic that comes back empty is a clinic the user
- * cannot reach.
- */
+/** Point the session at another clinic the user can reach. */
 export async function switchClinic(clinicId: string): Promise<SafeResponse | null> {
   const parsed = z.uuid().safeParse(clinicId);
   if (!parsed.success) {
@@ -109,14 +103,7 @@ export async function switchClinic(clinicId: string): Promise<SafeResponse | nul
   return null;
 }
 
-/**
- * Sign out, and go to the sign-in page.
- *
- * WHY THE REDIRECT IS OUTSIDE THE TRY. `redirect()` throws a sentinel, and catching it
- * would swallow the redirect and leave the user on a page they are no longer signed in
- * to. The sign-out call itself is guarded, because a failure there must not leave the
- * user stuck in the application with a session they asked to end.
- */
+/** Sign out, and go to the sign-in page. */
 export async function signOut(): Promise<void> {
   const supabase = await createServerClient();
   try {

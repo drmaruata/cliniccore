@@ -35,12 +35,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
  *
  * ENFORCEMENT LAYERS. `lib/supabase/server.ts` MUST begin with
  * `import "server-only"`; that is the PRIMARY defence, because it fails at
-    // CORRECTED after Task 12: that claim was wrong. vitest.config.ts DOES alias
-    // "server-only" (to a stub, so tests can import lib/supabase/server.ts), and
-    // tests/unit/server-boundary.test.ts is what keeps that alias out of the production
-    // config files - not this scanner. This scanner still enforces the SUPABASE_SERVICE_ROLE_KEY
-    // path rule and the "use client" rule; the import "server-only" line itself is pinned
-    // by that test, not here.
+ * bundle time. CORRECTED after Task 12: the claim that vitest.config.ts does NOT
+ * alias "server-only" was wrong — it DOES alias it (to a stub, so tests can
+ * import lib/supabase/server.ts), and tests/unit/server-boundary.test.ts is what
+ * keeps that alias out of the production config files, not this scanner. This
+ * scanner still enforces the SUPABASE_SERVICE_ROLE_KEY path rule and the "use
+ * client" rule; the `import "server-only"` line itself is pinned by that test.
  * Rule 3 is the SECONDARY layer: it fails in `npm run lint` even when the
  * bundler would not, and it catches the mistake in review. See
  * docs/IMPLEMENTATION_STATUS.md — the obligation is carried into the later
@@ -67,9 +67,9 @@ const SERVER_MODULE_PREFIX = "lib/supabase/";
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".css"];
 
 /**
- * Extensions scanned for a hard-coded credential (rule 4). Superset of
+ * Extensions scanned for a hard-coded credential (rule 4). A superset of
  * `SOURCE_EXTENSIONS`: a Postgres migration is just as capable of carrying a
- * pasted key as a TypeScript file, and the walk used to be blind to it.
+ * pasted key as a TypeScript file.
  *
  * `.md`, `.json`, `.yml` and friends are deliberately NOT here. The plan
  * document under `docs/superpowers/plans/` carries illustrative credentials
@@ -85,15 +85,15 @@ const CREDENTIAL_SCAN_EXTENSIONS = [...SOURCE_EXTENSIONS, ".sql"];
  * The `.env*` files that are walked.
  *
  * `.gitignore` is `.env*` with `!.env.example`, so `.env.example` is the only
- * env file that can reach version control — and therefore the only one whose
+ * env file that can reach version control - and therefore the only one whose
  * contents are a leak risk. It is scanned like any other file; a real key
  * pasted into it fails the gate.
  *
  * The other `.env*` names are skipped because they are gitignored *by this
  * repo's own policy*: they cannot be committed without `git add -f`, and the
  * gate's entire threat model is a committed leak. They also hold real
- * developer credentials by design — `.env.local` is the file you are told to
- * put the service-role key in — so scanning them would make `check:secrets`
+ * developer credentials by design - `.env.local` is the file you are told to
+ * put the service-role key in - so scanning them would make `check:secrets`
  * permanently red in every correctly configured checkout. A gate people have
  * to disable is not a gate, and that is worse than the gap it closes.
  *
@@ -102,16 +102,15 @@ const CREDENTIAL_SCAN_EXTENSIONS = [...SOURCE_EXTENSIONS, ".sql"];
  * tests/unit/check-no-secrets.test.ts. Scope limit: that test probes a fixed
  * list of env-file names, so it catches drift for those names only. Un-ignoring
  * a DIFFERENT name (e.g. adding `!.env.sample` to .gitignore) would leave this
- * constant stale and the gate blind without failing any test — recorded as a
+ * constant stale and the gate blind without failing any test - recorded as a
  * residual in the round-5 report.
  */
 const TRACKED_ENV_FILES = [".env.example"];
 
 /**
  * Directory names never walked. The walk starts at the repo root so that
- * root-level sources — notably `middleware.ts`, which Next.js runs on every
- * request and which Supabase SSR session refresh requires — are covered.
- * Any directory beginning with "." is skipped as well.
+ * root-level sources are covered, and any directory beginning with "." is
+ * skipped as well.
  */
 const IGNORED_DIRECTORIES = new Set([
   "node_modules",
@@ -142,7 +141,7 @@ const SECRET_LITERAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
  * Two files the walk reads carry the literal `sb_secret_replace_me`, and both
  * are load-bearing:
  *
- *   1. `tests/unit/check-no-secrets.test.ts` — the allowlist has to be
+ *   1. `tests/unit/check-no-secrets.test.ts` - the allowlist has to be
  *      exercised against a literal string, or the assertion testing it is
  *      meaningless. Emptied, this fails:
  *        - "allows documented placeholders like sb_secret_replace_me"
@@ -150,14 +149,14 @@ const SECRET_LITERAL_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
  *        - "keeps .env.example green because its values are inert, not
  *           because it is exempt"
  *        - "does not apply the code rules to .env or .sql files"
- *   2. `.env.example` line 14 — `SUPABASE_SERVICE_ROLE_KEY=sb_secret_replace_me`.
+ *   2. `.env.example` line 14 - `SUPABASE_SERVICE_ROLE_KEY=sb_secret_replace_me`.
  *      That file is walked, so it is a SECOND live reason the list must exist.
  *      It was not one before the `.env*` walk change; the comment this replaces
  *      claimed it was not one at all, which was wrong. Re-measured after the
  *      walk widened, not inherited.
  *
  * `replace_me` is a marker, not a credential. If a real key ever reaches either
- * site it does not contain `replace_me` and the gate still fails — see the
+ * site it does not contain `replace_me` and the gate still fails - see the
  * round-4 report for that end-to-end check on both file types.
  */
 const PLACEHOLDER_ALLOWLIST = [/replace_me/];
@@ -177,9 +176,7 @@ export interface SecretViolation {
   reason: string;
 }
 
-/* ------------------------------------------------------------------ */
-/* Lexical helpers                                                      */
-/* ------------------------------------------------------------------ */
+/* ---- Lexical helpers ---- */
 
 function toPosix(path: string): string {
   return path.replace(/\\/g, "/");
@@ -204,8 +201,8 @@ export function normalizePath(path: string): string {
  * `//` inside a string does not swallow the rest of the line.
  *
  * Known limitation: a regex literal containing an unbalanced quote can confuse
- * the scanner. That is acceptable for a lint gate — the worst case is a false
- * positive that a human removes — and no source file in this repo does it.
+ * the scanner. That is acceptable for a lint gate - the worst case is a false
+ * positive that a human removes - and no source file in this repo does it.
  */
 export function stripComments(source: string): string {
   let out = "";
@@ -299,9 +296,7 @@ export function findServerModuleImports(file: SecretCheckInput): string[] {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Rules                                                                */
-/* ------------------------------------------------------------------ */
+/* ---- Rules ---- */
 
 /** True when the file declares itself a client component (first statement). */
 export function isClientFile(contents: string): boolean {
@@ -309,15 +304,15 @@ export function isClientFile(contents: string): boolean {
 }
 
 /**
- * True when `path` is a source file, i.e. one the code-shaped rules 1–3 apply
- * to. Data and config files that the walk reads for rule 4 — `.env*` and `.sql`
- * — return false, because naming `SUPABASE_SERVICE_ROLE_KEY` in an env
+ * True when `path` is a source file, i.e. one the code-shaped rules 1-3 apply
+ * to. Data and config files that the walk reads for rule 4 - `.env*` and `.sql`
+ * - return false, because naming `SUPABASE_SERVICE_ROLE_KEY` in an env
  * assignment or in a `--` SQL comment is how those files are *supposed* to look.
  * Flagging it would be a false positive, and on `.env.example` a permanent one.
  *
  * Known limitation: adding a new non-source extension to
- * `CREDENTIAL_SCAN_EXTENSIONS` silently opts it out of rules 1–3. Intentional —
- * those rules are about TypeScript/JavaScript shapes — but worth remembering.
+ * `CREDENTIAL_SCAN_EXTENSIONS` silently opts it out of rules 1-3. Intentional -
+ * those rules are about TypeScript/JavaScript shapes - but worth remembering.
  */
 export function isSourceFilePath(path: string): boolean {
   const base = toPosix(path).split("/").pop() ?? "";
@@ -400,9 +395,7 @@ export function check(files: readonly SecretCheckEntry[]): boolean {
   return normalized.every((file) => findViolations(file).length === 0);
 }
 
-/* ------------------------------------------------------------------ */
-/* CLI                                                                 */
-/* ------------------------------------------------------------------ */
+/* ---- CLI ---- */
 
 /**
  * True when a file with this basename should be read by the walk.

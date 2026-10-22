@@ -1,28 +1,26 @@
 /**
  * The list surface every ClinicCore feature renders its rows through.
  *
- * It exists to make three decisions once rather than per feature: how a table
- * looks while loading, how it looks when the query succeeded and found
- * nothing, and how a row is keyed. Each of those is a place where features
- * otherwise diverge, and the "empty but successful" case in particular is the
- * one most often rendered as a silent blank panel.
+ * It exists to make three decisions once rather than per feature: how a table looks while
+ * loading, how it looks when the query succeeded and found nothing, and how a row is
+ * keyed. Each of those is a place where features otherwise diverge, and the "empty but
+ * successful" case in particular is the one most often rendered as a silent blank panel.
  *
- * COLOUR. None of its own. It composes the generated `ui/table` primitives,
- * whose rules are written entirely in terms of tokens (`border-border`,
- * `bg-muted/50`, `text-muted-foreground`), and delegates the empty state to
- * `EmptyState`. There is no `dark:` variant anywhere in this file, which is the
- * visible proof that the token layer is doing its job.
+ * COLOUR. None of its own. It composes the generated `ui/table` primitives, whose rules
+ * are written entirely in terms of tokens (`border-border`, `bg-muted/50`,
+ * `text-muted-foreground`), and delegates the empty state to `EmptyState`. There is no
+ * `dark:` variant anywhere in this file, which is the visible proof that the token layer
+ * is doing its job.
  *
- * SERVER/CLIENT. This component deliberately has no `"use client"`. It
- * evaluates `column.cell(row)` during its own render and passes the resulting
- * nodes down to the client `ui/table` primitives, so a server-rendered page
- * can use it and no render callback ever has to cross the RSC boundary. That
- * rules out interactivity inside a cell — put a `Button` or a menu in the cell
- * content, not an inline event handler.
+ * SERVER/CLIENT. This component deliberately has no `"use client"`. It evaluates
+ * `column.cell(row)` during its own render and passes the resulting nodes down to the
+ * client `ui/table` primitives, so a server-rendered page can use it and no render
+ * callback ever has to cross the RSC boundary. That rules out interactivity inside a
+ * cell - put a `Button` or a menu in the cell content, not an inline event handler.
  *
- * MONEY. Cells render whatever the caller produced. Money stays bigint minor
- * units in the data layer and arrives here already formatted; this component
- * performs no arithmetic.
+ * MONEY. Cells render whatever the caller produced. Money stays bigint minor units in
+ * the data layer and arrives here already formatted; this component performs no
+ * arithmetic.
  */
 import type * as React from "react";
 

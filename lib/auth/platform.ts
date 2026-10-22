@@ -50,11 +50,10 @@ export const isPlatformAdmin = cache(async (): Promise<boolean> => {
 });
 
 /**
- * The tenant directory, or null when the caller may not have it.
- *
- * The three fields are the only things the console shows, and they are the only things
- * the query can return: the RPC's signature is the boundary, so no patient record is
- * reachable from this route even by accident.
+ * The tenant directory, or null when the caller may not have it. The three fields are the
+ * only things the console shows, and they are the only things the query can return: the
+ * RPC's signature is the boundary, so no patient record is reachable from this route even
+ * by accident.
  */
 export async function readTenantDirectory(): Promise<TenantEntry[] | null> {
   if (!(await isPlatformAdmin())) return null;

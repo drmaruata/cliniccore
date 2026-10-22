@@ -65,7 +65,6 @@ export async function signup(
     );
   }
 
-  // The signed-in application lives under `/app`. Task 16 creates the routes.
   redirect("/app/onboarding");
   return null;
 }

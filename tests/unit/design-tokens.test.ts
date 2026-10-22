@@ -1,47 +1,34 @@
 /**
  * Design-token gate for `app/globals.css`.
  *
- * WHY THIS FILE EXISTS. Two of the global constraints are only checkable
- * against the CSS file itself:
+ * WHY THIS FILE EXISTS. Two of the global constraints are only checkable against the CSS
+ * file itself:
  *
- *   - the six mandated brand colours exist as `--brand-*` tokens, in BOTH
- *     `:root` and `.dark`;
+ *   - the six mandated brand colours exist as `--brand-*` tokens, in BOTH `:root` and
+ *     `.dark`;
  *   - no component hardcodes a hex, so the palette has exactly one home.
  *
- * HOW THE "NO HEX" RULE IS SCOPED (and why it is not brittle).
+ * HOW THE "NO HEX" RULE IS SCOPED, and why it is not brittle. The rule asserted here is:
+ * a hex literal may appear only inside the bodies of the top-level `:root { … }` and
+ * `.dark { … }` token blocks. Everywhere else in `globals.css` - the `@theme inline`
+ * bridge, the `@layer base` block, a `@media` override, anything a future contributor
+ * appends - hex is forbidden. A stricter reading ("globals.css contains no hex at all")
+ * is what was rejected: `shadcn@latest init` and any future dependency may legitimately
+ * emit a hex in a generated base rule, and a test that turns red for that teaches people
+ * to delete the gate. The scoped reading still catches the defect. Two structural choices
+ * keep it tight: exclusion is by TOP-LEVEL RULE, not by substring (a `:root` nested in
+ * `@media` is not a token block and its hex is still reported), and hex is permitted
+ * inside the token blocks, so the brand-hex provenance comments can live next to the value
+ * they document. To prove the rule is live rather than vacuous,
+ * `describe("the hex rule is not vacuous")` runs the *same* scanner over synthetic CSS
+ * with a hex planted outside the token blocks and asserts it is reported - including the
+ * nested-`:root` and nested-`.dark` cases the first cut of this file got wrong.
  *
- *   The rule asserted here is: **a hex literal may appear only inside the
- *   bodies of the top-level `:root { … }` and `.dark { … }` token blocks.**
- *   Everywhere else in `globals.css` — the `@theme inline` bridge, the
- *   `@layer base` block, a `@media` override, anything a future contributor
- *   appends — hex is forbidden.
- *
- *   A stricter reading ("globals.css contains no hex at all") is what was
- *   rejected: `shadcn@latest init` and any future dependency may legitimately
- *   emit a hex in a generated base rule, and a test that turns red for that
- *   teaches people to delete the gate. The scoped reading still catches the
- *   defect. The regression it describes is a colour pasted into the wrong
- *   place — a `@layer base` rule, a `@media` block, a component class — and
- *   every one of those is outside the token blocks by definition. Two
- *   structural choices keep it tight:
- *
- *     - exclusion is by TOP-LEVEL RULE, not by substring. A `:root` nested in
- *       `@media` is not a token block and its hex is still reported;
- *     - hex is permitted inside the token blocks, so the brand-hex provenance
- *       comments can live next to the value they document.
- *
- *   To prove the rule is live rather than vacuous,
- *   `describe("the hex rule is not vacuous")` runs the *same* scanner over
- *   synthetic CSS with a hex planted outside the token blocks and asserts it
- *   is reported — including the nested-`:root` and nested-`.dark` cases the
- *   first cut of this file got wrong.
- *
- * CONTRAST. WCAG 2.1 AA (4.5:1 normal text, 3:1 non-text UI) is computed from
- * the resolved token values, not from a comment. `#b5bdbb` is the brand
- * neutral: it sits near 1.8:1 on white, so it is pinned to borders, muted
- * surfaces and decoration. `describe("contrast")` asserts that stays true, so
- * a future "just use the brand grey for helper text" change fails loudly
- * instead of shipping unreadable copy.
+ * CONTRAST. WCAG 2.1 AA (4.5:1 normal text, 3:1 non-text UI) is computed from the
+ * resolved token values, not from a comment. `#b5bdbb` is the brand neutral: it sits near
+ * 1.8:1 on white, so it is pinned to borders, muted surfaces and decoration.
+ * `describe("contrast")` asserts that stays true, so a future "just use the brand grey for
+ * helper text" change fails loudly instead of shipping unreadable copy.
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -74,9 +61,7 @@ function findRepoRoot(): string {
 const REPO_ROOT = findRepoRoot();
 const GLOBALS_CSS = readFileSync(join(REPO_ROOT, "app", "globals.css"), "utf8");
 
-/* ------------------------------------------------------------------ */
-/* CSS parsing                                                          */
-/* ------------------------------------------------------------------ */
+/* ---- CSS parsing ---- */
 
 export interface RuleBlock {
   /** Text between the rule's `{` and its matching `}`, comments stripped. */
@@ -173,9 +158,7 @@ export function declarations(body: string): Map<string, string> {
   return out;
 }
 
-/* ------------------------------------------------------------------ */
-/* Colour maths                                                         */
-/* ------------------------------------------------------------------ */
+/* ---- Colour maths ---- */
 
 type Rgb = readonly [number, number, number];
 
@@ -283,27 +266,22 @@ function contrast(a: Rgb, b: Rgb): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-/* ------------------------------------------------------------------ */
-/* OKLab, for tinted backgrounds                                       */
-/* ------------------------------------------------------------------ */
+/* ---- OKLab, for tinted backgrounds ---- */
 
 /**
- * Gamma-encoded sRGB to OKLab (Björn Ottosson's matrices, as CSS Color 4 §12.2
- * uses them).
+ * Gamma-encoded sRGB to OKLab (Björn Ottosson's matrices, as CSS Color 4 §12.2 uses them).
  *
- * Needed because a generated variant can name a TINTED background —
- * `bg-destructive/10` on the destructive Button, `dark:bg-input/30` on the
- * outline Button — and `bg-destructive` is not the colour that ends up behind
- * the text.
+ * Needed because a generated variant can name a TINTED background - `bg-destructive/10`
+ * on the destructive Button, `dark:bg-input/30` on the outline Button - and
+ * `bg-destructive` is not the colour that ends up behind the text.
  *
  * THE LINEARISATION IS NOT OPTIONAL. OKLab is defined as
- * `cbrt(linear-light sRGB) -> LMS -> M2`. The previous version of this function
- * fed GAMMA-ENCODED channels straight into the LMS matrix, which computes
- * `cbrt(gamma)` where it should compute `cbrt(linear)`. The two agree only at 0
- * and 1.
- *
- * OKLab's defining property is that, for a neutral, `L == relativeLuminance^(1/3)`.
- * Measured against that property:
+ * `cbrt(linear-light sRGB) -> LMS -> M2`. The previous version of this function fed
+ * GAMMA-ENCODED channels straight into the LMS matrix, which computes `cbrt(gamma)`
+ * where it should compute `cbrt(linear)`. The two agree only at 0 and 1, and the error
+ * was bidirectional - `oklabToSrgb` was correct, so every tint computed through the
+ * pair was systematically too light. MEASURED against OKLab's defining property, that
+ * for a neutral `L == relativeLuminance^(1/3)`:
  *
  * | sRGB channel | linear Y | correct L | cbrt(gamma) L |
  * | --- | --- | --- | --- |
@@ -311,13 +289,9 @@ function contrast(a: Rgb, b: Rgb): number {
  * | 0.50 | 0.2140 | 0.5982 | 0.7937 |
  * | 0.90 | 0.7874 | 0.9234 | 0.9655 |
  *
- * The error is bidirectional — `oklabToSrgb` was correct, so every tint computed
- * through the pair was systematically too light, which made composited
- * backgrounds measure too close to the text sitting on them. The
- * `the OKLab transform is correct` describe block pins the fixed version by
- * round-trip and against the `L == Y^(1/3)` property directly, because the
- * previous self-test used only black and white, which is exactly where the two
- * models coincide.
+ * The `the OKLab transform is correct` describe block pins the fixed version by
+ * round-trip and against that property directly, because the previous self-test used only
+ * black and white, which is exactly where the two models coincide.
  */
 export function srgbToOklab([r, g, b]: Rgb): readonly [number, number, number] {
   const lr = srgbToLinear(r);
@@ -352,42 +326,40 @@ export function oklabToSrgb([L, a, bb]: readonly [number, number, number]): Rgb 
  * One of TWO compositing models, because they are NOT the same computation and
  * a verdict that depends on which one you happened to pick is not a verdict.
  *
- *   - **oklab interpolation** (`this`) — interpolate in OKLab. This is what
- *     `color-mix(in oklab, …)` is specified to do, and what the colour-mix
- *     layer of a `/N` modifier computes.
- *   - **gamma-sRGB premultiplied** (`compositeGammaSrgb`) — `a*p + b*(1-p)` per
- *     channel in gamma-encoded sRGB. This is what a translucent layer actually
- *     contributes once the browser composites the resulting semi-transparent
- *     colour over an opaque backdrop, which is the paint that reaches the
- *     screen. `color-mix(in oklab, var(--x) N%, transparent)` does NOT produce
- *     "the oklab mix of x and the backdrop"; premultiplied interpolation toward
- *     `transparent` leaves the colour's own channels alone, so it yields the
- *     token at alpha N — and the mixing with the backdrop happens afterwards,
- *     in sRGB.
+ *   - **oklab interpolation** (`this`) - interpolate in OKLab. This is what
+ *     `color-mix(in oklab, …)` is specified to do, and what the colour-mix layer of a
+ *     `/N` modifier computes.
+ *   - **gamma-sRGB premultiplied** (`compositeGammaSrgb`) - `a*p + b*(1-p)` per channel in
+ *     gamma-encoded sRGB. This is what a translucent layer actually contributes once the
+ *     browser composites the resulting semi-transparent colour over an opaque backdrop,
+ *     which is the paint that reaches the screen. `color-mix(in oklab, var(--x) N%,
+ *     transparent)` does NOT produce "the oklab mix of x and the backdrop";
+ *     premultiplied interpolation toward `transparent` leaves the colour's own channels
+ *     alone, so it yields the token at alpha N - and the mixing with the backdrop happens
+ *     afterwards, in sRGB.
  *
- * MEASURED ON BOTH SAMPLES THE GATE CARES ABOUT — `--destructive` as text on
- * its own generated wash — gamma-sRGB is the LOWER of the two:
+ * MEASURED ON BOTH SAMPLES THE GATE CARES ABOUT - `--destructive` as text on its own
+ * generated wash - gamma-sRGB is the LOWER of the two:
  *
  *   | sample                       | oklab-interp | gamma-sRGB |
  *   | ---------------------------- | ------------ | ---------- |
  *   | light, ink on its `/10` wash | 5.23:1       | 5.10:1     |
  *   | dark, ink on its `/20` wash  | 4.96:1       | 4.83:1     |
  *
- * The ruling that built this gate described oklab interpolation as "the
- * conservative model, the lower of the two". It is not: on both samples it is
- * the higher, by 0.13:1 in dark and 0.13:1 in light. The number the round-2
- * report carried for the dark sample (2.06:1) came from the broken transform;
- * the number the dispatch carried (5.70:1 / 5.76:1) could not be reproduced
- * here by either model — re-measured independently, the pair is 4.83:1 and
- * 4.96:1. Those figures are what this comment and the tests now use.
+ * The ruling that built this gate described oklab interpolation as "the conservative
+ * model, the lower of the two". It is not: on both samples it is the higher, by 0.13:1 in
+ * dark and 0.13:1 in light. The number the round-2 report carried for the dark sample
+ * (2.06:1) came from the broken transform; the number the dispatch carried (5.70:1 /
+ * 5.76:1) could not be reproduced here by either model - re-measured independently, the
+ * pair is 4.83:1 and 4.96:1. Those figures are what this comment and the tests now use.
  *
- * SO THE GATE TAKES THE MINIMUM OF THE TWO. That satisfies the ruling's actual
- * intent — "a gate must not admit a failing paint" — without depending on which
- * model happens to be lower, which is a property of the palette and not of the
- * code. A second test below pins that the two models agree to within 0.25:1 on
- * every surface the shipped variants actually use, so the min is a guard
- * against future divergence rather than a permanent tax; if a future change
- * pushes them apart, that test fails and the gate is already conservative.
+ * SO THE GATE TAKES THE MINIMUM OF THE TWO. That satisfies the ruling's actual intent -
+ * "a gate must not admit a failing paint" - without depending on which model happens to
+ * be lower, which is a property of the palette and not of the code. A second test below
+ * pins that the two models agree to within 0.25:1 on every surface the shipped variants
+ * actually use, so the min is a guard against future divergence rather than a permanent
+ * tax; if a future change pushes them apart, that test fails and the gate is already
+ * conservative.
  */
 export function mixOklab(a: Rgb, b: Rgb, percent: number): Rgb {
   const [al, aa, ab] = srgbToOklab(a);
@@ -449,9 +421,7 @@ export function tokenContrast(vars: Map<string, string>, fg: string, bg: string)
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* The hex rule                                                         */
-/* ------------------------------------------------------------------ */
+/* ---- The hex rule ---- */
 
 const HEX_LITERAL = /#[0-9a-f]{3,8}\b/gi;
 const TOKEN_BLOCK_SELECTORS = [":root", ".dark"] as const;
@@ -591,9 +561,7 @@ const LITERAL_COLOUR_FUNCTION = /\b(?:oklch|oklab|lab|lch|rgba?|hsla?)\(/g;
  * legitimate, so it is left to the next task rather than half-solved here.
  */
 
-/* ------------------------------------------------------------------ */
-/* Expectations                                                         */
-/* ------------------------------------------------------------------ */
+/* ---- Expectations ---- */
 
 const BRAND = {
   "--brand-primary": "#05ab29",
@@ -894,9 +862,7 @@ describe("contrast", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Generated variants vs the text-colour gate                         */
-/* ------------------------------------------------------------------ */
+/* ---- Generated variants vs the text-colour gate ---- */
 
 /**
  * The generated components whose variants this gate reads.
@@ -944,24 +910,23 @@ export function cvaVariantClasses(source: string): Record<string, string> {
  * Slots that a `data-variant` can actually land on, DERIVED rather than listed.
  *
  * This exists because round 3 shipped a compensating rule that reached nothing.
- * `Button` accepts `asChild`, which swaps its own `<button>` element for its
- * child through Radix `Slot`. `mergeProps(slotProps, childProps)` builds
- * `overrideProps = { ...childProps }` first, so **the child's props win** — and
- * a child that carries its own `data-slot` overrides the `data-slot="button"`
- * Button sets. `AlertDialogAction` and `AlertDialogCancel` are exactly that: a
- * `Button asChild` around a Radix primitive carrying
- * `data-slot="alert-dialog-action"` / `"alert-dialog-cancel"`.
+ * `Button` accepts `asChild`, which swaps its own `<button>` element for its child
+ * through Radix `Slot`. `mergeProps(slotProps, childProps)` builds
+ * `overrideProps = { ...childProps }` first, so **the child's props win** - and a
+ * child that carries its own `data-slot` overrides the `data-slot="button"` Button
+ * sets. `AlertDialogAction` and `AlertDialogCancel` are exactly that: a `Button asChild`
+ * around a Radix primitive carrying `data-slot="alert-dialog-action"` /
+ * `"alert-dialog-cancel"`.
  *
  * So `[data-slot="button"][data-variant="destructive"]` never matched
  * `ConfirmDialog`'s confirm button, and the whole accessibility work rested on a
- * selector the shipped DOM did not carry. The gate could not see it because it
- * read the cva class maps and modelled each variant as though it rendered on a
- * bare element.
+ * selector the shipped DOM did not carry. The gate could not see it because it read the
+ * cva class maps and modelled each variant as though it rendered on a bare element.
  *
- * The derivation: every `<Button … asChild>` in a generated component, paired
- * with the `data-slot` on the child inside it. Both the wrapper count and the
- * slot names are asserted below, so a new `asChild` wrapper is a visible diff
- * and an empty scan is a loud failure rather than a silent narrowing.
+ * The derivation: every `<Button … asChild>` in a generated component, paired with the
+ * `data-slot` on the child inside it. Both the wrapper count and the slot names are
+ * asserted below, so a new `asChild` wrapper is a visible diff and an empty scan is a
+ * loud failure rather than a silent narrowing.
  */
 export function asChildSlots(files: ReadonlyArray<readonly [string, string]>): Array<{
   file: string;
@@ -1213,22 +1178,21 @@ const VARIANT_CASES: VariantCase[] = DIRECT_VARIANT_SOURCES.flatMap(([slot, rel]
 
 describe("every generated variant clears AA as text, or is compensated", () => {
   /*
-   * WHY THIS EXISTS. Round 1 added `--primary-ink` because `--primary` is 2.93:1
-   * as text, and it asserted the token. That fixed the instance and left the
-   * class of defect standing: the generated `link` variant on both Button and
-   * Badge still names `text-primary`, so the first feature to call
-   * `<Button variant="link">` shipped 2.93:1 text with the suite green.
+  /*
+   * WHY THIS EXISTS. Round 1 added `--primary-ink` because `--primary` is 2.93:1 as
+   * text, and it asserted the token. That fixed the instance and left the class of defect
+   * standing: the generated `link` variant on both Button and Badge still names
+   * `text-primary`, so the first feature to call `<Button variant="link">` shipped 2.93:1
+   * text with the suite green.
    *
-   * The real error is one layer up. Of the three things in play, only
-   * `--brand-primary` is mandated; `--primary` is a token `app/globals.css`
-   * chooses, and it was doing two incompatible jobs — a fill under
-   * `--primary-foreground` (5.70:1, fine) and link text (2.93:1, not fine). The
-   * palette cannot move, so the fix has to be at the variant.
+   * The real error is one layer up. Of the three things in play, only `--brand-primary` is
+   * mandated; `--primary` is a token `app/globals.css` chooses, and it was doing two
+   * incompatible jobs - a fill under `--primary-foreground` (5.70:1, fine) and link text
+   * (2.93:1, not fine). The palette cannot move, so the fix has to be at the variant.
    *
-   * This test is deliberately GENERAL. It reads every variant out of the
-   * generated sources and derives what each one paints, rather than listing
-   * `link`. A future `shadcn add` shipping `subtle: "text-primary"` fails here
-   * without anyone having to think of it.
+   * This test is deliberately GENERAL. It reads every variant out of the generated sources
+   * and derives what each one paints, rather than listing `link`. A future `shadcn add`
+   * shipping `subtle: "text-primary"` fails here without anyone having to think of it.
    */
 
   it("actually enumerates the generated variants", () => {
@@ -1244,18 +1208,19 @@ describe("every generated variant clears AA as text, or is compensated", () => {
 
   it("derives the slots an `asChild` Button wrapper actually emits", () => {
     /*
+    /*
      * THE ROUND-4 CRITICAL, turned into an inventory.
      *
      * Round 3's compensating rule named `[data-slot="button"]` and
      * `[data-slot="badge"]`. `ConfirmDialog`'s confirm button is neither: it is
-     * `AlertDialogAction`, a `Button asChild` wrapper whose child Radix merges
-     * with CHILD PROPS WINNING, so the emitted element carries
+     * `AlertDialogAction`, a `Button asChild` wrapper whose child Radix merges with
+     * CHILD PROPS WINNING, so the emitted element carries
      * `data-slot="alert-dialog-action"` and the rule never matched it.
      *
-     * Reading the class maps cannot see that, because the class maps are correct
-     * — it is the DOM the wrapper emits that is not what the map implies. So the
-     * inventory is derived from the source here, and the rule-coverage assertion
-     * below holds every compensating rule to it.
+     * Reading the class maps cannot see that, because the class maps are correct - it is
+     * the DOM the wrapper emits that is not what the map implies. So the inventory is
+     * derived from the source here, and the rule-coverage assertion below holds every
+     * compensating rule to it.
      */
     const wrappers = asChildSlots(BUTTON_WRAPPERS);
     expect(
@@ -1271,17 +1236,16 @@ describe("every generated variant clears AA as text, or is compensated", () => {
 
   it("every compensating rule covers every slot a variant can reach", () => {
     /*
+    /*
      * THE ANTI-PHANTOM GUARD. A compensating rule is written against a set of
-     * `data-slot`s. If that set is narrower than the set of slots a variant can
-     * actually reach, the rule is inert on the ones it misses — which is exactly
-     * how round 3 shipped three selectors that covered none of the shipped
-     * destructive control.
+     * `data-slot`s. If that set is narrower than the set of slots a variant can actually
+     * reach, the rule is inert on the ones it misses - which is exactly how round 3 shipped
+     * three selectors that covered none of the shipped destructive control.
      *
-     * Every `asChild` wrapper accepts Button's full `variant` prop type, so
-     * statically any of them can carry any variant. The rule therefore has to
-     * cover ALL reachable slots, which is deliberately the strict reading: the
-     * cost of being strict is a few selectors that never match, and the cost of
-     * being loose is another phantom.
+     * Every `asChild` wrapper accepts Button's full `variant` prop type, so statically any
+     * of them can carry any variant. The rule therefore has to cover ALL reachable slots,
+     * which is deliberately the strict reading: the cost of being strict is a few selectors
+     * that never match, and the cost of being loose is another phantom.
      */
     for (const rule of topLevelRules(GLOBALS_CSS)) {
       if (rule.prelude.trimStart().startsWith("@layer")) continue;
@@ -1404,35 +1368,34 @@ describe("every generated variant clears AA as text, or is compensated", () => {
 
   it("covers the destructive variants, whose defect is the boundary, not the text", () => {
     /*
-     * The second finding from generalising the gate, and the one where an
-     * earlier version of this file was wrong in a way that mattered.
+    /*
+     * The second finding from generalising the gate, and the one where an earlier
+     * version of this file was wrong in a way that mattered.
      *
-     * Round 2 reported shadcn's destructive variant at 2.06:1 as TEXT in dark
-     * mode and shipped a fix justified by it. That number was an artefact of a
-     * broken `srgbToOklab` which computed `cbrt(gamma)` instead of
-     * `cbrt(linear)`. With the transform corrected the text measures 5.10:1
-     * (light, on its `/10` wash) and 4.96:1 (dark, on the `/20` wash) — it was
-     * never failing, and the round-2 comment block claiming it did was false.
+     * Round 2 reported shadcn's destructive variant at 2.06:1 as TEXT in dark mode and
+     * shipped a fix justified by it. That number was an artefact of a broken
+     * `srgbToOklab` which computed `cbrt(gamma)` instead of `cbrt(linear)`. With the
+     * transform corrected the text measures 5.10:1 (light, on its `/10` wash) and 4.96:1
+     * (dark, on its `/20` wash) - it was never failing, and the round-2 comment block
+     * claiming it did was false.
      *
-     * The defect is real but different: WCAG 1.4.11, the control BOUNDARY. The
-     * tint the variant paints against the page it sits on, as gamma-sRGB /
-     * oklab-interpolation:
+     * The defect is real but different: WCAG 1.4.11, the control BOUNDARY. The tint the
+     * variant paints against the page it sits on, as gamma-sRGB / oklab-interpolation:
      *
      *   light /10  1.19:1 / 1.16:1      dark /10  1.13:1 / 1.12:1
      *   light /20  1.42:1 / 1.35:1      dark /20  1.34:1 / 1.30:1
      *
-     * Swept across every alpha the tint only clears 3:1 at about 70% opacity
-     * (1.07:1 at 5% in light, 6.06:1 solid), so the two alphas shadcn generates
-     * leave the control with no perceivable edge. That is the `--border` defect
-     * from fix round 1 — the same reason `--input` is darkened off the neutral —
-     * one variant over, on the control that asks a user to confirm deleting a
-     * patient.
+     * Swept across every alpha the tint only clears 3:1 at about 70% opacity (1.07:1 at
+     * 5% in light, 6.06:1 solid), so the two alphas shadcn generates leave the control
+     * with no perceivable edge. That is the `--border` defect from fix round 1 - the same
+     * reason `--input` is darkened off the neutral - one variant over, on the control
+     * that asks a user to confirm deleting a patient.
      *
-     * A text-side fix cannot exist either. Round 2's sweep claimed lightening
-     * the ink only moved the `/20` wash from 2.06:1 to 3.35:1 even at L 0.93;
-     * re-derived with the corrected transform, the same sweep is 4.96:1 at
-     * L 0.70 and 8.82:1 at L 0.93. The surface moves WITH the ink, so the ratio
-     * improves, but the EDGE does not move at all — and the edge is what fails.
+     * A text-side fix cannot exist either. Round 2's sweep claimed lightening the ink only
+     * moved the `/20` wash from 2.06:1 to 3.35:1 even at L 0.93; re-derived with the
+     * corrected transform, the same sweep is 4.96:1 at L 0.70 and 8.82:1 at L 0.93. The
+     * surface moves WITH the ink, so the ratio improves, but the EDGE does not move at
+     * all - and the edge is what fails.
      */
     const BOUNDARY = 3;
     for (const [mode, vars] of [
@@ -1620,36 +1583,30 @@ describe("every generated variant clears AA as text, or is compensated", () => {
     /*
      * React's `act` contract, set for the same reason as in
      * tests/unit/confirm-dialog-dom.test.tsx: jsdom does not set
-     * `IS_REACT_ACT_ENVIRONMENT`, and Radix work flushing inside `act` then
-     * logs "not configured to support act(...)" per commit. Measured in this
-     * describe at 28 per run while the tests still unmounted in-body; after
-     * that redundant unmount was removed this file read clean, but the
-     * sibling file — which mounts the same dialog — measured the same
-     * warnings arriving on some runs and not others, so the emission is
-     * timing-dependent rather than gone. Every React interaction in this
-     * describe is wrapped in `act`, which is the configuration the flag
-     * declares, so set it and close the class rather than hope the timing
-     * holds.
+     * `IS_REACT_ACT_ENVIRONMENT`, and Radix work flushing inside `act` then logs
+     * "not configured to support act(...)" per commit. Measured in this describe at 28
+     * per run; the emission is timing-dependent rather than gone, so set the flag the
+     * configuration declares and close the class rather than hope the timing holds.
      */
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
     /*
-     * WHY THIS EXISTS — the round-4 Critical, and the reason it survived three
-     * rounds of review.
+     * WHY THIS EXISTS - the round-4 Critical, and the reason it survived three rounds
+     * of review.
      *
      * The accessibility work of rounds 2 and 3 was inert in the one place it was
      * justified. `AlertDialogAction` is a `Button asChild` wrapper around Radix's
      * `AlertDialogPrimitive.Action`. Radix `Slot.mergeProps(slotProps, childProps)`
-     * builds `overrideProps = { ...childProps }` first — CHILD PROPS WIN — so the
-     * child's `data-slot` overrides the `data-slot="button"` Button sets. The
-     * shipped control therefore carries `data-slot="alert-dialog-action"`, and the
-     * rule keyed on `[data-slot="button"]` never matched it.
+     * builds `overrideProps = { ...childProps }` first - CHILD PROPS WIN - so the
+     * child's `data-slot` overrides the `data-slot="button"` Button sets. The shipped
+     * control therefore carries `data-slot="alert-dialog-action"`, and the rule keyed on
+     * `[data-slot="button"]` never matched it.
      *
      * Nothing caught it because the gate reads the cva class maps and models each
-     * variant as though it renders on a bare element. The class maps are correct;
-     * it is the emitted DOM that is not what the map implies. So this test renders
-     * the real tree, reads the attributes a browser would match selectors against,
-     * and holds the rule's selector list to them.
+     * variant as though it renders on a bare element. The class maps are correct; it is
+     * the emitted DOM that is not what the map implies. So this test renders the real
+     * tree, reads the attributes a browser would match selectors against, and holds the
+     * rule's selector list to them.
      */
     let host: HTMLElement | null = null;
     let root: Root | null = null;
@@ -1657,12 +1614,11 @@ describe("every generated variant clears AA as text, or is compensated", () => {
     /**
      * Mount into jsdom and return the element the dialog ACTUALLY renders into.
      *
-     * Radix `AlertDialog` portals its content into `document.body`, not into the
-     * mount host — querying the host finds nothing, which is exactly why the
-     * committed ConfirmDialog tests in tests/unit/shared-primitives.test.tsx
-     * query `container.ownerDocument.body` and why the round-4 probe queried
-     * `document`. The first cut of this helper returned the host and saw zero
-     * controls.
+     * Radix `AlertDialog` portals its content into `document.body`, not into the mount
+     * host - querying the host finds nothing, which is exactly why the committed
+     * ConfirmDialog tests in tests/unit/shared-primitives.test.tsx query
+     * `container.ownerDocument.body`. The first cut of this helper returned the host and
+     * saw zero controls.
      */
     function renderConfirmDialog(tone: "default" | "destructive"): HTMLElement {
       host = document.createElement("div");

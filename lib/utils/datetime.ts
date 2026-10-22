@@ -7,28 +7,24 @@
  * an hour of consultations into the wrong day. So no function here ever reads the ambient
  * server zone; the zone is a required argument.
  *
- * WHY clinicDayBounds SCANS FORWARD RATHER THAN SUBTRACTING AN OFFSET. The obvious
- * implementation - take the local calendar date, guess UTC midnight for it, subtract the
- * zone offset - assumes there is exactly ONE instant at which the local wall clock reads
- * 00:00:00. That is false wherever a daylight-saving transition lands ON local midnight,
- * which is America/Havana, Santiago, Asuncion, Amman, Gaza, Jerusalem and St_Johns, and
- * three of those do it every single year.
+ * WHY clinicDayBounds SCANS FORWARD RATHER THAN SUBTRACTING AN OFFSET, AND WHY IT IS NOT
+ * A BINARY SEARCH. The obvious implementation - take the local calendar date, guess UTC
+ * midnight for it, subtract the zone offset - assumes there is exactly ONE instant at
+ * which the local wall clock reads 00:00:00. That is false wherever a daylight-saving
+ * transition lands ON local midnight: America/Havana, Santiago, Asuncion, Amman, Gaza,
+ * Jerusalem and St_Johns, three of them every single year. A binary search is not the fix
+ * either: a fall-back crossing local midnight moves the local date BACKWARDS, so the same
+ * calendar day occurs twice and the predicate "local date >= D" is not monotone. MEASURED
+ * across all 418 zones and 14 828 transitions in 1990-2035: 57 such events, in Goose_Bay,
+ * St_Johns, Moncton and Casey, each returning a window that started an hour after its own
+ * local midnight. The error is absorbed by stretching the previous day - windows still tile
+ * exactly, so nothing is lost - but the leading hour of the affected day is billed to the
+ * day before.
  *
- * AND WHY IT IS NOT A BINARY SEARCH. My first fix used one, justified by "a local date
- * only ever moves forward". That is false too. A fall-back that crosses local midnight
- * moves the local date BACKWARDS, so the same calendar day occurs twice, separated by a
- * short interval belonging to the PREVIOUS day. The predicate "local date >= D" is then
- * not monotone, and a binary search converges on the LAST crossing rather than the
- * first. MEASURED across all 418 zones and 14 828 transitions in 1990-2035: 57 such
- * events, in Goose_Bay, St_Johns, Moncton and Casey, each returning a window that started
- * an hour after its own local midnight. The error is absorbed by stretching the previous
- * day - windows still tile exactly, so nothing is lost - but the leading hour of the
- * affected day is billed to the day before.
- *
- * So this scans FORWARD from a lower bound at a five-minute step for the first sample
+ * So this scans FORWARD from a lower bound at the 30-second walk step for the first sample
  * whose local date is at or after the target day, then binary-searches only inside that
- * single five-minute interval. That is correct whether the day occurs once, twice, or not
- * at all, because it never assumes monotonicity over a range - only inside an interval far
+ * single interval. That is correct whether the day occurs once, twice, or not at all,
+ * because it never assumes monotonicity over a range - only inside an interval far
  * narrower than any real offset change. It also produces 17 to 31 hour days for free,
  * because the answer is measured rather than derived from a 24-hour assumption.
  *
@@ -39,8 +35,15 @@
  * key deliberately excludes the hour: keying on it would make that same report 2 880 cold
  * keys and about 31 s. Nothing here is a hot path until the report code exists, and when
  * it is, the memo is the difference between usable and not.
+ *
+ * THE CACHED WINDOW IS VERIFIED BEFORE IT IS USED, because a local day can occupy several
+ * disjoint runs, so a cached window is only correct for instants inside it and anything
+ * else recomputes. That check is what makes the day-only key sound. An hour bucket would
+ * NOT be sound on its own - America/St_Johns on 2005-10-30 puts 2005-10-30 into a single
+ * minute and then drops back to 2005-10-29 for another hour - and without the check a
+ * stale window is returned and the self-check below fires on a date that works when
+ * called first.
  */
-
 const HOUR = 3_600_000;
 /**
  * Walk step. This has to be SHORTER than the shortest run of a single local date that
@@ -79,11 +82,9 @@ function dateFormatter(timeZone: string, locale: string): Intl.DateTimeFormat {
 }
 
 /**
- * YYYY-MM-DD in `timeZone`, always zero-padded.
- *
- * The padding is load-bearing. A locale's own pattern renders year 1 as "1" and year 999
- * as "999", which breaks both a caller that slices this string and the string comparison
- * the day search below relies on.
+ * YYYY-MM-DD in `timeZone`, always zero-padded. The padding is load-bearing: a locale's
+ * own pattern renders year 1 as "1" and year 999 as "999", which breaks both a caller
+ * that slices this string and the string comparison the day search below relies on.
  */
 function localDate(at: Date, timeZone: string): string {
   const parts = dateFormatter(timeZone, "en-CA").formatToParts(at);
@@ -162,10 +163,6 @@ export function clinicDayBounds(
   // puts 2005-10-30 into a single minute and then drops back to 2005-10-29 for another
   // hour - and without the check a stale window is returned and the self-check below
   // fires on a date that works when called first.
-  //
-  // Keying on the day rather than the hour is a 24x difference in cold work. MEASURED:
-  // 2 880 hour-bucketed keys cost about 31 s, and 120 day keys cost about 1.3 s. A split
-  // day simply recomputes on alternation, which is rare and still correct.
   const key = `${timezone}|${day}`;
   let run = runCache.get(key);
   if (!run || at < run.start || at >= run.end) {

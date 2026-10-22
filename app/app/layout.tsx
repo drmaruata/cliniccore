@@ -9,9 +9,39 @@
  * and its own `(platform)/ -> /platform/...` row proves the parenthesised names there are
  * shorthand for a URL prefix rather than literal route groups: a pathless
  * `(platform)/page.tsx` would serve `/` and collide with the marketing root page.
+ * So `app/app/` is the shape that satisfies the URL contract, and the only one that does.
  *
- * So: `app/app/` is the shape that satisfies the URL contract, and `app/app/` is the
- * only one that does.
+ * FOUR STATES, AND THE DIFFERENCE BETWEEN THEM IS THE WHOLE POINT.
+ *
+ *  1. NO MEMBERSHIP AT ALL -> the onboarding screen. The user signed up and belongs to
+ *     nothing, so there is no tenant to render and no shell to render it in. This is
+ *     the plan's "zero-membership path", and it is a real screen, not a redirect loop
+ *     and not a crash.
+ *
+ *  2. A MEMBERSHIP, BUT NO ACTIVE ORGANIZATION -> the picker. `getActiveOrg` answers
+ *     null in two situations that are NOT "you belong to nothing": the user belongs to
+ *     several organizations and has not chosen one, and the organization the cookie
+ *     names is one they have left. The house rule is explicit that a stale cookie does
+ *     NOT fall back to some other organization - the choice died, and silently moving
+ *     the user into a different clinic is worse than asking again. So the shell asks.
+ *     Rendering ONBOARDING in this state would be wrong: the user already belongs to a
+ *     tenant, and offering to create another one is not what they need.
+ *
+ *  3. AN ACTIVE ORGANIZATION -> the shell.
+ *
+ *  4. A MEMBERSHIP THE ROW-LEVEL SECURITY HIDES -> the suspended notice, not onboarding.
+ *     A member of a suspended tenant, and a member whose own membership is suspended,
+ *     see no membership rows at all - the row is filtered out - so an empty list does
+ *     not mean "you belong to nothing". The database can answer that, because a definer
+ *     sees the rows the policies hide, and offering the ONBOARDING screen to a member of
+ *     a suspended tenant would be offering them a second organization.
+ *
+ * WHY THE USER ID COMES FROM THE VERIFIED CLAIM AND NOT FROM getUser(). The id is used
+ * to filter the membership lookup, and the result is governed by RLS either way, so
+ * this is not a gate - it is a query filter. `getClaims` verifies the JWT locally, so
+ * it costs no network round trip; `getUser` re-fetches from the auth server, and the
+ * layout would otherwise pay for that three times over (once here, once inside
+ * `getActiveOrg`, once inside `userCan`).
  */
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -35,16 +65,7 @@ export const metadata: Metadata = {
   description: "Your clinic",
 };
 
-/**
- * The state a member of a suspended tenant is in: they belong to an organization, and
- * the database hides it from them.
- *
- * WHY IT IS NOT THE ONBOARDING SCREEN. The onboarding screen says "you belong to
- * nothing, create your organization" - and for a member of a suspended tenant that is
- * false, and the offer is a way to create a SECOND organization while the first is
- * suspended. The shell says what is true instead, and offers the way out: sign in as
- * somebody else.
- */
+/** State 4: the user belongs to an organization, and the database hides it from them. */
 function SuspendedNotice() {
   return (
     <main className="flex min-h-svh items-center justify-center bg-muted/30 px-4">
@@ -67,40 +88,6 @@ function SuspendedNotice() {
   );
 }
 
-/**
- * The signed-in application shell.
- *
- * THREE STATES, AND THE DIFFERENCE BETWEEN THEM IS THE WHOLE POINT.
- *
- *  1. NO MEMBERSHIP AT ALL -> the onboarding screen. The user signed up and belongs to
- *     nothing, so there is no tenant to render and no shell to render it in. This is
- *     the plan's "zero-membership path", and it is a real screen, not a redirect loop
- *     and not a crash.
- *
- *  2. A MEMBERSHIP, BUT NO ACTIVE ORGANIZATION -> the picker. `getActiveOrg` answers
- *     null in two situations that are NOT "you belong to nothing": the user belongs to
- *     several organizations and has not chosen one, and the organization the cookie
- *     names is one they have left. The house rule is explicit that a stale cookie does
- *     NOT fall back to some other organization - the choice died, and silently moving
- *     the user into a different clinic is worse than asking again. So the shell asks.
- *     Rendering ONBOARDING in this state would be wrong: the user already belongs to a
- *     tenant, and offering to create another one is not what they need.
- *
- *  3. AN ACTIVE ORGANIZATION -> the shell.
- *
- * AND A FOURTH, WHICH IS NOT A BRANCH ABOVE BUT A REFINEMENT OF THE FIRST: the user
- * has a membership the ROW-LEVEL SECURITY hides - a suspended tenant, or a suspended
- * membership of their own. Their membership list is empty for that reason and not
- * because they belong to nothing, so the shell asks the database and, if the answer is
- * that they DO have a membership, says so instead of offering to create a tenant.
- *
- * WHY THE USER ID COMES FROM THE VERIFIED CLAIM AND NOT FROM getUser(). The id is used
- * to filter the membership lookup, and the result is governed by RLS either way, so
- * this is not a gate - it is a query filter. `getClaims` verifies the JWT locally, so
- * it costs no network round trip; `getUser` re-fetches from the auth server, and the
- * layout would otherwise pay for that three times over (once here, once inside
- * `getActiveOrg`, once inside `userCan`).
- */
 export default async function AppLayout({
   children,
 }: Readonly<{
@@ -114,12 +101,8 @@ export default async function AppLayout({
   const organizations = await listMemberOrgs(userId);
 
   if (organizations.length === 0) {
-    // EITHER NO MEMBERSHIP AT ALL, OR MEMBERSHIPS THE RLS HIDES. A member of a
-    // suspended tenant, and a member whose own membership is suspended, see no rows -
-    // their membership row is filtered out - so an empty list does not mean "you belong
-    // to nothing". The database can answer that, because a definer sees the rows the
-    // policies hide, and offering the ONBOARDING screen to a member of a suspended
-    // tenant would be offering them a second organization.
+    // States 1 and 4: the database distinguishes them, because it can see the rows the
+    // policies hide. An empty list does not mean "you belong to nothing".
     if (await hasAnyMembership()) {
       return <SuspendedNotice />;
     }

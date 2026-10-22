@@ -27,9 +27,7 @@ import {
  *      scope) inline into migrations: idempotent upserts, byte-stable output.
  */
 
-/* ------------------------------------------------------------------ */
-/* Fixtures                                                            */
-/* ------------------------------------------------------------------ */
+/* ---- Fixtures ---- */
 
 /** The fifteen role keys the foundation brief mandates, in sorted order. */
 const EXPECTED_ROLE_KEYS = [
@@ -125,9 +123,7 @@ const SYNTHETIC_REGISTRY: RegistryInput = {
   ],
 };
 
-/* ------------------------------------------------------------------ */
-/* SQL text extractors                                                 */
-/* ------------------------------------------------------------------ */
+/* ---- SQL text extractors ---- */
 
 /** The VALUES rows of one `insert ... values` section, as raw lines. */
 function valuesRows(sql: string, sectionMarker: string): string[] {
@@ -173,9 +169,7 @@ function grantPairsInValues(sql: string): Array<{ role: string; permission: stri
   return pairs;
 }
 
-/* ------------------------------------------------------------------ */
-/* Registry integrity                                                  */
-/* ------------------------------------------------------------------ */
+/* ---- Registry integrity ---- */
 
 describe("PERMISSIONS", () => {
   it("formats every permission key as lowercase snake segments joined by dots", () => {
@@ -242,9 +236,7 @@ describe("ROLES", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Matrix rulings                                                      */
-/* ------------------------------------------------------------------ */
+/* ---- Matrix rulings ---- */
 
 describe("the role x permission matrix", () => {
   it("gives organization_owner the brief's named permissions", () => {
@@ -305,9 +297,7 @@ describe("the role x permission matrix", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Lookup helpers                                                      */
-/* ------------------------------------------------------------------ */
+/* ---- Lookup helpers ---- */
 
 describe("defaultPermissionsFor", () => {
   it("returns the permissions declared for the role", () => {
@@ -348,9 +338,7 @@ describe("hasPermission", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Platform-scope SQL                                                  */
-/* ------------------------------------------------------------------ */
+/* ---- Platform-scope SQL ---- */
 
 describe("generatePlatformScopeSql", () => {
   it("upserts permissions with the brief's exact on-conflict clause", () => {
@@ -418,9 +406,7 @@ describe("generatePlatformScopeSql", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Organization-scope SQL (Task 8 consumes this)                       */
-/* ------------------------------------------------------------------ */
+/* ---- Organization-scope SQL (Task 8 consumes this) ---- */
 
 describe("generateOrganizationScopedRoleSeedTemplate", () => {
   it("parameterises the organization id with the documented placeholder", () => {
@@ -465,9 +451,7 @@ describe("generateOrganizationScopedRoleSeedTemplate", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Determinism — the contract that makes inlining safe                */
-/* ------------------------------------------------------------------ */
+/* ---- Determinism — the contract that makes inlining safe ---- */
 
 describe("determinism of the generated SQL", () => {
   it("emits byte-identical platform SQL on repeated calls", () => {
@@ -498,9 +482,7 @@ describe("determinism of the generated SQL", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Quoting and input validation                                         */
-/* ------------------------------------------------------------------ */
+/* ---- Quoting and input validation ---- */
 
 describe("quoting and validation of generator input", () => {
   it("escapes single quotes in emitted literals", () => {

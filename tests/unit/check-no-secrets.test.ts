@@ -229,9 +229,7 @@ describe("check-no-secrets gate", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Rule 3 — "use client" must never import lib/supabase/               */
-/* ------------------------------------------------------------------ */
+/* ---- Rule 3 — "use client" must never import lib/supabase/ ---- */
 
 describe("rule 3: client components importing the server module", () => {
   const LEAK = '"use client";\nimport { adminClient } from "@/lib/supabase/server";';
@@ -343,9 +341,7 @@ describe("rule 3: client components importing the server module", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* run() — the filesystem walk, including its failing path (I1)         */
-/* ------------------------------------------------------------------ */
+/* ---- run() — the filesystem walk, including its failing path (I1) ---- */
 
 describe("run(): filesystem walk", () => {
   it("flags a service role reference in app/ (failing path)", () => {
@@ -459,9 +455,7 @@ describe("run(): filesystem walk", () => {
   });
 });
 
-/* ------------------------------------------------------------------ */
-/* Walk scope — .env* dot-files and .sql migrations                    */
-/* ------------------------------------------------------------------ */
+/* ---- Walk scope — .env* dot-files and .sql migrations ---- */
 
 /**
  * A realistic-but-inert `.env.example`, shaped like the tracked template: a

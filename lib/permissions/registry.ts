@@ -1,27 +1,24 @@
 /**
- * ClinicCore permission registry — the single source of truth for the
- * role × permission matrix.
+ * ClinicCore permission registry - the single source of truth for the role × permission
+ * matrix.
  *
  * WHY THIS FILE EXISTS. The matrix is defined once, here, in TypeScript.
  * `scripts/gen-permissions-sql.ts` turns it into the seed SQL that
- * `supabase/migrations/` inlines, and the UI consults these same constants.
- * A second hand-maintained copy in SQL — or a third in the UI — would drift;
- * deriving every consumer from this file makes divergence structurally
- * impossible.
+ * `supabase/migrations/` inlines, and the UI consults these same constants. A second
+ * hand-maintained copy in SQL - or a third in the UI - would drift; deriving every
+ * consumer from this file makes divergence structurally impossible.
  *
  * SECURITY-CRITICAL INVARIANT. `platform_super_admin` holds platform-console
- * permissions ONLY. Platform operators see the tenant directory, subscription
- * and usage — never a tenant's patient records. Do not add clinical
- * permissions to that role.
+ * permissions ONLY. Platform operators see the tenant directory, subscription and usage -
+ * never a tenant's patient records. Do not add clinical permissions to that role.
  *
- * GRANT-CEILING OBLIGATION (Task 12 must honour this). `staff.manage` is
- * flat in the registry's terms: any holder can, on paper, grant any role —
- * including `organization_owner`. The registry cannot express hierarchy, so
- * the invite and role-assignment flow that consumes it MUST enforce a
- * ceiling: a grantor may never assign a role whose privileges exceed their
- * own, and in particular only an existing `organization_owner` may mint
- * another `organization_owner`. Task 12 owns that check; do not assume this
- * file provides it.
+ * GRANT-CEILING OBLIGATION. `staff.manage` is flat in the registry's terms: any holder
+ * can, on paper, grant any role - including `organization_owner`. The registry cannot
+ * express hierarchy, so the invite and role-assignment flow that consumes it MUST enforce
+ * a ceiling: a grantor may never assign a role whose privileges exceed their own, and in
+ * particular only an existing `organization_owner` may mint another `organization_owner`.
+ * The database owns that check (`private.can_assign_role`); do not assume this file
+ * provides it.
  */
 
 /** A permission key: one or more lowercase snake_case segments joined by dots. */
@@ -60,9 +57,9 @@ export interface RoleDefinition {
 }
 
 /**
- * The registry shape as the SQL generator accepts it. The real registry
- * satisfies this; tests pass synthetic registries through it to pin the
- * generator's validation and determinism.
+ * The registry shape as the SQL generator accepts it. The real registry satisfies this;
+ * tests pass synthetic registries through it to pin the generator's validation and
+ * determinism.
  */
 export interface RegistryInput {
   readonly permissions: readonly PermissionDefinition[];
@@ -70,9 +67,9 @@ export interface RegistryInput {
 }
 
 /**
- * Every permission ClinicCore gates on, with a one-line description of what
- * holding it means. Sorted by key; the generator relies on that only for
- * convenience — it re-sorts regardless.
+ * Every permission ClinicCore gates on, with a one-line description of what holding it
+ * means. Sorted by key; the generator relies on that only for convenience - it re-sorts
+ * regardless.
  */
 export const PERMISSIONS: readonly PermissionDefinition[] = [
   { key: "appointments.manage", description: "Book, reschedule, cancel and confirm appointments" },
@@ -104,16 +101,16 @@ export const PERMISSIONS: readonly PermissionDefinition[] = [
 /**
  * The role × permission matrix. Matrix rulings the tests pin explicitly:
  *
- *  - `organization_owner` and `organization_admin` hold every non-platform
- *    permission and no platform permission;
- *  - `auditor` is read-only viewing plus `audit.read` — never `patients.update`
- *    or `patients.export`;
- *  - `lab_technician` fulfils investigation orders (verifies results) but
- *    never places them and never prescribes — `investigations.order` belongs
- *    to the clinicians who order the test, not the lab that runs it;
+ *  - `organization_owner` and `organization_admin` hold every non-platform permission and
+ *    no platform permission;
+ *  - `auditor` is read-only viewing plus `audit.read` - never `patients.update` or
+ *    `patients.export`;
+ *  - `lab_technician` fulfils investigation orders (verifies results) but never places
+ *    them and never prescribes - `investigations.order` belongs to the clinicians who
+ *    order the test, not the lab that runs it;
  *  - `pharmacist` manages inventory but never prescribes;
- *  - `platform_super_admin` is confined to the four platform-console
- *    permissions — it must never see clinical data.
+ *  - `platform_super_admin` is confined to the four platform-console permissions - it must
+ *    never see clinical data.
  */
 export const ROLES: readonly RoleDefinition[] = [
   {
@@ -316,9 +313,8 @@ export function defaultPermissionsFor(roleKey: RoleKey): readonly PermissionKey[
 /**
  * Whether any of the held roles grants the permission.
  *
- * Fails closed: an unrecognised role key or an unrecognised permission key
- * denies rather than throws, so a caller passing garbage can never get a
- * grant out of it.
+ * Fails closed: an unrecognised role key or an unrecognised permission key denies rather
+ * than throws, so a caller passing garbage can never get a grant out of it.
  */
 export function hasPermission(roles: readonly RoleKey[], permission: PermissionKey): boolean {
   return roles.some((role) =>

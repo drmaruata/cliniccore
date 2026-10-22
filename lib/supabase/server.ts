@@ -85,10 +85,9 @@ export async function getUser(): Promise<User | null> {
 
 /**
  * The signed-in subject from the verified JWT, or null when signed out. Cheap and local.
- *
  * MEASURED: unlike `getUser`, this returns a clean null when signed out rather than
- * raising, so it needs no error-class handling - but the symmetry is worth knowing if
- * the library ever changes, so the behaviour is pinned by a test.
+ * raising, so it needs no error-class handling - but the symmetry is worth knowing if the
+ * library ever changes, so the behaviour is pinned by a test.
  */
 export async function getClaims(): Promise<{ sub: string } | null> {
   const supabase = await createServerClient();

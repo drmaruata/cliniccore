@@ -28,20 +28,16 @@ export default function ForgotPasswordPage() {
     },
   });
 
-  // The dispatch is not awaited for its result: it returns nothing, so awaiting it
-  // resolved at once and the loading state was dead. `isPending` is the real signal.
+  // The dispatch returns nothing, so awaiting it resolved at once and the loading
+  // state was dead. `isPending` is the real signal, and ONLY inside a transition:
+  // MEASURED with React 19.3.0, dispatched outside one it never became true, so a
+  // double click fired TWO server actions.
   const onSubmit = form.handleSubmit((data) => {
-    // INSIDE A TRANSITION, WHICH IS NOT OPTIONAL. MEASURED with the repo's React
-    // 19.3.0: dispatched outside a transition, `isPending` never became true - the
-    // values were [false, false] - so the button never disabled, a double click fired
-    // TWO server actions, and React logged an error on every submit. `isPending` is
-    // only the real signal inside one.
     startTransition(() => {
       formAction(data);
     });
   });
 
-  // Show success state when formState has status 200
   const isSuccess = formState?.status === 200;
 
   if (isSuccess) {

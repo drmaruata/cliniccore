@@ -12,7 +12,6 @@
  * field error, flattened to a sentence. Four copies of that loop is four places for it
  * to be wrong.
  */
-
 import type { ZodError } from "zod";
 
 /** A form's fields, whether they arrived as FormData or as an object. */

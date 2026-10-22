@@ -25,7 +25,6 @@ const GENERIC_MESSAGE = "Something went wrong. Please try again.";
 const GENERIC_CODE = "internal_error";
 
 export class AppError extends Error {
-  /** HTTP status to respond with. */
   readonly status: number;
 
   /** Stable machine-readable identifier. Safe to branch on; safe to show. */
@@ -36,10 +35,10 @@ export class AppError extends Error {
     this.name = new.target.name;
     this.status = status;
     this.code = code;
-    // Restores the prototype chain, which is a no-op on this project's ES2022 target and
-    // exists purely as a guard against a future downlevel to ES5, where `class extends
-    // Error` loses it and `instanceof AppError` silently becomes false - turning every
-    // typed error into a generic 500 at exactly the wrong moment. Harmless, and cheap.
+    // Restores the prototype chain: a no-op on this project's ES2022 target, and a guard
+    // against a future downlevel to ES5, where `class extends Error` loses it and
+    // `instanceof AppError` silently becomes false - turning every typed error into a
+    // generic 500 at exactly the wrong moment.
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -78,10 +77,9 @@ export class ValidationError extends AppError {
 
 /**
  * Raised when a payment provider is asked to do something it cannot do because no
- * provider is configured.
- *
- * 500, not 503: the provider is unconfigured, which is a gap in this deployment rather
- * than a temporary outage, and a 503 would promise that a retry might succeed.
+ * provider is configured. 500, not 503: the provider is unconfigured, which is a gap in
+ * this deployment rather than a temporary outage, and a 503 would promise that a retry
+ * might succeed.
  */
 export class PaymentNotConfiguredError extends AppError {
   constructor(message = "Payment provider is not configured.", code = "payment_not_configured") {
@@ -90,11 +88,10 @@ export class PaymentNotConfiguredError extends AppError {
 }
 
 /**
- * Raised when a payment webhook's signature does not verify.
- *
- * 401: the caller presented something it could not prove. A provider that is merely
- * UNREACHABLE is a different failure and must not be reported as this one - one is an
- * attack, the other is an outage, and an operator reads them differently.
+ * Raised when a payment webhook's signature does not verify. 401: the caller presented
+ * something it could not prove. A provider that is merely UNREACHABLE is a different
+ * failure and must not be reported as this one - one is an attack, the other is an
+ * outage, and an operator reads them differently.
  */
 export class PaymentVerificationError extends AppError {
   constructor(
@@ -111,18 +108,11 @@ export interface SafeResponse {
 }
 
 /**
- * The shape an action returns when its SUCCESS carries a payload.
- *
- * WHY A SECOND SHAPE. `SafeResponse` describes a failure, and every action in the auth
- * group returns one or null. An action that produces something - an invitation link, a
- * created id - has to return that something on the way out, and `SafeResponse` has no
- * place to put it. Widening `SafeResponse` instead would mean every caller has to
- * narrow the body before using it, and the failure branch would quietly grow a `value`
- * field that is always absent.
- *
- * The failure branch is BUILT from `toSafeResponse`, so the message still comes from
- * there and only from there: this type changes the shape a caller sees, never the
- * provenance of the text.
+ * The shape an action returns when its SUCCESS carries a payload. `SafeResponse`
+ * describes a failure and has no place to put an invitation link or a created id, and
+ * widening it would mean every caller has to narrow the body before using it. The failure
+ * branch is BUILT from `toSafeResponse`, so the message still comes from there and only
+ * from there: this type changes the shape a caller sees, never the provenance of the text.
  */
 export type ActionResult<T> = { ok: true; value: T } | { ok: false; error: string; code: string };
 
@@ -145,8 +135,7 @@ export function toSafeResponse(error: unknown): SafeResponse {
     // object with a missing `status` produced `status: undefined`, and
     // `new Response(body, { status: undefined })` answers **200 OK** with an empty body -
     // a success status for a failure. A NaN status throws a RangeError from INSIDE error
-    // handling, which is the one thing this module exists to prevent. And a getter that
-    // throws would do the same.
+    // handling, which is the one thing this module exists to prevent.
     //
     // The residual, recorded rather than fixed: a Proxy wrapping a real AppError passes
     // `instanceof` and fully controls the response. That requires in-process access to the

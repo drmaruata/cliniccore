@@ -6,11 +6,9 @@
  * privilege question that the database answers (`public.grantable_roles`, backed by
  * `private.can_assign_role`). A list of role keys baked into a schema would be a second
  * copy of that rule, and it would be a copy of the WRONG one: the registry's fifteen
- * roles are the platform's vocabulary, not a tenant's grantable set.
- *
- * So the schema checks that a role was chosen, and the action resolves it against the
- * database. The role the form offers comes from the same database answer, so the two
- * agree by construction.
+ * roles are the platform's vocabulary, not a tenant's grantable set. So the schema checks
+ * that a role was chosen, and the action resolves it against the database. The role the
+ * form offers comes from the same database answer, so the two agree by construction.
  */
 import { z } from "zod";
 

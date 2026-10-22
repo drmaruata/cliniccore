@@ -6,6 +6,18 @@ import { getUser } from "@/lib/supabase/server";
 import { AcceptInvitationButton } from "./accept-button";
 
 /**
+ * The invitation page: the link an invited colleague opens. It lives OUTSIDE the
+ * signed-in shell, because the invitee may not be signed in yet and the shell renders
+ * the application for a user who already belongs to a tenant.
+ *
+ * WHY THE ORGANIZATION IS NOT NAMED HERE. The `invitations` table is readable only by a
+ * holder of `staff.manage` in the organization that owns it, and the person opening
+ * this link is not one - they are not a member yet. Naming the organization on this
+ * page would need a second read path for a row that is deliberately private, and the
+ * token is the credential. So the page says what is true without naming the tenant,
+ * and the organization becomes visible on the dashboard the moment the invitation is
+ * accepted.
+ *
  * WHY THE PAGE SENDS NO REFERER. The invitation token is in the URL, and the URL is
  * what a browser sends in the `Referer` header to anywhere else this page links to.
  * `no-referrer` stops that. The token is still in the URL itself - and therefore in
@@ -17,20 +29,6 @@ export const metadata: Metadata = {
   referrer: "no-referrer",
 };
 
-/**
- * The invitation page: the link an invited colleague opens.
- *
- * WHY THE ORGANIZATION IS NOT NAMED HERE. The `invitations` table is readable only by a
- * holder of `staff.manage` in the organization that owns it, and the person opening
- * this link is not one - they are not a member yet. Naming the organization on this
- * page would need a second read path for a row that is deliberately private, and the
- * token is the credential. So the page says what is true without naming the tenant,
- * and the organization becomes visible on the dashboard the moment the invitation is
- * accepted.
- *
- * WHY IT LIVES OUTSIDE THE SIGNED-IN SHELL. The invitee may not be signed in yet, and
- * the shell renders the application for a user who already belongs to a tenant.
- */
 export default async function InvitePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   const user = await getUser();
