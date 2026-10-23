@@ -26,6 +26,15 @@ export default defineConfig({
     // 0+2.5+7s), so the hook - not the test - is the budget, and the timeout lands exactly
     // when the auth server is slowest: which is the moment that leaks a probe user.
     hookTimeout: 60_000,
+    // NO FILE PARALLELISM, and not for speed: the security suite DROPS and LOOSENS live
+    // policies inside its transactions, and `tests/security/rls-policies.test.ts` asserts
+    // the EXACT policy count and contents over its own connection. A dropped policy is
+    // invisible until commit, but the DDL takes an AccessExclusiveLock that a concurrent
+    // reader can block on - so a parallel file intermittently fails on ITS statement
+    // timeout while this file holds the lock. The DB-backed suites' cost is round trips
+    // anyway (measured above), so serial files cost little and remove the interference.
+    // Equivalent to maxWorkers: 1 per Vitest's own docs; the include glob is untouched.
+    fileParallelism: false,
   },
   resolve: {
     alias: {

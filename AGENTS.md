@@ -21,8 +21,8 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1-17 of 20 are complete** (17 = the marketing shell and the platform-admin
-  gate). **Task 18 is next.** Run `git log --oneline` and
+  **Tasks 1-18 of 20 are complete** (18 = the mutation-verified tenant isolation suite).
+  **Task 19 is next.** Run `git log --oneline` and
   `git status` before you start. Briefs, reports and review packages are in
   `.superpowers/sdd/cliniccore-foundation/`.
 
@@ -52,8 +52,10 @@ npm run build && npm run format:check`.
   `01810` the restored pre-staging clause, the round-3 fixes `01820` the inviter is the
   caller, `01830` the helpers' privileges and `01840` the one membership rule, and Task 17's
   `01850` the platform console's two public functions, `01860`/`01870` the measurement
-  probe that removes the console's guard and the correction that restores it, all
-  applied — 60 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
+  probe that removes the console's guard and the correction that restores it, and
+  Task 18's `01880` the restoration of `organizations_update` (which the live database
+  had silently lost - see the Task 18 section), all
+  applied - 61 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
   the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
   writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
@@ -1180,3 +1182,79 @@ test.ts` pins both halves.
   survived. The cleanup's own verification caught it ("cleanup left 1 organization(s)
   with the slug ..."), which is that helper working as designed. The two leftovers
   were removed by hand, and the ledger correction above is the consequence.
+
+## Task 18+ : the tenant isolation suite is mutation-verified, and UPDATE under RLS needs the SELECT policy
+
+Task 18 added `tests/security/tenant-isolation.test.ts`, `tests/security/fixtures.ts` and
+`tests/security/mutation-harness.ts` - two real tenants over real clients, a mutation
+harness that rolls everything back, and 33 recorded mutations. Consequences the next
+agent must not have to rediscover:
+
+- **THE LIVE DATABASE HAD LOST `organizations_update`, AND `01880` RESTORED IT.** MEASURED:
+  `20261014001220_privilege_gates.sql` IS in the applied history and creates the policy,
+  no later migration drops it, and `tests/security/rls-policies.test.ts` asserts it - yet
+  the catalogue carried only `organizations_select` (38 public policies against the
+  asserted 39). With an UPDATE policy ABSENT, RLS default-denies for EVERYONE: zero rows,
+  NO error - which is why the tenant settings PATCH returned 204 instead of the timezone
+  guard's 400, the suspend/restore controls failed, and the permitted-settings-write
+  control read empty. Seven tests in three OTHER suites failed on this one missing
+  policy. When it disappeared is not determinable (no DDL audit trail); the correction is
+  `20261014001880_organizations_update_restoration.sql`, 01220's definition verbatim,
+  applied and verified against `pg_policies` (39 again) and the history (61 rows).
+  **An applied migration is not proof the object exists - the catalogue is.**
+- **UPDATE AND DELETE UNDER RLS PASS THE SELECT POLICY TOO. MEASURED WITH THE QUERY
+  PLAN**: an UPDATE's row scan carries the SELECT policy's qual, so loosening
+  `<table>_update` alone leaves a cross-tenant update filtered by `<table>_select` and a
+  drop-based mutation "cannot catch" the assertion. The suite's write mutations therefore
+  loosen the SELECT policy and the command policy TOGETHER - which is also the honest
+  claim: the cross-tenant write is refused as long as EITHER is intact.
+- **`role_permissions` HAS NO `organization_id` COLUMN** (its columns are `role_id,
+permission_key` only), so the suite asks "is this row's ROLE one of A's own?" through
+  the same join the policies use. An assertion on a column that does not exist measures
+  nothing - the first version of this suite did exactly that.
+- **THE GRANT CEILING IS TWO LAYERS, AND ITS MUTATION REMOVES BOTH.** The cross-tenant
+  role grant is refused by the RLS with-check AND by the `guard_role_org_scope` BEFORE
+  trigger, which fires FIRST (the shipped refusal carries the trigger's message - MEASURED).
+  The mutation loosens the policy and disables the trigger in one `withMutation`; the
+  break is the assignment actually being written. The harness grew `disableTrigger`
+  (captured, restored, re-proved) for this.
+- **`roles_delete` CANNOT BE MUTATION-VERIFIED BY DELETION, AND THAT IS A RECORDED
+  LIMIT.** MEASURED: `private.role_in_use` counts `role_permissions` GRANTS as well as
+  assignments, so every seeded role is "in use" and `guard_role_delete` refuses it for the
+  role's OWN tenant as much as for a stranger. The refusal is real; the mutation cannot
+  isolate it because the second layer is not tenant logic at all.
+- **THE MEMBERSHIP DIRECTORY IS VISIBLE TO EVERY MEMBER.**
+  `organization_memberships_select` is `is_member(organization_id)`, so a newcomer with
+  one membership already sees the organization's WHOLE directory. The uniqueness test
+  counts the newcomer's OWN rows (`.eq("user_id", ...)`) - an unfiltered count measures
+  the directory and reads 2 before the second organization is even added.
+- **`tenant_directory()` RETURNS THE ORGANIZATION'S NAME, NOT ITS SLUG** - MEASURED from
+  `pg_get_functiondef`. A spec asserting the slug passes only because both contain the
+  org's identity, not because the column matches.
+- **VITEST RUNS WITH `fileParallelism: false` NOW.** The security suite drops and
+  loosens live policies inside its transactions; the DDL takes an AccessExclusiveLock
+  that a concurrent reader can block on, and `tests/security/rls-policies.test.ts` reads
+  the same catalogue over its own connection. The DB-backed suites' cost is round trips
+  anyway, so serial files cost little and remove the interference. Equivalent to
+  `maxWorkers: 1`; the `include` glob still matches `.ts` and `.tsx`.
+- **`pg` REJECTS MULTI-COMMAND STRINGS WHENEVER A QUERY CARRIES VALUES** ("cannot insert
+  multiple commands into a prepared statement"), and a transaction must use ONE
+  checked-out client - `pool.query` round-robins connections. The fixture's storage purge
+  is four separate calls (BEGIN, the GUC, the DELETE, COMMIT) on one client, and the GUC
+  is `set local` so commit returns the connection without the delete permission.
+- **DESTROY ORDER: `patient_identifiers` BEFORE `patients`.**
+  `patient_identifiers_patient_fkey` is ON DELETE RESTRICT, so deleting a patient that
+  still has identifiers raises. Roles are NEVER deleted by hand: `guard_role_delete`
+  returns early once the organization row is gone, which is the cascade.
+- **THE MUTATION REPORT IS WRITTEN TO THE OS TEMP DIR on every run**
+  (`tenant-isolation-mutation-report.txt`) because vitest 5 swallows afterAll console
+  output on green runs; a pin test also asserts the ledger holds all 33 mutations, each
+  with a catalogue action and a break message.
+- **THE CLEANUP DELETES THE ACCOUNTS BEFORE THE RESIDUE REPORT** - the report counts
+  `auth.users` too, and in the other order it always named the very users it was about to
+  delete. A test file's hook that runs after a failed assertion must still be able to
+  finish its job.
+- **`schemaOf()` IN THE HARNESS RESOLVES A BARE TABLE NAME TO `public`** - restoring a
+  `storage.objects` policy passed the bare `objects` and the proof read the wrong schema,
+  failing a restore that had worked. Schema-qualified names everywhere a policy is
+  re-read.

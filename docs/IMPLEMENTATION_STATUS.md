@@ -4423,3 +4423,205 @@ organization (the shell).
 runs: 0 organizations, 0 audit logs, 0 auth users, 0 invitations, 0 memberships, 0
 assignments, 0 clinics, 1 role, and the `tenant_creation_events` ledger back at its 29
 pre-existing rows.
+
+## Task 18 - the mutation-verified two-organization tenant isolation suite
+
+`tests/security/tenant-isolation.test.ts` (18 tests), `tests/security/fixtures.ts` and
+`tests/security/mutation-harness.ts`. Two tenants are created through the product's own
+signup and `create_organization_with_owner` paths, each measured through its own signed-in
+client; the mutation half impersonates the same principals on a direct connection inside
+transactions that always roll back.
+
+### WHAT THE FIRST FULL GATE RUN FOUND - A GENUINE DATABASE DEFECT
+
+The first complete `npm run test` of this task failed SEVEN tests in THREE OTHER suites
+(`tests/security/rls-policies.test.ts` x2, `tests/integration/authorization-gaps.test.ts`
+x2, `tests/integration/public-rpc.test.ts` x3). All seven traced to ONE cause, and it was
+not the suite: **the live database had lost the `organizations_update` policy.**
+
+- MEASURED: `20261014001220_privilege_gates.sql` IS in the applied history and creates
+  the policy; no later migration drops it; the catalogue test asserts it - yet
+  `pg_policies` carried only `organizations_select` on the table, 38 public policies
+  against the asserted 39.
+- With an UPDATE policy ABSENT, RLS default-denies the command for EVERYONE: zero rows,
+  no error. That is why the tenant-settings PATCH returned 204 instead of the timezone
+  guard's 400 (the trigger never fired - no row was reached), why "a platform
+  administrator CAN suspend and restore a tenant" read 0 rows, and why the
+  permitted-settings-write positive control read empty.
+- Nothing in this task's work commits policy DDL - every mutation runs inside a
+  rolled-back transaction, and the first catalogue probe of the session (before any
+  suite ran) already showed the policy missing. When it disappeared is not determinable;
+  there is no DDL audit trail.
+- The correction is `20261014001880_organizations_update_restoration.sql` - 01220's
+  definition verbatim - applied through the Composio applier (one apply per call) and
+  verified against the catalogue (`organizations_update [UPDATE]`, 39 public policies)
+  and the history (61 rows, the file named exactly once, no duplicates). All seven
+  failures cleared, and the lesson is recorded in `AGENTS.md`: an applied migration is
+  not proof the object exists - the catalogue is.
+
+### THE RULINGS THAT SHAPED THE SUITE
+
+- UPDATE and DELETE under RLS pass the SELECT policy's qual too - MEASURED with
+  `EXPLAIN`: the UPDATE's row scan carried `patients_select`'s filter, and the
+  cross-tenant update touched rows only once the SELECT policy was loosened as well.
+  The write mutations therefore loosen the SELECT and the command policy together, and
+  the honest claim is that the cross-tenant write is refused as long as EITHER holds.
+- Refusals are mutated by LOOSENING (a superset cannot regress the tenant's own write,
+  and the assertion's own-row control proves the path still works); the SELECT policies
+  are mutated by DROPPING, per the plan's literal instruction, and break through the
+  positive control that A still sees its own rows.
+- The cross-tenant role grant is refused by TWO layers - the RLS with-check and the
+  `guard_role_org_scope` BEFORE trigger, which fires first (the shipped refusal carries
+  the trigger's message). Its mutation loosens the policy AND disables the trigger in
+  one `withMutation`; the break is the assignment being written for real.
+- `roles_delete` is excluded from delete-mutation verification as a RECORDED LIMIT:
+  `private.role_in_use` counts permission grants, so every seeded role is "in use" and
+  the trigger refuses it for its own tenant as much as for a stranger.
+- `role_permissions` has no `organization_id` column; the suite asks whether each
+  visible row's ROLE is one of A's own - the join the policies themselves use.
+- The membership SELECT policy shows the organization's whole directory to any member,
+  so the uniqueness test counts the newcomer's own rows, not the table.
+- `tenant_directory()` returns the organization's NAME, not its slug (MEASURED from
+  `pg_get_functiondef`); the platform-console control asserts names.
+- `fileParallelism: false` in `vitest.config.ts`: the suite's policy DDL takes
+  AccessExclusiveLocks that a concurrent catalogue reader can block on, and the DB-backed
+  suites' cost is round trips, so serial files cost little and remove the interference.
+- The mutation ledger is pinned in-suite (33 rows, each with a catalogue action and a
+  break message) and written to the OS temp dir as
+  `tenant-isolation-mutation-report.txt`, because vitest 5 swallows afterAll console
+  output on green runs.
+
+### THE MUTATION-VERIFICATION REPORT
+
+Every entry is one mutation: applied, PROVED applied from `pg_policies`/`pg_constraint`/
+`pg_proc`/`pg_trigger`, run against the isolation assertion, observed to FAIL it, restored,
+and observed to PASS again. Recorded verbatim from the run:
+dropping patients_select breaks the "patients" isolation assertion
+catalogue: dropped policy patients_select on public.patients
+broke with: patients: A must see its own rows: expected 0 to be greater than 0
+dropping patient_identifiers_select breaks the "patient_identifiers" isolation assertion
+catalogue: dropped policy patient_identifiers_select on public.patient_identifiers
+broke with: patient_identifiers: A must see its own rows: expected 0 to be greater than 0
+dropping clinics_select breaks the "clinics" isolation assertion
+catalogue: dropped policy clinics_select on public.clinics
+broke with: clinics: A must see its own rows: expected 0 to be greater than 0
+dropping clinic_memberships_select breaks the "clinic_memberships" isolation assertion
+catalogue: dropped policy clinic_memberships_select on public.clinic_memberships
+broke with: clinic_memberships: A must see its own rows: expected 0 to be greater than 0
+dropping organization_memberships_select breaks the "organization_memberships" isolation assertion
+catalogue: dropped policy organization_memberships_select on public.organization_memberships
+broke with: organization_memberships: A must see its own rows: expected 0 to be greater than 0
+dropping roles_select breaks the "roles" isolation assertion
+catalogue: dropped policy roles_select on public.roles
+broke with: roles: A must see its own rows: expected 0 to be greater than 0
+dropping role_permissions_select breaks the "role_permissions" isolation assertion
+catalogue: dropped policy role_permissions_select on public.role_permissions
+broke with: role_permissions: A must see its own rows: expected 0 to be greater than 0
+dropping user_role_assignments_select breaks the "user_role_assignments" isolation assertion
+catalogue: dropped policy user_role_assignments_select on public.user_role_assignments
+broke with: user_role_assignments: A must see its own rows: expected 0 to be greater than 0
+dropping invitations_select breaks the "invitations" isolation assertion
+catalogue: dropped policy invitations_select on public.invitations
+broke with: invitations: A must see its own rows: expected 0 to be greater than 0
+dropping audit_logs_select breaks the "audit_logs" isolation assertion
+catalogue: dropped policy audit_logs_select on public.audit_logs
+broke with: audit_logs: A must see its own rows: expected 0 to be greater than 0
+dropping organizations_select breaks the "organizations" isolation assertion
+catalogue: dropped policy organizations_select on public.organizations
+broke with: organizations: A must see its own rows: expected 0 to be greater than 0
+loosening patients_select to `using (true)` leaks tenant B's patients
+catalogue: loosened policy patients_select on public.patients to using (true)
+broke with: tenant B's patient must not be visible: expected [ 'CROSS-TENANT-CONTROL', â€¦(2) ] to not include 'ISO-B-1'
+loosening patients_select and patients_update lets a cross-tenant update through
+catalogue: loosened policy patients_select on public.patients to using (true); loosened policy patients_update on public.patients to using (true)
+broke with: patients: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening patient_identifiers_select and patient_identifiers_update lets a cross-tenant update through
+catalogue: loosened policy patient_identifiers_select on public.patient_identifiers to using (true); loosened policy patient_identifiers_update on public.patient_identifiers to using (true)
+broke with: patient_identifiers: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening clinics_select and clinics_update lets a cross-tenant update through
+catalogue: loosened policy clinics_select on public.clinics to using (true); loosened policy clinics_update on public.clinics to using (true)
+broke with: clinics: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening clinic_memberships_select and clinic_memberships_update lets a cross-tenant update through
+catalogue: loosened policy clinic_memberships_select on public.clinic_memberships to using (true); loosened policy clinic_memberships_update on public.clinic_memberships to using (true)
+broke with: clinic_memberships: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening organization_memberships_select and organization_memberships_update lets a cross-tenant update through
+catalogue: loosened policy organization_memberships_select on public.organization_memberships to using (true); loosened policy organization_memberships_update on public.organization_memberships to using (true)
+broke with: organization_memberships: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening roles_select and roles_update lets a cross-tenant update through
+catalogue: loosened policy roles_select on public.roles to using (true); loosened policy roles_update on public.roles to using (true)
+broke with: roles: a cross-tenant update must touch nothing: expected [ { touched: 1 }, â€¦(13) ] to deeply equal []
+loosening user_role_assignments_select and user_role_assignments_update lets a cross-tenant update through
+catalogue: loosened policy user_role_assignments_select on public.user_role_assignments to using (true); loosened policy user_role_assignments_update on public.user_role_assignments to using (true)
+broke with: user_role_assignments: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening invitations_select and invitations_update lets a cross-tenant update through
+catalogue: loosened policy invitations_select on public.invitations to using (true); loosened policy invitations_update on public.invitations to using (true)
+broke with: invitations: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening role_permissions_select and role_permissions_update lets a cross-tenant update through
+catalogue: loosened policy role_permissions_select on public.role_permissions to using (true); loosened policy role_permissions_update on public.role_permissions to using (true)
+broke with: role_permissions: a cross-tenant update must touch nothing: expected [ { touched: 1 }, â€¦(16) ] to deeply equal []
+loosening organizations_select and organizations_update lets a cross-tenant update through
+catalogue: loosened policy organizations_select on public.organizations to using (true); loosened policy organizations_update on public.organizations to using (true)
+broke with: organizations: a cross-tenant update must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening patients_select and patients_delete lets a cross-tenant delete reach tenant B's patients row
+catalogue: loosened policy patients_select on public.patients to using (true); loosened policy patients_delete on public.patients to using (true)
+broke with: update or delete on table "patients" violates foreign key constraint "patient_identifiers_patient_fkey" on table "patient_identifiers"
+loosening patient_identifiers_select and patient_identifiers_delete lets a cross-tenant delete reach tenant B's patient_identifiers row
+catalogue: loosened policy patient_identifiers_select on public.patient_identifiers to using (true); loosened policy patient_identifiers_delete on public.patient_identifiers to using (true)
+broke with: patient_identifiers: a cross-tenant delete must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening clinic_memberships_select and clinic_memberships_delete lets a cross-tenant delete reach tenant B's clinic_memberships row
+catalogue: loosened policy clinic_memberships_select on public.clinic_memberships to using (true); loosened policy clinic_memberships_delete on public.clinic_memberships to using (true)
+broke with: clinic_memberships: a cross-tenant delete must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening user_role_assignments_select and user_role_assignments_delete lets a cross-tenant delete reach tenant B's user_role_assignments row
+catalogue: loosened policy user_role_assignments_select on public.user_role_assignments to using (true); loosened policy user_role_assignments_delete on public.user_role_assignments to using (true)
+broke with: user_role_assignments: a cross-tenant delete must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening invitations_select and invitations_delete lets a cross-tenant delete reach tenant B's invitations row
+catalogue: loosened policy invitations_select on public.invitations to using (true); loosened policy invitations_delete on public.invitations to using (true)
+broke with: invitations: a cross-tenant delete must touch nothing: expected [ { touched: 1 } ] to deeply equal []
+loosening role_permissions_select and role_permissions_delete lets a cross-tenant delete reach tenant B's role_permissions row
+catalogue: loosened policy role_permissions_select on public.role_permissions to using (true); loosened policy role_permissions_delete on public.role_permissions to using (true)
+broke with: role_permissions: a cross-tenant delete must touch nothing: expected [ { touched: 1 }, â€¦(16) ] to deeply equal []
+loosening patients_write exposes the composite foreign key as the second layer
+catalogue: loosened policy patients_write on public.patients to with check (true)
+broke with: expected a failure matching /row-level security/i, got: insert or update on table "patients" violates foreign key constraint "patients_clinic_fkey"
+loosening the write policy AND disabling the guard lets a cross-tenant role be granted
+catalogue: loosened policy user_role_assignments_write on public.user_role_assignments to with check (true); disabled trigger guard_role_org_scope on public.user_role_assignments
+broke with: expected a failure matching /row-level security|belongs to another organization/i but the statement succeeded
+removing the platform guard from tenant_directory hands tenant A the console
+catalogue: replaced public.tenant_directory
+broke with: tenant A must not reach the platform directory: expected [ { â€¦(3) }, { â€¦(3) } ] to deeply equal []
+dropping patient_documents_select takes A's own objects away too
+catalogue: dropped policy patient_documents_select on storage.objects
+broke with: A must still see its own object: expected [] to have a length of 1 but got +0
+narrowing organization_memberships_organization_id_user_id_key to user_id alone makes two organizations impossible
+catalogue: narrowed organization_memberships_organization_id_user_id_key to (user_id)
+broke with: duplicate key value violates unique constraint "organization_memberships_organization_id_user_id_key"
+
+### THE RESIDUE
+
+The interrupted runs and this task's first two failed runs left six isolation tenants,
+six accounts, six storage objects and their audit and ledger rows behind, because the
+fixture's cleanup died at its FIRST statement (a multi-command string through `pg`'s
+prepared-statement path). All of it was removed and re-counted to zero. After the final
+green full run the live project reads: 0 organizations, 0 patients, 0 clinics, 0
+memberships, 0 invitations, 0 assignments, 0 audit logs, 0 creation-ledger rows, 0 auth
+users, 0 storage objects, 1 role (the platform role) - the pristine state.
+
+### THE GATES
+
+`npm run typecheck` exit 0. `npm run lint` exit 0 (eslint 0 errors - one pre-existing
+warning in `.opencode/plugins/graphify.js`; `check:secrets OK`; `format:check` clean;
+`migrations:check` OK, 61 files). `npm run test` exit 0 - 39 files, 896 tests, including
+the new suite's 18. `npm run build` exit 0 after one retry past Next.js's
+security-advisory nudge (the nudge halts the first build after a successful compile; the
+recommendation to upgrade Next.js is reported and NOT acted on - the toolchain pins are
+deliberate, see the Task 5 entry). `npm run format:check` exit 0.
+
+### THE LIMITATIONS
+
+- The mutation half does not cover a cross-tenant DELETE on `roles` (the trigger refuses
+  every seeded role for everyone) and there is no `organizations` delete policy to
+  mutate; both refusals are still asserted in the client half.
+- The invitation and storage paths keep their previously recorded residuals (the token
+  in the URL; no delivery mechanism) - unchanged by this task.
+- The suite takes ~115s alone and roughly doubles `npm run test`'s DB-backed half; the
+  cost is round trips to the live pooler, and the serialisation ruling is recorded above.
