@@ -4625,3 +4625,63 @@ deliberate, see the Task 5 entry). `npm run format:check` exit 0.
   in the URL; no delivery mechanism) - unchanged by this task.
 - The suite takes ~115s alone and roughly doubles `npm run test`'s DB-backed half; the
   cost is round trips to the live pooler, and the serialisation ruling is recorded above.
+
+## Task 18, review round 1 - the authorised twins, the half-finished seed, and the pinned breaks
+
+The first review found no blocker; it left three gaps and two nits. All five are closed.
+
+### THE GAPS
+
+- GAP 1, the delete twins. The shipped-state own-row delete control covered patients
+  only, and the mutation-half delete bodies carried only the refusal half - so a deleted
+  `invitations_delete` or `user_role_assignments_delete` was INVISIBLE: a missing policy
+  and a refusing policy both yield zero rows with no error. Every cross-tenant delete
+  refusal is now paired with a create-and-delete of the tenant's OWN row, per table,
+  in BOTH halves - through PostgREST in the client half and, restated impersonated,
+  inside each delete mutation's post-restore assertion. Two shapes are forced by
+  MEASURED constraints: `clinic_memberships` has `UNIQUE (membership_id, clinic_id)`, so
+  its control deletes the fixture's own row and re-creates it, and the assignment and
+  permission controls create a FRESH role, because a permission row of a role the
+  caller holds is refused by design (`NOT assigned_to_self`) and a duplicate org-wide
+  assignment is refused by the `NULLS NOT DISTINCT` unique key.
+- GAP 2, the half-finished seed. If `seedTwoOrganizations` throws after tenant A exists,
+  `seeded` stays undefined and the `afterAll` cleans nothing - the exact leak Task 16
+  recorded. `beforeAll` now catches, destroys the partial seed through the new
+  `destroyPartialSeed()` (tenants rediscovered from the accounts the auth fixture
+  registers in `createdProbeUserIds`, destroyed through the same shared path as a
+  finished run), and rethrows with the cleanup's own outcome reported beside the cause.
+- GAP 3, the four untested command/table pairs. `audit_logs` UPDATE, `audit_logs` DELETE,
+  `organizations` DELETE and `organization_memberships` DELETE were stated in a comment
+  ("the rest filter every delete") but never exercised. They are asserted now, one
+  statement each plus an untouched re-read. MEASURED, they take two refusal shapes:
+  `audit_logs` UPDATE and DELETE privileges are revoked from `authenticated` outright
+  (`has_table_privilege` is false - permission denied, before any policy is consulted),
+  while the two DELETEs without a policy are RLS default-deny: zero rows, no error.
+  These commands are refused for EVERY tenant, so they have no authorised twin - the
+  refusal itself is the design.
+
+### THE NITS
+
+- NIT 1, the pinned break. `brokeWith` accepted any throw, so a network blip or a
+  statement timeout would have been ledgered as a verified break of a policy.
+  `mutationBreaks` now REQUIRES a break-message matcher, recorded beside the break in
+  the ledger (`must break: /.../`), and rejects an UNEXPECTED break - one that does not
+  name the policy, constraint or control the mutation touched - after the restore.
+  MEASURED: corrupting one matcher to an unmatchable regex fails exactly one test with
+  "broke for an UNEXPECTED reason"; the guard is not decoration.
+- NIT 2, the overstatement. The record said the mutation report is written "on every
+  run"; it is written by the mutation describe's `afterAll`, and a run that dies before
+  that point writes nothing. The record now says when it is written, and the in-suite
+  ledger pin is named as the coverage for that case.
+
+### THE LEDGER
+
+Unchanged at 33 mutations - the review added controls and assertions, not mutations -
+but every row now carries its required break beside the one it produced.
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint`, `npm run test`, `npm run build` and
+`npm run format:check` all exit 0. The suite alone: 19 tests (18 before the review, plus
+the four-command no-policy test), all passing in ~133s. The live project after the runs:
+0 organizations, 0 audit logs, 0 auth users, 0 creation-ledger rows, 0 storage objects.

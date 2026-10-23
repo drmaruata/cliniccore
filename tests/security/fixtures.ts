@@ -41,6 +41,7 @@ import {
   admin,
   clientOverJar,
   createProbeSession,
+  createdProbeUserIds,
   deleteProbeUsers,
 } from "../helpers/auth-session-fixture";
 import { getPool, query } from "../integration/helpers/database";
@@ -245,11 +246,48 @@ async function createTenant(
  * STORAGE FIRST, and not for tidiness: deleting a storage object fires an AFTER DELETE
  * trigger that writes the organization's own audit row, so storage has to go before the
  * trail is cleared or the cleanup refills the trail it is clearing.
+ *
+ * THE COMPLETE RUN. Both tenants exist, so both are destroyed through the shared
+ * `destroyTenants` path.
  */
 export async function destroyTwoOrganizations(tenants: TwoTenants): Promise<void> {
+  await destroyTenants(
+    [tenants.orgA.organizationId, tenants.orgB.organizationId],
+    [tenants.orgA.userId, tenants.orgB.userId],
+  );
+}
+
+/**
+ * Remove whatever a HALF-FINISHED seed managed to create.
+ *
+ * WHY THIS EXISTS. `seedTwoOrganizations` creates tenant A, then tenant B - if the
+ * second signup is rate-limited or the second RPC refuses, the throw leaves `seeded`
+ * undefined and the suite's `afterAll` cleans NOTHING: two probe users and tenant A
+ * leak into the live project, which is exactly the failure Task 16 recorded. The auth
+ * fixture registers every probe user it created in `createdProbeUserIds` precisely
+ * because "a beforeAll that throws never returns", so the tenants are rediscovered
+ * from the accounts' own memberships and destroyed through the same path as a
+ * finished run.
+ */
+export async function destroyPartialSeed(): Promise<void> {
+  const userIds = [...createdProbeUserIds];
+  if (userIds.length === 0) return;
   const client = admin();
-  const orgIds = [tenants.orgA.organizationId, tenants.orgB.organizationId];
-  const userIds = [tenants.orgA.userId, tenants.orgB.userId];
+  const { data: memberships, error } = await client
+    .from("organization_memberships")
+    .select("organization_id")
+    .in("user_id", userIds);
+  if (error) throw new Error(`cleanup could not find the partial seed: ${error.message}`);
+  const orgIds = [...new Set((memberships ?? []).map((row) => String(row.organization_id)))];
+  await destroyTenants(orgIds, userIds);
+}
+
+/**
+ * The destroy path both callers share: storage first, children before parents, the
+ * accounts before the residue report that counts them.
+ */
+async function destroyTenants(orgIds: string[], userIds: string[]): Promise<void> {
+  const client = admin();
 
   await purgeStorageObjects(orgIds);
 

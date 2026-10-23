@@ -1246,10 +1246,37 @@ permission_key` only), so the suite asks "is this row's ROLE one of A's own?" th
   `patient_identifiers_patient_fkey` is ON DELETE RESTRICT, so deleting a patient that
   still has identifiers raises. Roles are NEVER deleted by hand: `guard_role_delete`
   returns early once the organization row is gone, which is the cascade.
-- **THE MUTATION REPORT IS WRITTEN TO THE OS TEMP DIR on every run**
-  (`tenant-isolation-mutation-report.txt`) because vitest 5 swallows afterAll console
-  output on green runs; a pin test also asserts the ledger holds all 33 mutations, each
-  with a catalogue action and a break message.
+- **THE MUTATION REPORT IS WRITTEN BY the mutation describe's `afterAll`** to the OS temp
+  dir (`tenant-isolation-mutation-report.txt`) - vitest 5 swallows afterAll console
+  output on green runs. It is NOT "every run": a run that dies before that point writes
+  nothing, and the in-suite ledger pin is the coverage for that case. Every recorded
+  mutation carries the break it was REQUIRED to produce (`must break: /.../` beside
+  `broke with: ...`), and the harness rejects an UNEXPECTED break - one that does not
+  name the policy, constraint or control the mutation touched - so a network blip or a
+  statement timeout cannot be ledgered as a policy having been proven load-bearing.
+  MEASURED: corrupting one matcher to an unmatchable regex fails exactly one test with
+  "broke for an UNEXPECTED reason".
+- **EVERY DELETE REFUSAL HAS ITS AUTHORISED TWIN, PER TABLE.** A deleted
+  `<table>_delete` policy and a refusing one both yield zero rows with no error, so each
+  cross-tenant delete refusal is paired with a create-and-delete of the tenant's OWN row
+  - in the client half through PostgREST and, restated impersonated, inside each delete
+    mutation's post-restore assertion. Two shapes are forced by MEASURED constraints:
+    `clinic_memberships` has `UNIQUE (membership_id, clinic_id)`, so its control deletes
+    the fixture's own row and re-creates it; the assignment and permission controls use a
+    FRESH role, because a permission row of a role the caller holds is refused by design
+    (`NOT assigned_to_self`) and a duplicate org-wide assignment is refused by the
+    `NULLS NOT DISTINCT` unique key.
+- **THE FOUR NO-POLICY COMMANDS ARE TESTED, NOT STATED.** `audit_logs` UPDATE and DELETE
+  (privileges revoked from `authenticated` - permission denied, MEASURED via
+  `has_table_privilege`) and `organizations` / `organization_memberships` DELETE (no
+  policy - RLS default-deny, zero rows, no error) are refused for EVERY tenant, so they
+  have no authorised twin; their refusals are asserted with the two-shape form and the
+  targets are re-read to prove them untouched.
+- **A MID-SEED FAILURE CLEANS UP.** `seedTwoOrganizations` creates tenant A then B; if
+  the second call throws, `beforeAll`'s catch destroys the half-finished seed through
+  `destroyPartialSeed()` - the tenants rediscovered from the accounts the auth fixture
+  registered in `createdProbeUserIds` - and then rethrows, because a `beforeAll` that
+  throws never returns and the `afterAll` would clean nothing.
 - **THE CLEANUP DELETES THE ACCOUNTS BEFORE THE RESIDUE REPORT** - the report counts
   `auth.users` too, and in the other order it always named the very users it was about to
   delete. A test file's hook that runs after a failed assertion must still be able to

@@ -11,7 +11,10 @@
  *   2. PROVE it applied, by reading `pg_policies` / `pg_constraint` / `pg_proc` rather
  *      than by assuming the statement worked - a silently failed mutation is
  *      indistinguishable from a passing test and is the most dangerous outcome here,
- *   3. run the assertion and require it to FAIL,
+ *   3. run the assertion and require it to FAIL, and to fail with a message that NAMES
+ *      the policy, constraint or control the mutation touched - any other throw is an
+ *      UNEXPECTED break, because a network blip or a statement timeout would otherwise
+ *      be ledgered as a policy having been proven load-bearing,
  *   4. restore, always, in a path that runs whether or not step 3 threw,
  *   5. run the assertion again and require it to PASS.
  *
@@ -78,10 +81,12 @@ export interface PolicyRow extends Record<string, unknown> {
   with_check: string | null;
 }
 
-/** One mutation, the catalogue state it produced, and the assertion message it broke. */
+/** One mutation, the catalogue state it produced, the break it must produce, and did. */
 export interface MutationRecord {
   label: string;
   cataloguedAs: string;
+  /** The break-message matcher this mutation's assertion was required to fail with. */
+  mustBreak: string;
   brokeWith: string;
 }
 
@@ -130,12 +135,18 @@ export interface MutationHarness {
    * the same body the plain suite runs - and it MUST throw once the mutation is applied.
    * A mutation that applies, verifies, and leaves the assertion passing proves the
    * assertion nothing, and is a failure of the TEST rather than of the database.
+   *
+   * `breakMatcher` is REQUIRED for an honest ledger: without it any throw - a network
+   * blip, a statement timeout, an unrelated guard - is recorded as a verified break of
+   * the mutation. With it, a break that does not name the policy, constraint or control
+   * the mutation touched is rejected as an UNEXPECTED break, after the restore.
    */
   mutationBreaks(
     label: string,
     apply: () => Promise<unknown>,
     verify: () => Promise<void>,
     assertion: () => Promise<void>,
+    breakMatcher: RegExp,
   ): Promise<void>;
   /** Impersonate a principal the way PostgREST builds one from a JWT. */
   become(userId: string): Promise<void>;
@@ -329,6 +340,7 @@ function harnessFor(outer: DbSession): MutationHarness {
     apply: () => Promise<unknown>,
     verify: () => Promise<void>,
     assertion: () => Promise<void>,
+    breakMatcher: RegExp,
   ): Promise<void> => {
     const previous = active;
     const mark = undoStack.length;
@@ -365,6 +377,17 @@ function harnessFor(outer: DbSession): MutationHarness {
         );
       }
 
+      // THE BREAK MUST NAME WHAT THE MUTATION TOUCHED. Any throw is not a verified
+      // break: a network blip or a statement timeout would otherwise be ledgered as a
+      // policy having been proven load-bearing. The check runs AFTER the restore so the
+      // policy set is already repaired when it fires.
+      if (!breakMatcher.test(brokeWith)) {
+        throw new Error(
+          `${label}: the assertion broke for an UNEXPECTED reason - expected a message ` +
+            `matching ${breakMatcher}, got: ${brokeWith}`,
+        );
+      }
+
       // Step 5. If the restore did not work this fails here rather than leaking a
       // mutated policy into the next test, which is the one unrecoverable outcome.
       await session.query("savepoint mutation_restored");
@@ -382,7 +405,12 @@ function harnessFor(outer: DbSession): MutationHarness {
         );
       }
 
-      mutationReport.push({ label, cataloguedAs: describeMutation(applied), brokeWith });
+      mutationReport.push({
+        label,
+        cataloguedAs: describeMutation(applied),
+        mustBreak: breakMatcher.source,
+        brokeWith,
+      });
     } finally {
       // Everything the mutation did is discarded with the transaction, so the next
       // mutation starts from the shipped definition and a crash cannot leak one.
@@ -501,6 +529,9 @@ function describeMutation(applied: unknown): string {
 /** The report as text. Silence unless a caller asks for it. */
 export function renderMutationReport(): string {
   return mutationReport
-    .map((r) => `  ${r.label}\n    catalogue: ${r.cataloguedAs}\n    broke with: ${r.brokeWith}`)
+    .map(
+      (r) =>
+        `  ${r.label}\n    catalogue: ${r.cataloguedAs}\n    must break: /${r.mustBreak}/\n    broke with: ${r.brokeWith}`,
+    )
     .join("\n");
 }

@@ -23,6 +23,21 @@
  * WHY EVERY REFUSAL CARRIES A POSITIVE CONTROL. A policy set that refuses everything
  * passes every refusal-only assertion, and three of the eleven tables have no row unless
  * the tenant writes one, so the fixture seeds one of everything through the same client.
+ * The DELETE refusals carry their authorised twin PER TABLE - a create-and-delete of the
+ * tenant's own row - because a deleted `<table>_delete` policy yields the same zero
+ * rows and no error as a refusing one. The four command/table pairs that have NO
+ * command policy at all (`audit_logs` UPDATE and DELETE, `organizations` DELETE,
+ * `organization_memberships` DELETE) are refused for EVERY tenant, so they have no
+ * authorised twin: their refusals are asserted in their own test, with the two refusal
+ * shapes the shipped state measured (permission denied for `audit_logs`, whose UPDATE
+ * and DELETE privileges are revoked from `authenticated`; RLS default-deny zero rows
+ * for the other three).
+ *
+ * WHY A MID-SEED FAILURE CLEANS UP. If `seedTwoOrganizations` throws after tenant A
+ * exists, the `beforeAll` catch destroys the half-finished seed through the fixture's
+ * `destroyPartialSeed` - rediscovered from the accounts the auth fixture registered -
+ * because a `beforeAll` that throws never returns and the `afterAll` would clean
+ * nothing.
  *
  * WHY THE MUTATION HALF IS A SEPARATE, ROLLED-BACK TRANSACTION. Dropping or loosening a
  * policy takes a database-wide AccessExclusiveLock, so it cannot be committed while
@@ -30,9 +45,12 @@
  * public schema and no DDL. The second half therefore runs on a direct connection inside
  * a transaction it always rolls back, impersonating the same two principals with the
  * same `set local role` + JWT-claim reproduction PostgREST uses. See mutation-harness.ts
- * for why the order of apply / verify / fail / restore / pass is the harness's job, and
- * why refusals are mutated by LOOSENING while select policies are mutated by DROPPING.
+ * for why the order of apply / verify / fail / restore / pass is the harness's job, why
+ * refusals are mutated by LOOSENING while select policies are mutated by DROPPING, and
+ * why every recorded break is required to NAME the policy, constraint or control it
+ * broke.
  */
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -49,7 +67,12 @@ import {
   deleteProbeUsers,
 } from "../helpers/auth-session-fixture";
 import { dbDescribe, expectRejection } from "../integration/helpers/database";
-import { destroyTwoOrganizations, seedTwoOrganizations, type TwoTenants } from "./fixtures";
+import {
+  destroyPartialSeed,
+  destroyTwoOrganizations,
+  seedTwoOrganizations,
+  type TwoTenants,
+} from "./fixtures";
 import {
   mutationReport,
   openHarness,
@@ -80,7 +103,11 @@ const TENANT_TABLES: Array<{ table: string; tenant: string; key: string[] }> = [
   { table: "organizations", tenant: "id", key: ["id"] },
 ];
 
-/** Tables with an UPDATE policy the tenant's own administrator can pass. */
+/**
+ * Tables with an UPDATE policy the tenant's own administrator can pass. `audit_logs` is
+ * the one without one - its UPDATE and DELETE privileges are revoked from `authenticated`
+ * outright, which is asserted in its own test below.
+ */
 const UPDATABLE = [
   "patients",
   "patient_identifiers",
@@ -94,7 +121,7 @@ const UPDATABLE = [
   "role_permissions",
 ];
 
-/** Tables with a DELETE policy. The rest filter every delete, which is also a refusal. */
+/** Tables with a DELETE policy. The rest refuse by having no policy - asserted below. */
 const DELETABLE = [
   "patients",
   "patient_identifiers",
@@ -217,6 +244,212 @@ function firstKeyOf(table: string): string {
   return key;
 }
 
+/**
+ * A create-and-delete own-row control for one DELETABLE table, through the tenant's own
+ * client, so every cross-tenant delete refusal has its authorised twin beside it. A
+ * deleted `invitations_delete` is otherwise INVISIBLE: a missing policy and a refusing
+ * policy both yield zero rows with no error.
+ *
+ * `clinic_memberships` is the one shape that cannot create first: its
+ * `UNIQUE (membership_id, clinic_id)` (MEASURED) blocks a second row for the pair the
+ * fixture already made, so its control deletes the fixture's own row and re-creates it.
+ * The controls that need a role create a FRESH one, because a permission row of a role
+ * the caller holds is refused by design (`NOT assigned_to_self`) and a duplicate
+ * org-wide assignment is refused by the `NULLS NOT DISTINCT` unique key.
+ */
+async function ownDeleteControl(client: SupabaseClient, table: string): Promise<void> {
+  const { orgA, userA } = fixture();
+  const suffix = randomUUID().slice(0, 8);
+  const mustDelete = async (
+    reply: { data: unknown[] | null; error: { message: string } | null },
+    why: string,
+  ) => {
+    expect(reply.error, why).toBeNull();
+    expect(reply.data ?? []).toHaveLength(1);
+  };
+
+  switch (table) {
+    case "patients": {
+      const created = await client
+        .from("patients")
+        .insert({
+          organization_id: orgA.organizationId,
+          clinic_id: orgA.clinicId,
+          mrn: `CTRL-${suffix}`,
+          last_name: "Control",
+        })
+        .select("id");
+      expect(
+        created.error,
+        `A must be able to create its own patient: ${created.error?.message}`,
+      ).toBeNull();
+      await mustDelete(
+        await client.from("patients").delete().eq("id", created.data?.[0]?.id).select("id"),
+        "A must be able to delete its own patient",
+      );
+      break;
+    }
+    case "patient_identifiers": {
+      const created = await client
+        .from("patient_identifiers")
+        .insert({
+          organization_id: orgA.organizationId,
+          patient_id: orgA.patientId,
+          kind: "mrn_alt",
+          value: `CTRL-${suffix}`,
+        })
+        .select("id");
+      expect(
+        created.error,
+        `A must be able to create its own identifier: ${created.error?.message}`,
+      ).toBeNull();
+      await mustDelete(
+        await client
+          .from("patient_identifiers")
+          .delete()
+          .eq("id", created.data?.[0]?.id)
+          .select("id"),
+        "A must be able to delete its own identifier",
+      );
+      break;
+    }
+    case "clinic_memberships": {
+      const { data: ownRows, error: readError } = await client
+        .from("clinic_memberships")
+        .select("id, membership_id, clinic_id")
+        .eq("organization_id", orgA.organizationId)
+        .limit(1);
+      const own = ownRows?.[0];
+      if (readError || !own)
+        throw new Error(`A could not read its own clinic membership: ${readError?.message}`);
+      await mustDelete(
+        await client.from("clinic_memberships").delete().eq("id", own.id).select("id"),
+        "A must be able to delete its own clinic membership",
+      );
+      const restored = await client.from("clinic_memberships").insert({
+        organization_id: orgA.organizationId,
+        membership_id: own.membership_id,
+        clinic_id: own.clinic_id,
+      });
+      expect(
+        restored.error,
+        `A must be able to re-create its own clinic membership: ${restored.error?.message}`,
+      ).toBeNull();
+      break;
+    }
+    case "roles": {
+      const created = await client
+        .from("roles")
+        .insert({ organization_id: orgA.organizationId, key: `ctrl_${suffix}`, name: "Control" })
+        .select("id");
+      expect(
+        created.error,
+        `A must be able to create its own role: ${created.error?.message}`,
+      ).toBeNull();
+      // A fresh role has no grants and no assignments, so `guard_role_delete` lets it go.
+      await mustDelete(
+        await client.from("roles").delete().eq("id", created.data?.[0]?.id).select("id"),
+        "A must be able to delete its own unused role",
+      );
+      break;
+    }
+    case "user_role_assignments": {
+      const role = await client
+        .from("roles")
+        .insert({ organization_id: orgA.organizationId, key: `ctrl_${suffix}`, name: "Control" })
+        .select("id");
+      expect(
+        role.error,
+        `A must be able to create its own role: ${role.error?.message}`,
+      ).toBeNull();
+      const created = await client
+        .from("user_role_assignments")
+        .insert({
+          organization_id: orgA.organizationId,
+          user_id: userA,
+          role_id: role.data?.[0]?.id,
+        })
+        .select("id");
+      expect(
+        created.error,
+        `A must be able to grant its own fresh role: ${created.error?.message}`,
+      ).toBeNull();
+      await mustDelete(
+        await client
+          .from("user_role_assignments")
+          .delete()
+          .eq("id", created.data?.[0]?.id)
+          .select("id"),
+        "A must be able to delete its own assignment",
+      );
+      await mustDelete(
+        await client.from("roles").delete().eq("id", role.data?.[0]?.id).select("id"),
+        "the control's fresh role must go again",
+      );
+      break;
+    }
+    case "invitations": {
+      const created = await client
+        .from("invitations")
+        .insert({
+          organization_id: orgA.organizationId,
+          email: `ctrl-${suffix}@example.test`,
+          role_id: orgA.adminRoleId,
+          token_hash: `ctrl-token-${suffix}`,
+          invited_by: userA,
+          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+          clinic_ids: [],
+        })
+        .select("id");
+      expect(
+        created.error,
+        `A must be able to create its own invitation: ${created.error?.message}`,
+      ).toBeNull();
+      await mustDelete(
+        await client.from("invitations").delete().eq("id", created.data?.[0]?.id).select("id"),
+        "A must be able to delete its own invitation",
+      );
+      break;
+    }
+    case "role_permissions": {
+      const role = await client
+        .from("roles")
+        .insert({ organization_id: orgA.organizationId, key: `ctrl_${suffix}`, name: "Control" })
+        .select("id");
+      expect(
+        role.error,
+        `A must be able to create its own role: ${role.error?.message}`,
+      ).toBeNull();
+      const created = await client
+        .from("role_permissions")
+        .insert({ role_id: role.data?.[0]?.id, permission_key: "patients.read" })
+        .select("role_id, permission_key");
+      expect(
+        created.error,
+        `A must be able to grant its own fresh role a permission: ${created.error?.message}`,
+      ).toBeNull();
+      // Deleting a permission of a role the CALLER holds is refused by design, which is
+      // why this control's role is a fresh unassigned one.
+      await mustDelete(
+        await client
+          .from("role_permissions")
+          .delete()
+          .eq("role_id", role.data?.[0]?.id)
+          .eq("permission_key", "patients.read")
+          .select("role_id"),
+        "A must be able to delete its own fresh role's permission",
+      );
+      await mustDelete(
+        await client.from("roles").delete().eq("id", role.data?.[0]?.id).select("id"),
+        "the control's fresh role must go again",
+      );
+      break;
+    }
+    default:
+      throw new Error(`no own-row delete control is defined for ${table}`);
+  }
+}
+
 /** One side's own row in a table, read by the service role - setup, never measurement. */
 async function rowOfTenant(side: "a" | "b", table: string): Promise<Record<string, string>> {
   const spec = specOf(table);
@@ -234,7 +467,26 @@ async function rowOfTenant(side: "a" | "b", table: string): Promise<Record<strin
 
 dbDescribe("tenant isolation across two organizations", () => {
   beforeAll(async () => {
-    seeded = await seedTwoOrganizations();
+    try {
+      seeded = await seedTwoOrganizations();
+    } catch (error) {
+      // A mid-seed failure leaves `seeded` undefined, so the afterAll below would clean
+      // NOTHING - and tenant A plus its account would leak, which is the failure Task 16
+      // recorded in this very database. The auth fixture registered every probe user it
+      // created, so the half-finished seed can be found from the accounts and destroyed
+      // through the same path as a finished run; the original error still fails the
+      // suite, with the cleanup's own outcome reported beside it.
+      const cause = error instanceof Error ? error.message : String(error);
+      let cleaned = "the partial-seed cleanup ran";
+      try {
+        await destroyPartialSeed();
+      } catch (cleanupError) {
+        cleaned = `the partial-seed cleanup FAILED: ${
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        }`;
+      }
+      throw new Error(`seeding failed: ${cause}; ${cleaned}`);
+    }
   });
 
   afterAll(async () => {
@@ -362,34 +614,66 @@ dbDescribe("tenant isolation across two organizations", () => {
 
         const after = await rowOfTenant("b", table);
         expect(after, `${table}: the other tenant's row must still exist`).toEqual(before);
-      }
 
-      // Positive control on a row that exists to be deleted, because deleting a row of
-      // the fixture's own would change what every later assertion reads.
-      const created = await clientA
-        .from("patients")
-        .insert({
-          organization_id: fixture().orgA.organizationId,
-          clinic_id: fixture().orgA.clinicId,
-          mrn: "DELETE-CONTROL",
-          last_name: "Control",
-        })
-        .select("id");
-      expect(
-        created.error,
-        `A must be able to create its own patient: ${created.error?.message}`,
-      ).toBeNull();
-      const removed = await clientA
-        .from("patients")
-        .delete()
-        .eq("id", created.data?.[0]?.id)
-        .select("id");
-      expect(
-        removed.error,
-        `A must be able to delete its own patient: ${removed.error?.message}`,
-      ).toBeNull();
-      expect(removed.data ?? []).toHaveLength(1);
-    }, 120_000);
+        // The authorised twin, PER TABLE: without it a deleted `<table>_delete` policy is
+        // invisible to this suite, because a missing policy and a refusing policy both
+        // yield zero rows with no error.
+        await ownDeleteControl(clientA, table);
+      }
+    }, 180_000);
+
+    it("refuses the commands that have no command policy at all", async () => {
+      const { clientA, orgB } = fixture();
+      // The four command/table pairs the plan's EVERY-table rule demands that no policy
+      // covers: `organizations` and `organization_memberships` have no DELETE policy
+      // (RLS default-denies: zero rows, no error) and `audit_logs` has no UPDATE policy
+      // and neither UPDATE nor DELETE privileges for `authenticated` (MEASURED:
+      // `has_table_privilege` is false for both, so the statement is refused with
+      // "permission denied" before any policy is consulted). These commands are refused
+      // for EVERY tenant - there is no authorised twin to control against, because the
+      // refusal itself is the design; each statement is the assertion.
+      const bAudit = await rowOfTenant("b", "audit_logs");
+      const bMembership = await rowOfTenant("b", "organization_memberships");
+      const bOrganization = await rowOfTenant("b", "organizations");
+      const refused = (
+        reply: { data: unknown[] | null; error: { message: string } | null },
+        why: string,
+      ) => expect(reply.error !== null || (reply.data ?? []).length === 0, why).toBe(true);
+
+      refused(
+        await clientA
+          .from("audit_logs")
+          .update({ action: "patient.read" })
+          .eq("id", bAudit["id"] ?? "")
+          .select(),
+        "a tenant must not be able to update another tenant's audit row",
+      );
+      refused(
+        await clientA
+          .from("audit_logs")
+          .delete()
+          .eq("id", bAudit["id"] ?? "")
+          .select(),
+        "a tenant must not be able to delete another tenant's audit row",
+      );
+      refused(
+        await clientA.from("organizations").delete().eq("id", orgB.organizationId).select(),
+        "a tenant must not be able to delete another tenant's organization",
+      );
+      refused(
+        await clientA
+          .from("organization_memberships")
+          .delete()
+          .eq("id", bMembership["id"] ?? "")
+          .select(),
+        "a tenant must not be able to delete another tenant's membership",
+      );
+
+      // And the four targets are untouched, not merely unreported.
+      expect(await rowOfTenant("b", "audit_logs")).toEqual(bAudit);
+      expect(await rowOfTenant("b", "organizations")).toEqual(bOrganization);
+      expect(await rowOfTenant("b", "organization_memberships")).toEqual(bMembership);
+    }, 60_000);
 
     it("cannot write a row that references the other tenant's clinic, by policy or by foreign key", async () => {
       const { orgA, orgB, clientA } = fixture();
@@ -630,10 +914,12 @@ dbDescribe("tenant isolation across two organizations", () => {
 
     afterAll(async () => {
       await harness.rollback();
-      // The report is this task's evidence, so it is written where the controller can
-      // read it on every run: vitest's console interception swallows afterAll output in
-      // this setup, and a report file inside the repository would be a scratch file.
-      // The OS temp dir is outside the tree and the file overwrites itself per run.
+      // The report is this task's evidence, so it is written where the controller can read
+      // it - BY THIS afterAll, which is the last thing the mutation describe runs: a run
+      // that dies before this point writes nothing, and the in-suite pin on the ledger is
+      // the coverage for that case. Vitest's console interception swallows afterAll
+      // output in this setup, and a report file inside the repository would be a scratch
+      // file; the OS temp dir is outside the tree and the file overwrites itself per run.
       await writeFile(
         join(tmpdir(), "tenant-isolation-mutation-report.txt"),
         renderMutationReport(),
@@ -690,6 +976,135 @@ dbDescribe("tenant isolation across two organizations", () => {
       }
     };
 
+    /**
+     * The own-row delete control, restated impersonated: A creates a row of its own and
+     * deletes it, so the post-restore half of a delete mutation proves the restored
+     * policy still lets the tenant's own delete through. Everything this creates lives
+     * inside the caller's savepoint, so leftovers are rolled back with it. The shapes
+     * mirror `ownDeleteControl` in the client half, including the fresh-role rule and
+     * the clinic-memberships delete-and-recreate.
+     */
+    const assertOwnDeleteWorks = async (table: string): Promise<void> => {
+      const { orgA, userA } = fixture();
+      const suffix = randomUUID().slice(0, 8);
+      const freshRole = async (): Promise<string> => {
+        const [role] = await readAsA<{ id: string }>(
+          `insert into public.roles (organization_id, key, name) values ($1, $2, 'Control') returning id`,
+          [orgA.organizationId, `ctrl_${suffix}`],
+        );
+        if (!role) throw new Error("A could not create its own fresh role");
+        return String(role.id);
+      };
+
+      switch (table) {
+        case "patients": {
+          const [created] = await readAsA<{ id: string }>(
+            `insert into public.patients (organization_id, clinic_id, mrn, last_name)
+             values ($1, $2, $3, 'Control') returning id`,
+            [orgA.organizationId, orgA.clinicId, `CTRL-${suffix}`],
+          );
+          const removed = await readAsA(
+            `delete from public.patients where id = $1 returning 1 as touched`,
+            [created?.id],
+          );
+          expect(removed, "A must be able to delete its own patient").toHaveLength(1);
+          break;
+        }
+        case "patient_identifiers": {
+          const [created] = await readAsA<{ id: string }>(
+            `insert into public.patient_identifiers (organization_id, patient_id, kind, value)
+             values ($1, $2, 'mrn_alt', $3) returning id`,
+            [orgA.organizationId, orgA.patientId, `CTRL-${suffix}`],
+          );
+          const removed = await readAsA(
+            `delete from public.patient_identifiers where id = $1 returning 1 as touched`,
+            [created?.id],
+          );
+          expect(removed, "A must be able to delete its own identifier").toHaveLength(1);
+          break;
+        }
+        case "clinic_memberships": {
+          const [own] = await readAsA<{ id: string; membership_id: string; clinic_id: string }>(
+            `select id, membership_id, clinic_id from public.clinic_memberships
+              where organization_id = $1 limit 1`,
+            [orgA.organizationId],
+          );
+          const removed = await readAsA(
+            `delete from public.clinic_memberships where id = $1 returning 1 as touched`,
+            [own?.id],
+          );
+          expect(removed, "A must be able to delete its own clinic membership").toHaveLength(1);
+          await readAsA(
+            `insert into public.clinic_memberships (organization_id, membership_id, clinic_id)
+             values ($1, $2, $3)`,
+            [orgA.organizationId, own?.membership_id, own?.clinic_id],
+          );
+          break;
+        }
+        case "roles": {
+          const roleId = await freshRole();
+          const removed = await readAsA(
+            `delete from public.roles where id = $1 returning 1 as touched`,
+            [roleId],
+          );
+          expect(removed, "A must be able to delete its own unused role").toHaveLength(1);
+          break;
+        }
+        case "user_role_assignments": {
+          const roleId = await freshRole();
+          const [created] = await readAsA<{ id: string }>(
+            `insert into public.user_role_assignments (organization_id, user_id, role_id)
+             values ($1, $2, $3) returning id`,
+            [orgA.organizationId, userA, roleId],
+          );
+          const removed = await readAsA(
+            `delete from public.user_role_assignments where id = $1 returning 1 as touched`,
+            [created?.id],
+          );
+          expect(removed, "A must be able to delete its own assignment").toHaveLength(1);
+          break;
+        }
+        case "invitations": {
+          const [created] = await readAsA<{ id: string }>(
+            `insert into public.invitations
+               (organization_id, email, role_id, token_hash, invited_by, expires_at, clinic_ids)
+             values ($1, $2, $3, $4, $5, now() + interval '1 day', '{}') returning id`,
+            [
+              orgA.organizationId,
+              `ctrl-${suffix}@example.test`,
+              orgA.adminRoleId,
+              `ctrl-token-${suffix}`,
+              userA,
+            ],
+          );
+          const removed = await readAsA(
+            `delete from public.invitations where id = $1 returning 1 as touched`,
+            [created?.id],
+          );
+          expect(removed, "A must be able to delete its own invitation").toHaveLength(1);
+          break;
+        }
+        case "role_permissions": {
+          const roleId = await freshRole();
+          await readAsA(
+            `insert into public.role_permissions (role_id, permission_key) values ($1, 'patients.read')`,
+            [roleId],
+          );
+          const removed = await readAsA(
+            `delete from public.role_permissions where role_id = $1 and permission_key = 'patients.read'
+             returning 1 as touched`,
+            [roleId],
+          );
+          expect(removed, "A must be able to delete its own fresh role's permission").toHaveLength(
+            1,
+          );
+          break;
+        }
+        default:
+          throw new Error(`no impersonated own-row delete control is defined for ${table}`);
+      }
+    };
+
     it("proves the select policies are load-bearing for every tenant-owned table", async () => {
       for (const { table } of TENANT_TABLES) {
         const policy = `${table}_select`;
@@ -701,6 +1116,9 @@ dbDescribe("tenant isolation across two organizations", () => {
             expect(left, `the catalogue must no longer list ${policy}`).toEqual([]);
           },
           () => assertSeesOnlyOwn(table),
+          // The break must come through the POSITIVE CONTROL: a dropped policy hides A's
+          // own rows, it does not leak B's.
+          /A must see its own rows/,
         );
       }
 
@@ -724,6 +1142,7 @@ dbDescribe("tenant isolation across two organizations", () => {
           expect(mrns).toContain("ISO-A-1");
           expect(mrns, "tenant B's patient must not be visible").not.toContain("ISO-B-1");
         },
+        /must not be visible/,
       );
     }, 300_000);
 
@@ -779,6 +1198,7 @@ dbDescribe("tenant isolation across two organizations", () => {
               0,
             );
           },
+          /cross-tenant update must touch nothing/,
         );
       }
 
@@ -805,7 +1225,17 @@ dbDescribe("tenant isolation across two organizations", () => {
               [scopeValue("b", tenant.tenant)],
             );
             expect(rows, `${table}: a cross-tenant delete must touch nothing`).toEqual([]);
+            // The authorised twin, restated impersonated: after the restore, A's own
+            // create-and-delete must still work, or the "restored" policy is refusing
+            // everyone and the refusal above proved nothing.
+            await assertOwnDeleteWorks(table);
           },
+          // patients breaks through the identifiers' RESTRICT foreign key - the delete
+          // REACHES B's row, which is the leak, and is then stopped by an integrity
+          // constraint that is not tenant logic. The other tables break directly.
+          table === "patients"
+            ? /violates foreign key constraint "patient_identifiers_patient_fkey"/
+            : /cross-tenant delete must touch nothing/,
         );
       }
     }, 300_000);
@@ -836,6 +1266,10 @@ dbDescribe("tenant isolation across two organizations", () => {
             /row-level security/i,
           );
         },
+        // The break names the COMPOSITE KEY: with the policy loosened, the refusal moved
+        // from RLS to `patients_clinic_fkey` - which is the proof the key is the second
+        // layer.
+        /patients_clinic_fkey/,
       );
 
       // And the live, committed policy is back to its shipped form once the mutation's
@@ -893,6 +1327,9 @@ dbDescribe("tenant isolation across two organizations", () => {
             /row-level security|belongs to another organization/i,
           );
         },
+        // The break is the cross-tenant grant SUCCEEDING - `expectRejection`'s own
+        // "but the statement succeeded" is the only honest message for it.
+        /but the statement succeeded/,
       );
     }, 60_000);
 
@@ -927,6 +1364,7 @@ dbDescribe("tenant isolation across two organizations", () => {
           );
           expect(rows, "tenant A must not reach the platform directory").toEqual([]);
         },
+        /must not reach the platform directory/,
       );
     }, 60_000);
 
@@ -955,6 +1393,9 @@ dbDescribe("tenant isolation across two organizations", () => {
           );
           expect(cross, "tenant B's objects must be invisible").toEqual([]);
         },
+        // The break comes through the OWN-OBJECT control: a dropped policy hides
+        // everything, A's own object included.
+        /must still see its own object/,
       );
     }, 60_000);
 
@@ -998,6 +1439,9 @@ dbDescribe("tenant isolation across two organizations", () => {
             /duplicate key|unique/i,
           );
         },
+        // The break names the NARROWED CONSTRAINT itself: the legitimate second
+        // organization is refused on the account alone.
+        /violates unique constraint "organization_memberships_organization_id_user_id_key"/,
       );
 
       // The live, committed constraint is the pair again once the mutation's transaction
@@ -1017,15 +1461,19 @@ dbDescribe("tenant isolation across two organizations", () => {
     }, 60_000);
 
     it("records every mutation it applied, so the report is the evidence it claims to be", async () => {
-      // The harness already THROWS if a mutation fails to break its assertion or fails to
-      // restore; this pins the LEDGER, so a mutation that applied, broke and restored but
-      // never recorded cannot pass silently. 33 = the 11 select drops, the patients leak,
-      // 10 update pairs, 6 delete pairs, the composite foreign key, the grant ceiling
-      // with its trigger, the platform guard, the storage policy and the unique key.
+      // The harness already THROWS if a mutation fails to break its assertion, breaks it
+      // for an unexpected reason, or fails to restore; this pins the LEDGER, so a
+      // mutation that applied, broke and restored but never recorded cannot pass
+      // silently. 33 = the 11 select drops, the patients leak, 10 update pairs, 6 delete
+      // pairs, the composite foreign key, the grant ceiling with its trigger, the
+      // platform guard, the storage policy and the unique key.
       expect(mutationReport).toHaveLength(33);
-      // Every row must carry how the mutation was catalogued and how it broke - "applied"
-      // is the descriptor for a mutation that returned nothing, which none here may.
+      // Every row must carry how the mutation was catalogued, the break it was required
+      // to produce, and a message that satisfied that requirement. "applied" is the
+      // descriptor for a mutation that returned nothing, which none here may, and an
+      // empty mustBreak would mean the harness recorded a break it never pinned.
       expect(mutationReport.every((row) => row.cataloguedAs !== "applied")).toBe(true);
+      expect(mutationReport.every((row) => row.mustBreak !== "")).toBe(true);
       expect(mutationReport.every((row) => row.brokeWith !== "")).toBe(true);
     }, 30_000);
   });
