@@ -25,13 +25,13 @@
  * the tenant writes one, so the fixture seeds one of everything through the same client.
  * The DELETE refusals carry their authorised twin PER TABLE - a create-and-delete of the
  * tenant's own row - because a deleted `<table>_delete` policy yields the same zero
- * rows and no error as a refusing one. The four command/table pairs that have NO
+ * rows and no error as a refusing one. The FIVE command/table pairs that have NO
  * command policy at all (`audit_logs` UPDATE and DELETE, `organizations` DELETE,
- * `organization_memberships` DELETE) are refused for EVERY tenant, so they have no
- * authorised twin: their refusals are asserted in their own test, with the two refusal
- * shapes the shipped state measured (permission denied for `audit_logs`, whose UPDATE
- * and DELETE privileges are revoked from `authenticated`; RLS default-deny zero rows
- * for the other three).
+ * `organization_memberships` DELETE, `clinics` DELETE) are refused for EVERY tenant,
+ * so they have no authorised twin: their refusals are asserted in their own test, with
+ * the two refusal shapes the shipped state measured AND SPLIT PER PAIR - permission
+ * denied for `audit_logs`, whose UPDATE and DELETE privileges are revoked from
+ * `authenticated`; RLS default-deny zero rows for the three policy-less DELETEs.
  *
  * WHY A MID-SEED FAILURE CLEANS UP. If `seedTwoOrganizations` throws after tenant A
  * exists, the `beforeAll` catch destroys the half-finished seed through the fixture's
@@ -624,23 +624,49 @@ dbDescribe("tenant isolation across two organizations", () => {
 
     it("refuses the commands that have no command policy at all", async () => {
       const { clientA, orgB } = fixture();
-      // The four command/table pairs the plan's EVERY-table rule demands that no policy
-      // covers: `organizations` and `organization_memberships` have no DELETE policy
-      // (RLS default-denies: zero rows, no error) and `audit_logs` has no UPDATE policy
-      // and neither UPDATE nor DELETE privileges for `authenticated` (MEASURED:
-      // `has_table_privilege` is false for both, so the statement is refused with
-      // "permission denied" before any policy is consulted). These commands are refused
-      // for EVERY tenant - there is no authorised twin to control against, because the
-      // refusal itself is the design; each statement is the assertion.
+      // The FIVE command/table pairs the plan's EVERY-table rule demands that no policy
+      // covers: `organizations`, `organization_memberships` and `clinics` have no DELETE
+      // policy, and `audit_logs` has no UPDATE policy and neither UPDATE nor DELETE
+      // privileges for `authenticated`. MEASURED, the pairs take TWO refusal shapes,
+      // and both are ASSERTED here rather than documented: the audit statements are
+      // refused with "permission denied" before any policy is consulted
+      // (`has_table_privilege` is false for both), while the three policy-less DELETEs
+      // are RLS default-deny - the statement succeeds and matches zero rows, no error.
+      // A re-granted privilege or a shape change fails this test, not a comment.
+      // `tests/security/rls-policies.test.ts` already pins the exact 39-policy
+      // catalogue, so ADDING a permissive `clinics_delete` fails a gate; what this
+      // test adds is the BEHAVIOURAL refusal, which no catalogue assertion can see.
+      // These commands are refused for EVERY tenant - there is no authorised twin to
+      // control against, because the refusal itself is the design.
       const bAudit = await rowOfTenant("b", "audit_logs");
       const bMembership = await rowOfTenant("b", "organization_memberships");
       const bOrganization = await rowOfTenant("b", "organizations");
-      const refused = (
+      const bClinic = await rowOfTenant("b", "clinics");
+
+      // The revoked-privilege shape: the statement RAISES.
+      const mustRaise = (
         reply: { data: unknown[] | null; error: { message: string } | null },
         why: string,
-      ) => expect(reply.error !== null || (reply.data ?? []).length === 0, why).toBe(true);
+      ) => {
+        expect(reply.error, why).not.toBeNull();
+        expect(
+          /permission denied/i.test(reply.error?.message ?? ""),
+          `${why}: the refusal must be the revoked privilege, got: ${reply.error?.message}`,
+        ).toBe(true);
+      };
+      // The policy-less shape: the statement SUCCEEDS and matches zero rows.
+      const mustFilter = (
+        reply: { data: unknown[] | null; error: { message: string } | null },
+        why: string,
+      ) => {
+        expect(
+          reply.error,
+          `${why}: a policy-less DELETE is default-deny, not an error`,
+        ).toBeNull();
+        expect((reply.data ?? []).length, why).toBe(0);
+      };
 
-      refused(
+      mustRaise(
         await clientA
           .from("audit_logs")
           .update({ action: "patient.read" })
@@ -648,7 +674,7 @@ dbDescribe("tenant isolation across two organizations", () => {
           .select(),
         "a tenant must not be able to update another tenant's audit row",
       );
-      refused(
+      mustRaise(
         await clientA
           .from("audit_logs")
           .delete()
@@ -656,11 +682,11 @@ dbDescribe("tenant isolation across two organizations", () => {
           .select(),
         "a tenant must not be able to delete another tenant's audit row",
       );
-      refused(
+      mustFilter(
         await clientA.from("organizations").delete().eq("id", orgB.organizationId).select(),
         "a tenant must not be able to delete another tenant's organization",
       );
-      refused(
+      mustFilter(
         await clientA
           .from("organization_memberships")
           .delete()
@@ -668,11 +694,20 @@ dbDescribe("tenant isolation across two organizations", () => {
           .select(),
         "a tenant must not be able to delete another tenant's membership",
       );
+      mustFilter(
+        await clientA
+          .from("clinics")
+          .delete()
+          .eq("id", bClinic["id"] ?? "")
+          .select(),
+        "a tenant must not be able to delete another tenant's clinic",
+      );
 
-      // And the four targets are untouched, not merely unreported.
+      // And the five targets are untouched, not merely unreported.
       expect(await rowOfTenant("b", "audit_logs")).toEqual(bAudit);
       expect(await rowOfTenant("b", "organizations")).toEqual(bOrganization);
       expect(await rowOfTenant("b", "organization_memberships")).toEqual(bMembership);
+      expect(await rowOfTenant("b", "clinics")).toEqual(bClinic);
     }, 60_000);
 
     it("cannot write a row that references the other tenant's clinic, by policy or by foreign key", async () => {

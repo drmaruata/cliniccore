@@ -1251,9 +1251,13 @@ permission_key` only), so the suite asks "is this row's ROLE one of A's own?" th
   output on green runs. It is NOT "every run": a run that dies before that point writes
   nothing, and the in-suite ledger pin is the coverage for that case. Every recorded
   mutation carries the break it was REQUIRED to produce (`must break: /.../` beside
-  `broke with: ...`), and the harness rejects an UNEXPECTED break - one that does not
-  name the policy, constraint or control the mutation touched - so a network blip or a
-  statement timeout cannot be ledgered as a policy having been proven load-bearing.
+  `broke with: ...`), and the harness rejects an UNEXPECTED break, so a network blip or
+  a statement timeout cannot be ledgered as a policy having been proven load-bearing.
+  Most matchers name the policy or the constraint; ONE names `expectRejection`'s own
+  "but the statement succeeded" - the grant-ceiling mutation, whose break IS that the
+  cross-tenant grant succeeded, which makes that message the only honest one for it. A
+  matcher is required for every mutation; naming the exact policy in every one is not,
+  because the message has to be the thing that actually broke.
   MEASURED: corrupting one matcher to an unmatchable regex fails exactly one test with
   "broke for an UNEXPECTED reason".
 - **EVERY DELETE REFUSAL HAS ITS AUTHORISED TWIN, PER TABLE.** A deleted
@@ -1266,12 +1270,20 @@ permission_key` only), so the suite asks "is this row's ROLE one of A's own?" th
     FRESH role, because a permission row of a role the caller holds is refused by design
     (`NOT assigned_to_self`) and a duplicate org-wide assignment is refused by the
     `NULLS NOT DISTINCT` unique key.
-- **THE FOUR NO-POLICY COMMANDS ARE TESTED, NOT STATED.** `audit_logs` UPDATE and DELETE
-  (privileges revoked from `authenticated` - permission denied, MEASURED via
-  `has_table_privilege`) and `organizations` / `organization_memberships` DELETE (no
-  policy - RLS default-deny, zero rows, no error) are refused for EVERY tenant, so they
-  have no authorised twin; their refusals are asserted with the two-shape form and the
-  targets are re-read to prove them untouched.
+- **THE FIVE NO-POLICY COMMANDS ARE TESTED, NOT STATED, WITH BOTH REFUSAL SHAPES
+  ASSERTED.** `clinics` DELETE is the fifth, and the first version of this record said
+  "four" - MEASURED by the second review: `clinics` carries only SELECT and UPDATE
+  policies and `has_table_privilege('authenticated','public.clinics','DELETE')` is true,
+  so a cross-tenant delete is RLS default-deny, the same shape as the organizations and
+  membership DELETEs. The five pairs: `audit_logs` UPDATE and DELETE are refused with
+  PERMISSION DENIED (the privileges are revoked from `authenticated` - MEASURED via
+  `has_table_privilege`), and `organizations`, `organization_memberships` and
+  `clinics` DELETE are RLS DEFAULT-DENY (the statement succeeds and matches zero rows,
+  no error). The two shapes are ASSERTED, not documented: a re-granted privilege or a
+  shape change fails the test. These commands are refused for EVERY tenant, so there is
+  no authorised twin - the refusal is the design. `rls-policies.test.ts` pins the exact
+  39-policy catalogue, so ADDING a permissive `clinics_delete` fails a gate; what the
+  suite adds is the BEHAVIOURAL refusal, which no catalogue assertion can see.
 - **A MID-SEED FAILURE CLEANS UP.** `seedTwoOrganizations` creates tenant A then B; if
   the second call throws, `beforeAll`'s catch destroys the half-finished seed through
   `destroyPartialSeed()` - the tenants rediscovered from the accounts the auth fixture
