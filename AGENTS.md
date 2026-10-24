@@ -1183,6 +1183,30 @@ test.ts` pins both halves.
   with the slug ..."), which is that helper working as designed. The two leftovers
   were removed by hand, and the ledger correction above is the consequence.
 
+## THE BUILD GATE IS NON-DETERMINISTIC WHILE next@16.4.0 CARRIES A KNOWN CVE
+
+**MEASURED, and the measurement was made the hard way.** Two consecutive `npm run build`
+runs on an unchanged tree gave DIFFERENT results: one printed the route table and
+succeeded, the next answered `SecurityFatalError: Your version of Next.js is affected by
+a known security vulnerability` and exited 1. The advisory check consults a network
+vulnerability database, so the gate passes when the network is unreachable and fails
+when it is not - a gate whose result depends on the weather is not a gate.
+
+**EVERY "build 0" CLAIM IN THIS FILE AND IN THE STATUS LOG SINCE THE CHECK STARTED
+FIRING IS THEREFORE UNVERIFIABLE.** At least one commit message claims `build 0` from a
+run whose exit code was never read - the route table printed, the code was assumed, and
+the assumption was written down as a measurement. That is the exact failure this file
+exists to prevent, and it was made by the reviewer, not the implementer.
+
+**THE UNDERLYING FACT IS A SECURITY ONE, AND IT IS NOT FIXED:** the installed Next.js
+16.4.0 is listed against a known vulnerability, in an application that will hold PHI.
+The upgrade is a PRODUCT DECISION, not a chore - it may move the framework past what
+typescript-eslint and the pinned TypeScript 6.0.3 support (see the toolchain note above)
+
+- and it has deliberately NOT been taken, twice. Until it is, record every build result
+  as `build: PASSED (advisory offline)` or `build: FAILED (SecurityFatalError, next@16.4.0
+CVE)`, and never as a plain 0.
+
 ## Task 18+ : the tenant isolation suite is mutation-verified, and UPDATE under RLS needs the SELECT policy
 
 Task 18 added `tests/security/tenant-isolation.test.ts`, `tests/security/fixtures.ts` and
