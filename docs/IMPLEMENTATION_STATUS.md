@@ -4685,3 +4685,57 @@ but every row now carries its required break beside the one it produced.
 `npm run format:check` all exit 0. The suite alone: 19 tests (18 before the review, plus
 the four-command no-policy test), all passing in ~133s. The live project after the runs:
 0 organizations, 0 audit logs, 0 auth users, 0 creation-ledger rows, 0 storage objects.
+
+---
+
+## Next.js security upgrade 16.4.0 → 16.4.3 (the deferred product decision, taken)
+
+Run via `next upgrade --agent=security` on 2026-10-24 on `feature/foundation`. The
+upgrade had been deliberately deferred twice as a product decision while next@16.4.0
+carried a published advisory that made the build gate non-deterministic; that record
+above stands as history. This entry is the decision, and its measurements.
+
+### What changed and why
+
+- `next` 16.4.0 → **16.4.3** (exact target from the upgrade handoff - the installed
+  version was listed against a published security advisory) and `eslint-config-next`
+  16.4.0 → 16.4.3 in lockstep. Same-major patch release: NO codemods, NO React bump
+  (stays 19.3.0), and the TypeScript pin stays 6.0.3 - 16.4.3 raised no compatibility
+  requirement against typescript-eslint's `>=4.8.4 <6.1.0` support window, so the
+  toolchain risk that justified the deferral did not materialise.
+- `experimental.agentUpgrade: "security"` added to `next.config.ts` as the handoff
+  required. MEASURED: the key is in 16.4.3's own `config-schema.js` (accepted values
+  `'security' | 'latest' | 'experimental-future'`), and two builds loaded the config
+  without an unknown-key complaint.
+- No other dependency was touched. The upgrade handoff's mandate is the Next advisory,
+  not a general audit fix.
+
+### MEASURED after the upgrade
+
+| Gate      | Result                                                                                                                                                |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| version   | `npx next --version` → `Next.js v16.4.3`                                                                                                              |
+| typecheck | exit 0                                                                                                                                                |
+| lint      | exit 0 (eslint 0 errors; 1 PRE-EXISTING warning in `.opencode/plugins/graphify.js`; check:secrets OK; format:check OK; migrations check OK, 61 files) |
+| test      | 39 files, 897 tests, all passing (~470s)                                                                                                              |
+| build     | TWO CONSECUTIVE runs on the unchanged tree, BOTH exit 0, no `SecurityFatalError`                                                                      |
+| npm audit | `next` NO LONGER LISTED - the advisory that broke the build gate is resolved                                                                          |
+
+The two consecutive clean builds are the measurement the stale build-gate record asked
+for. The build gate is deterministic again on this tree.
+
+### What was NOT fixed, and the residual risk recorded honestly
+
+`npm audit` still reports 6 findings (1 moderate, 5 high) after the upgrade. MEASURED
+dependency chains: body-parser 2.3.0 (high, DoS) sits inside
+`shadcn → @modelcontextprotocol/sdk → express`; undici 7.30.0/8.12.1 (high) sits inside
+`jsdom` and `shadcn`/`@dotenvx`; zod <4.6.6 (high, memory exhaustion on oversized
+constrained collections) sits inside `shadcn`/`@shadcn/registry` - the only fix
+`npm audit fix --force` offers would move shadcn to 4.22.1, OUTSIDE its stated
+dependency range, which is exactly the kind of unreviewed bump the deferrals refuse.
+These four are dev-toolchain only; no runtime path in the app reaches them.
+
+The one runtime-adjacent chain: `@hookform/resolvers → ajv → fast-uri@3.1.8` (moderate,
+URI scheme spoofing among four fast-uri findings). `@hookform/resolvers` IS a production
+dependency, but this app's validation layer is zod; no ajv-backed resolution path is
+exercised. Recorded as a residual risk and a later product decision, NOT as fixed.

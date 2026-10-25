@@ -6,6 +6,9 @@ const nextConfig: NextConfig = {
   // intent — no runtime transform is configured for this in Task 1.)
   experimental: {
     typedEnv: false,
+    // Marks that this upgrade was the security-advisory agent run (next upgrade
+    // --agent=security, 16.4.0 -> 16.4.3).
+    agentUpgrade: "security",
   },
 };
 
