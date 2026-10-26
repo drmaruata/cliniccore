@@ -11,7 +11,7 @@ files in `supabase/migrations/`. Counts below are catalogue reads, not restateme
 | Columns in `public`               | 100                                                       |
 | Constraints                       | 55: 16 primary, 21 foreign, 12 unique, 6 check            |
 | Indexes                           | 36                                                        |
-| Triggers                          | 18 (9 trigger functions)                                  |
+| Triggers                          | 14 definitions, 18 trigger events, 8 trigger functions    |
 | Policies                          | 39 in `public` + 20 on `storage.objects`                  |
 | Private buckets                   | 5, all `public = false`                                   |
 | Tables carrying `organization_id` | 10                                                        |
@@ -154,7 +154,7 @@ rate-limit evidence for tenant creation.
 default-denies every read and write. Its only writer is `private.next_sequence_value(p_org_id,
 p_sequence_key)`, a definer that checks `private.is_member` itself.
 
-## Triggers (14 rules; 18 `pg_trigger` event rows)
+## Triggers (14 definitions, 18 trigger events, 8 trigger functions)
 
 | Table                      | Trigger                        | Timing                | Does                                                                                                                                   |
 | -------------------------- | ------------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |

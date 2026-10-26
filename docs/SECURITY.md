@@ -16,7 +16,7 @@ still open. Historical detail: [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATU
 | **Platform console abuse**                     | The route answers 404 to a non-operator, and the data layer refuses to read the directory **before** the query                                                                                                                                                                              | `tests/unit/platform-console.test.ts`, `tests/e2e/platform-gate.spec.ts`                     |
 | **Storage path traversal**                     | `private.storage_path_is_safe` refuses a dot-dot segment and requires a UUID first segment; tenancy comes from the path                                                                                                                                                                     | `tests/security/storage-policies.test.ts`                                                    |
 | **Invitation token theft**                     | Only a SHA-256 digest is stored; 7-day expiry; one redemption; the acceptor's account address must equal the invitation's. This binds the account to the stored address; with email confirmation disabled it does **not** prove mailbox control, so re-enabling confirmation is the control | `invitations.spec.ts`, `rls-policies.test.ts`                                                |
-| **Audit falsification**                        | `audit_logs` is append-only to clients; the only writer is a definer that checks membership; metadata is screened to identifiers and codes                                                                                                                                                  | `tenant-isolation.test.ts`, `audit-log.test.ts`                                              |
+| **Audit falsification**                        | `audit_logs` is append-only to clients; every client write goes through a security-definer function, and metadata is screened to identifiers and codes                                                                                                                                      | `tenant-isolation.test.ts`, `audit-log.test.ts`                                              |
 
 ## Tenant isolation
 
@@ -115,8 +115,15 @@ boundary. The real boundary for a browser request is JWT verification, before an
 - `audit_logs` has no foreign keys, so deleting a tenant or an actor cannot cascade the trail away.
 - `authenticated` holds **SELECT only**; INSERT, UPDATE and DELETE are revoked. Append-only does
   not depend on there being no write policy.
-- The only writer is `private.write_audit`, a definer that checks `private.is_member` itself -
-  because a definer bypasses RLS.
+- `private.write_audit` is the application writer, a definer that checks `private.is_member`
+  itself - because a definer bypasses RLS.
+- **`private.write_storage_audit` is a second definer writer.** Created by `20261014001694`,
+  made unconditional by `20261014001696`, it fires `AFTER DELETE ON storage.objects` and writes
+  the deletion into `audit_logs`. It derives the organization from the object path
+  (`private.storage_org_id(old.name)`), not from any caller-supplied value, and the actor from
+  `auth.uid()`, which is `NULL` for a `service_role` deletion. It performs **no membership check**
+  of its own, so the row it writes lands under whatever organization the path names; the
+  `audit_logs_select` policy is what limits who can read it.
 - Metadata may carry identifiers and codes. A value with whitespace, or a key naming clinical free
   text, is refused; the refusal names the key and the reason.
 - Reads require `audit.read` in the organization, or a platform administrator for platform-level

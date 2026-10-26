@@ -88,17 +88,17 @@ change to that column from a client.
 
 ## Policies worth reading in full
 
-| Policy                                     | Why it matters                                                                                                                                                                                                 |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `permissions_select`                       | The only `USING true`. The catalogue is global and read-only by design; its writes are revoked from `authenticated`. Pinned as the single exemption in the suite                                               |
-| `organizations_update`                     | `can(id, 'settings.manage') OR is_platform_admin()`. A platform operator must keep seeing suspended tenants in order to restore them                                                                           |
-| `organizations_select`                     | `is_member(id) OR is_platform_admin()` - the platform clause is what keeps a suspended tenant visible to the operator                                                                                          |
-| `audit_logs_select`                        | `(member AND audit.read) OR (organization_id IS NULL AND is_platform_admin())`. The table has no write policy at all                                                                                           |
-| `roles_delete`                             | Gates on `settings.manage` **and** the `guard_role_delete` trigger's `not private.role_in_use(id)`. Neither alone is sufficient                                                                                |
-| `invitations_write` / `invitations_update` | Both carry `private.can_assign_role`, `invited_by = auth.uid()`, the tenant's-own-role check, the no-clinics rule, and (UPDATE only) `accepted_at IS NULL`                                                     |
-| `user_role_assignments_write` / `_update`  | Both carry `can_assign_role` **and** `assignment_target_is_member`, closing the pre-staging gap. Read the LAST definition before recreating either - `01780` once restored `01240` and lost the `01660` clause |
-| `platform_settings_select`                 | `is_platform_admin()` only. No write policy; platform settings are operator-managed                                                                                                                            |
-| `tenant_sequences`                         | No policy. The counter is bumped only by `private.next_sequence_value`, a definer that checks membership itself                                                                                                |
+| Policy                                     | Why it matters                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `permissions_select`                       | The only `USING true`. The catalogue is global and read-only by design; its writes are revoked from `authenticated`. Pinned as the single exemption in the suite                                                                                                                                                                                     |
+| `organizations_update`                     | `can(id, 'settings.manage') OR is_platform_admin()`. A platform operator must keep seeing suspended tenants in order to restore them                                                                                                                                                                                                                 |
+| `organizations_select`                     | `is_member(id) OR is_platform_admin()` - the platform clause is what keeps a suspended tenant visible to the operator                                                                                                                                                                                                                                |
+| `audit_logs_select`                        | `(member AND audit.read) OR (organization_id IS NULL AND is_platform_admin())`. The table has no write policy at all                                                                                                                                                                                                                                 |
+| `roles_delete`                             | Gates on `settings.manage` **and** the `guard_role_delete` trigger's `not private.role_in_use(id)`. Neither alone is sufficient                                                                                                                                                                                                                      |
+| `invitations_write` / `invitations_update` | Both carry `private.can_assign_role`, `invited_by = auth.uid()`, the tenant's-own-role check, a clause requiring every named clinic to belong to the inviting organization, and (UPDATE only) `accepted_at IS NULL`. The refusal of an invitation that names clinics is at redemption, in `private.accept_invitation` (migration `01790`) - not here |
+| `user_role_assignments_write` / `_update`  | Both carry `can_assign_role` **and** `assignment_target_is_member`, closing the pre-staging gap. Read the LAST definition before recreating either - `01780` once restored `01240` and lost the `01660` clause                                                                                                                                       |
+| `platform_settings_select`                 | `is_platform_admin()` only. No write policy; platform settings are operator-managed                                                                                                                                                                                                                                                                  |
+| `tenant_sequences`                         | No policy. The counter is bumped only by `private.next_sequence_value`, a definer that checks membership itself                                                                                                                                                                                                                                      |
 
 ## Storage policies (20)
 
@@ -151,9 +151,10 @@ text, text, text, text)`, `delete_organization(uuid)`, `export_patients(uuid, uu
 
 ### Executable by `authenticated`
 
-These are called **by policies**, and a policy expression is evaluated as the querying role.
-Revoking any of them would make every affected row **invisible** rather than denied - a silent
-total failure.
+The list mixes three kinds: helpers a **policy** expression calls (evaluated as the querying
+role), **trigger** functions (which run for whatever role wrote the row), and
+`private.accept_invitation`, a definer the public wrapper reaches. Revoking any of them would
+make every affected row **invisible** rather than denied - a silent total failure.
 
 `private.can`, `private.can_assign_role`, `private.clinic_ids`, `private.current_org_ids`,
 `private.is_member`, `private.is_platform_admin`, `private.assigned_to_self`,

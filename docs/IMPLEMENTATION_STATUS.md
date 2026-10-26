@@ -4941,3 +4941,38 @@ client reads `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and that edit is not a runtime set
   archived/delete-marker clauses; the auth E2E spec uses the public signup endpoint exactly once;
   and the anon key is documented as an unread placeholder whose plan-required fallback is not
   implemented.
+
+## Task 19 fix round 2 - documentation corrections (2026-10-26)
+
+Documentation only. No application code, SQL, test or configuration changed. Each claim below was
+re-verified on the live catalogue or in the migrations before the edit was made.
+
+- **Triggers are 14 definitions, 18 trigger events, 8 trigger functions.** Measured again from
+  `pg_trigger` (schema `public`, non-internal rows only, insert/delete/update/truncate bits summed
+  to 18). By function: `set_updated_at` 5 UPDATE, `guard_organization_status` 1 UPDATE,
+  `guard_platform_admin` 1 UPDATE, `guard_role_delete` 1 DELETE, `guard_role_identity` 1 UPDATE,
+  `guard_role_org_scope` 2 definitions (INSERT + UPDATE), `guard_timezone` 2 definitions
+  (INSERT + UPDATE), `default_clinic_timezone` 1 INSERT. `DATABASE_SCHEMA.md` had said
+  "18 (9 trigger functions)"; that both undercounted the events' meaning and miscounted the
+  functions. Fix round 1 had restyled the same row as "14 rules; 18 `pg_trigger` event rows",
+  which is now "14 definitions, 18 trigger events, 8 trigger functions" in the table and the
+  heading.
+- **`private.write_storage_audit` is a second security-definer writer to `audit_logs`.** Created by
+  `20261014001694`, made unconditional by `20261014001696`: `AFTER DELETE ON storage.objects`,
+  deriving the organization from the object path (`private.storage_org_id(old.name)`) and the
+  actor from `auth.uid()`, which is NULL for a `service_role` deletion, and performing no
+  membership check of its own. `SECURITY.md` and `SRS.md` AUD-2 no longer call
+  `private.write_audit` the only writer.
+- **The no-clinics rule is enforced at redemption, not in the invitation policies.**
+  `20261014001820` lines 52-63 and 93-104 only require every named clinic to belong to the
+  inviting organization. The refusal is `private.accept_invitation`
+  (`20261014001790` lines 134-138: `raise exception 'that invitation names clinics, which this
+release does not support'`). `SRS.md` INV-7 and `RLS_POLICIES.md` now point at the right layer.
+- **The application does not read `SUPABASE_SERVICE_ROLE_KEY`.** Its only reader is
+  `tests/helpers/auth-session-fixture.ts`; `lib/supabase/server.ts` reads the URL and the
+  publishable key, and `lib/supabase/client.ts` names the service key only in a comment. The
+  path rule is unchanged (allowed in `lib/supabase/server.ts` and under `tests/`), which is why
+  `README.md` and `DEPLOYMENT.md` no longer imply the server client reads it.
+- **The "executable by `authenticated`" list is not a list of policy helpers.** It mixes policy
+  expressions, trigger functions and the definer the public wrapper reaches, and
+  `RLS_POLICIES.md` now says so.
