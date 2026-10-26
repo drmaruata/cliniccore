@@ -4976,3 +4976,223 @@ release does not support'`). `SRS.md` INV-7 and `RLS_POLICIES.md` now point at t
 - **The "executable by `authenticated`" list is not a list of policy helpers.** It mixes policy
   expressions, trigger functions and the definer the public wrapper reaches, and
   `RLS_POLICIES.md` now says so.
+
+## Task 20 - final gate
+
+Run on 2026-10-26 on branch `feature/foundation` at `fb54f1f` (base commit, tree clean).
+Node v24.22.1, npm 11.19.1. Every command below was run separately and its exit code was read
+from `$LASTEXITCODE`; no result here is restated from an earlier task. This task adds NO
+application code, SQL, migration or runtime configuration - it appends this section and corrects
+one stale E2E locator (below). **`AGENTS.md` is NOT edited, and that is a deliberate choice with
+a reason:** its "Current state" says "Tasks 1-19 of 20 are complete ... Task 20 is next", which
+is now false, and the brief allows a minimal factual update only in that case - but every other
+sentence in it is confirmed by this run, so the bare correction is left to the reviewer rather
+than guessed at here.
+
+### THE GATES
+
+| Gate                | Command                | Exit      | Decisive output                                                                                                                                                            |
+| ------------------- | ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| typecheck           | `npm run typecheck`    | 0         | `tsc --noEmit` completed with no diagnostics printed                                                                                                                       |
+| lint sub-gate 1     | `eslint .`             | 0         | 0 errors, 1 pre-existing warning in `.opencode/plugins/graphify.js` (`import/no-anonymous-default-export`, line 32)                                                        |
+| lint sub-gate 2     | `check:secrets`        | 0         | `check:secrets OK - no service-role or hard-coded secret references found.`                                                                                                |
+| lint sub-gate 3     | `format:check`         | 0         | `All matched files use Prettier code style!`                                                                                                                               |
+| lint sub-gate 4     | `migrations:check`     | 0         | `migrations check OK: 61 file(s), all valid`, each file listed with its `idempotency_key`                                                                                  |
+| lint (combined)     | `npm run lint`         | 0         | all four sub-gates above ran in sequence and all passed                                                                                                                    |
+| test                | `npm test`             | 0         | `Test Files 39 passed (39)`; `Tests 899 passed (899)`; duration 463.55 s; 39 workers, `fileParallelism: false`                                                             |
+| build               | `npm run build`        | 0         | `next build` with Next.js 16.4.3 (Turbopack): compiled in 1428 ms, TypeScript 2.1 s, 14 static pages generated, 14 routes plus `/api/auth/verify` and `Proxy (Middleware)` |
+| e2e (first run)     | `npm run e2e`          | 1         | 32 tests, 30 passed, 2 failed - see the section below                                                                                                                      |
+| e2e (after fix)     | `npm run e2e`          | 0         | 32 passed (1.4 m) across chromium and firefox                                                                                                                              |
+| format:check (post) | `npm run format:check` | see below | recorded verbatim in the closing block                                                                                                                                     |
+
+`npm run build` type-checks itself ("Running TypeScript ... Finished TypeScript in 2.1s"), so
+the typecheck result is confirmed twice, in two different runs.
+
+**Playwright browsers were NOT installed.** The first `npx playwright install --dry-run` listed
+`chromium-1248`, `firefox-1555`, `webkit-2370`, `ffmpeg-1013` and `winldd-1007` and
+`C:\Users\Maruata\AppData\Local\ms-playwright` did not exist. `npx playwright install chromium
+firefox` was run once (webkit was not installed: no project in `playwright.config.ts` uses it),
+exit 0, and the E2E gate then ran. This was needed and is recorded as such.
+
+### THE E2E FAILURE, AND WHY IT WAS FIXED RATHER THAN RECORDED AS RED
+
+The first E2E run failed the same test in both browsers:
+
+```
+[chromium] › tests\e2e\platform-gate.spec.ts:74:3 › the marketing shell › the public root
+renders without a session, and says nothing about a signed-in visitor
+  Locator: getByRole('heading', { name: /Each clinic gets its own workspace/ })
+  Expected: visible
+  Error: element(s) not found
+```
+
+The cause is a stale assertion, not a product defect, and it is traceable:
+
+- `components/marketing/hero.tsx` renders
+  `Every organization is its own isolated workspace, and the database keeps them apart.`
+- That copy was corrected in commit `5929ba6` (2026-10-22), whose message records the reason:
+  the hero said "Each clinic gets its own workspace", but **an organization is the isolation
+  boundary and intra-tenant multi-clinic is not built**. The old sentence was false.
+- The spec still asserted the old string, and no E2E run had happened since `5929ba6` - the
+  E2E gate was last run at `1756b9b`/`12cfbd5`, and Tasks 18 and 19 did not run it. So the
+  red gate was latent, and this task is the first run to see it.
+
+The fix is the assertion, not the copy: `tests/e2e/platform-gate.spec.ts` now looks for
+`/Every organization is its own isolated workspace/`, with a comment naming the earlier
+revision and why it was false. The assertion's purpose - the page renders and its hero states
+the tenancy claim - is unchanged, and the rest of the test (a signed-in visitor sees the same
+page; no "Sign out" control in the public shell) is untouched. The failing test was then run
+alone on both browsers (2 passed) before the full suite was re-run.
+
+The E2E suite creates no residue of its own: `tests/helpers/e2e-cleanup.ts` verifies itself
+and the run finished with no cleanup error. Measured separately (below), the live project holds
+no row any E2E spec created.
+
+### WHAT THE RESIDUE CHECK FOUND, AND WHY IT IS NOT THIS TASK'S
+
+Measured over `TEST_DATABASE_URL` after the final E2E run:
+
+| Measure                                        | Value                                                                                        |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| organizations                                  | 2 - `Isolation Tenant A` (`iso-a-mvoyeyloksv4`), `Isolation Tenant B` (`iso-b-mvoyeyloksv4`) |
+| auth users                                     | 2 - `probe-1793000852676-106375@example.test`, `probe-1793000854748-308706@example.test`     |
+| clinics / patients / identifiers / invitations | 2 / 3 / 3 / 3                                                                                |
+| memberships / clinic_memberships / assignments | 2 / 2 / 3                                                                                    |
+| audit_logs / tenant_creation_events            | 2 / 2                                                                                        |
+| roles                                          | 32 (16 and 15 per surviving tenant, 1 platform role)                                         |
+| storage.objects                                | 2, both in `patient-documents`, both named by their own org prefix                           |
+| schema_migrations                              | 61                                                                                           |
+
+These rows are the **security isolation fixture's own tenants** (`tests/security/fixtures.ts`
+line 110 names them `Isolation Tenant ${label}`), and their account ids and slugs date them to
+`2026-10-26T07:47:32Z-07:47:39Z` - during the `npm test` run this task executed, not during the
+E2E runs. Two decisive measurements:
+
+1. **The suite cleans up after itself.** `npx vitest run
+tests/security/tenant-isolation.test.ts` alone: `Test Files 1 passed (1)`, `Tests 21 passed
+(21)`, exit 0, 162.25 s. The residue counts above were UNCHANGED afterwards - so the run
+   added and removed its own tenants successfully.
+2. **The survivors carry identifiers only an aborted run can produce.** Tenant A's patient row
+   has `last_name = "Own rename"` (written by the UPDATE test at line 606, whose positive
+   control deliberately renames A's OWN patient and leaves it); a second patient
+   `CROSS-TENANT-CONTROL` and an invitation `insert-ctrl-e31bd1c4@example.test` are the INSERT
+   tests' positive controls. A completed run's `destroyTwoOrganizations` deletes all of them.
+   So the run that produced these rows was interrupted after seeding, before the tests, and
+   before its `afterAll`.
+
+**This is recorded, not cleaned, and it is not fixed here.** Removing two tenants and two
+accounts from a live database that is not this task's to mutate would itself be an unauthorised
+write, and the residue is inert: both accounts hold no administrator permission, both
+organizations are `active` with one membership each, and no cross-tenant exposure exists. The
+next agent must know the two accounts and the two organizations are there, and that a full
+green `npm test` does NOT imply zero residue in this project.
+
+### MIGRATION EVIDENCE
+
+`npm run migrations:check` - exit 0, `migrations check OK: 61 file(s), all valid`, every file
+named with its idempotency key, `20261014000100_extensions_and_schemas.sql` through
+`20261014001880_organizations_update_restoration.sql`.
+
+Read over `TEST_DATABASE_URL`:
+
+- `supabase_migrations.schema_migrations`: **61 rows**, 61 distinct `name` values, 61 files.
+- **Every committed migration filename has exactly one history row naming it, and no history
+  row names a file that does not exist.** The comparison is on the `name` column (the filename);
+  the `version` column is the applier's own apply timestamp, and it is NOT the filename - the
+  first version of this check compared the file stem against `version` and produced 61 false
+  "no history row" mismatches for exactly that reason.
+- **The applied order is NOT the filename order, and this is a fact, not a defect the check
+  may manufacture.** Measured: `20261014001200_rls_tenant_data_audit_and_platform.sql` was
+  applied at history index 14, while `01000` and `01100` occupy indices 15 and 16. Three files
+  differ; the other 58 match. The dependencies are DDL statements whose order in a single
+  apply call is not the filename order, and `migrations:check` validates filename order, naming
+  and idempotency keys - not the order the rows happen to carry in history.
+
+Catalogue, read from the same connection (evidence that the applied system exists; NOT evidence
+that a clean apply works):
+
+- 16 public tables, every one `relrowsecurity = true`, none forced.
+- 39 public policies, 14 of the 16 tables: `audit_logs` 1, `clinic_memberships` 4, `clinics` 2,
+  `invitations` 4, `organization_memberships` 2, `organizations` 2, `patient_identifiers` 4,
+  `patients` 4, `permissions` 1, `platform_settings` 1, `profiles` 2, `role_permissions` 4,
+  `roles` 4, `user_role_assignments` 4. `tenant_sequences` and `tenant_creation_events` carry
+  zero by design.
+- 20 storage policies on `storage.objects`; 5 buckets, all `public = false`
+  (`clinical-attachments`, `investigation-reports`, `org-assets`, `patient-documents`,
+  `prescription-documents`).
+- 35 `private` functions; the public no-argument functions are `has_any_membership`,
+  `is_platform_admin`, `rls_auto_enable` and `tenant_directory`.
+
+**The migration-from-zero clean-room check is BLOCKED, and it is recorded as BLOCKED, not as
+passing.** Exact reason: no Docker (`docker` is not on PATH), no Supabase CLI (`supabase` is not
+on PATH), no Supabase Personal Access Token - migrations are applied through the Composio MCP
+applier, which reaches only the live project - and the live project is the only reachable
+database, so dropping or recreating its schema to obtain a clean schema is destructive and is
+not authorised by this task. The evidence above proves that 61 files correspond to 61 history
+rows and that the objects they create are present; it does not prove that applying them in
+filename order to an empty schema produces a working system. Task 19 recorded the same gap.
+
+### `npm audit` - the residual, run this task
+
+`npm audit` exits **1** with **6 vulnerabilities: 1 moderate, 5 high**. Identical to the Task 18
+record; none is claimed as fixed.
+
+- `body-parser` 2.0.0 - 2.3.0, high (DoS via trailing bytes after a compressed request body).
+- `fast-uri` 3.0.0 - 3.1.8, moderate (four advisories: URI scheme spoofing, path equivalence,
+  host confusion, scheme injection).
+- `undici` 7.0.0 - 7.30.0 and 8.0.0 - 8.12.1, high (three advisories: two EventSource DoS, SRI
+  bypass, content-encoding DoS), reached through `@dotenvx/dotenvx`, `@shadcn/registry`,
+  `shadcn` and a top-level copy.
+- `zod` < 4.6.6, high (memory exhaustion validating oversized constrained collections), inside
+  `shadcn` / `@shadcn/registry`; the fix requires `npm audit fix --force`, which would install
+  `shadcn@4.22.1`, outside the stated dependency range.
+
+All are dev-toolchain dependencies except `body-parser`/`fast-uri` via `@hookform/resolvers ->
+ajv`, which Task 18 already named as the one moderate that reaches the application dependency
+path. No advisory is closed by this task.
+
+### EVERY BLOCKED ITEM, CARRIED FORWARD
+
+1. **Migration apply from a clean schema** - BLOCKED. No Docker, no Supabase CLI, no PAT; the
+   live project cannot be destructively reset. Reasons as recorded above.
+2. **Razorpay billing wiring (Phase 8)** - BLOCKED. `lib/billing/` is a refusing seam:
+   every method raises `PaymentNotConfiguredError`, `isPaymentConfigured()` is `false`, and no
+   provider SDK, HTTP client or environment variable exists in it. Test keys are absent. Nothing
+   about billing works.
+3. **Invitation email delivery** - BLOCKED. There is no mail provider, no send and no queue;
+   `/app/settings/members` shows the link for manual sharing and says so.
+4. **Password-reset mail delivery** - BLOCKED, and unverified here. Task 15 measured that the
+   provider refuses a known `example.com` address with `email_address_invalid`; the cause was
+   never established. The hosted project's redirect allow-list is not configured, so even a
+   successful send redirects to a URL GoTrue refuses. This task did not re-measure it.
+5. **Email confirmation is disabled** - BLOCKED and a production blocker. With it off, Supabase
+   sets `email_confirmed_at` implicitly at signup, so anybody who registers an invited address
+   can accept that invitation. Re-enabling confirmation is mandatory before launch.
+6. **Platform-console HTTP coverage** - BLOCKED beyond its current shape. Measured over real
+   HTTPS for the non-administrator refusal and a positive control, but rate limiting, CORS,
+   error-message leakage and load behaviour are not covered anywhere.
+7. **Gates that did not run here** - none. All five gates ran in this task. `npx playwright
+install` was required first and is recorded above. `npm audit` ran and is reported above.
+   Note what the running of these gates does NOT cover: the HTTP/JWT isolation measurement of
+   Tasks 9-10 is cited from the record, not repeated here; nor are the audit-metadata and
+   password-reset provider measurements, and the clinicDayBounds sweep (601,920 samples) is
+   pinned by the test suite, not re-run here.
+8. **The two surviving isolation tenants and probe accounts** described above are residue in
+   the live project. They are inert, they are not this task's, and they are NOT claimed as
+   clean.
+
+### CONCLUSION
+
+The foundation is **verified**: typecheck, the four lint sub-gates, 899 tests in 39 files, the
+production build and 32 E2E tests across chromium and firefox all ran and all passed, with the
+one real defect this run found (the stale marketing-copy assertion, introduced by a copy
+correction on 2026-10-22 that no E2E run had caught since) fixed and re-proven. The 59-policy
+catalogue (39 public, 20 storage), the mutation-verified tenant-isolation suite, and the
+RLS/HTTP measurements in the record stand as evidence that the tenancy boundary holds.
+
+The foundation is **not a product**. Phases 4-10 remain unbuilt. There is no patient record, no
+appointment, no invoice, no notification, no subscription and no payment in this release; the
+marketing page deliberately names only what exists, and the dashboard shows no clinical numbers
+because there are none to show. **This system is NOT production-ready and must not be presented
+as such.** The blockers are the eight above, led by the disabled email confirmation and the
+unverified migration-from-zero apply.

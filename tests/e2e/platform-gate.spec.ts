@@ -76,8 +76,12 @@ test.describe("the marketing shell", () => {
   }) => {
     const anonymous = await page.goto("/");
     expect(anonymous?.status()).toBe(200);
+    // The hero names the ORGANIZATION as the isolation boundary. An earlier revision
+    // said "Each clinic gets its own workspace", which was false: an organization is
+    // the boundary and intra-tenant multi-clinic is not built (corrected on
+    // 2026-10-22). This locator was left behind, so the gate has been red since.
     await expect(
-      page.getByRole("heading", { name: /Each clinic gets its own workspace/ }),
+      page.getByRole("heading", { name: /Every organization is its own isolated workspace/ }),
     ).toBeVisible();
     await expect(
       page.getByRole("heading", { name: "What the foundation gives you" }),
