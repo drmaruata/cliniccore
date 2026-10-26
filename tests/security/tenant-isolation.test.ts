@@ -25,13 +25,18 @@
  * the tenant writes one, so the fixture seeds one of everything through the same client.
  * The DELETE refusals carry their authorised twin PER TABLE - a create-and-delete of the
  * tenant's own row - because a deleted `<table>_delete` policy yields the same zero
- * rows and no error as a refusing one. The FIVE command/table pairs that have NO
- * command policy at all (`audit_logs` UPDATE and DELETE, `organizations` DELETE,
- * `organization_memberships` DELETE, `clinics` DELETE) are refused for EVERY tenant,
- * so they have no authorised twin: their refusals are asserted in their own test, with
- * the two refusal shapes the shipped state measured AND SPLIT PER PAIR - permission
- * denied for `audit_logs`, whose UPDATE and DELETE privileges are revoked from
- * `authenticated`; RLS default-deny zero rows for the three policy-less DELETEs.
+ * rows and no error as a refusing one. The INSERT refusals carry the same per-table
+ * twin in the fixture's own-row insert shape, and `clinic_memberships` is the one
+ * honest exception in BOTH loops: its UNIQUE (membership_id, clinic_id) leaves no
+ * second pair to insert, so its twin is the fixture's own row - created through the
+ * same policy by the same client at seed time. The NINE command/table pairs that have
+ * NO command policy at all (`audit_logs` INSERT, UPDATE and DELETE; `organizations`,
+ * `clinics` and `organization_memberships` INSERT and DELETE) are refused for EVERY
+ * tenant, so they have no authorised twin: their refusals are asserted in their own
+ * test, with the THREE refusal shapes the shipped state measured AND SPLIT PER PAIR -
+ * permission denied for `audit_logs`, whose three write privileges are revoked from
+ * `authenticated`; an RLS RAISE for the three policy-less INSERTs, which have no row
+ * to filter; RLS default-deny ZERO ROWS for the three policy-less DELETEs.
  *
  * WHY A MID-SEED FAILURE CLEANS UP. If `seedTwoOrganizations` throws after tenant A
  * exists, the `beforeAll` catch destroys the half-finished seed through the fixture's
@@ -64,6 +69,7 @@ import {
   admin,
   clientOverJar,
   createProbeSession,
+  createdProbeUserIds,
   deleteProbeUsers,
 } from "../helpers/auth-session-fixture";
 import { dbDescribe, expectRejection } from "../integration/helpers/database";
@@ -104,9 +110,10 @@ const TENANT_TABLES: Array<{ table: string; tenant: string; key: string[] }> = [
 ];
 
 /**
- * Tables with an UPDATE policy the tenant's own administrator can pass. `audit_logs` is
- * the one without one - its UPDATE and DELETE privileges are revoked from `authenticated`
- * outright, which is asserted in its own test below.
+ * Tables with an UPDATE policy the tenant's own administrator can pass, driving BOTH
+ * halves: the client refusal and the mutation that proves it load-bearing. `audit_logs`
+ * is the one without one - its UPDATE and DELETE privileges are revoked from
+ * `authenticated` outright, which is asserted in its own test below.
  */
 const UPDATABLE = [
   "patients",
@@ -130,20 +137,6 @@ const DELETABLE = [
   "user_role_assignments",
   "invitations",
   "role_permissions",
-];
-
-/** Tables whose UPDATE policy is mutation-verified. MEASURED: all ten exist; `organizations_update` was restored by `01880`. */
-const UPDATE_MUTATIONS = [
-  "patients",
-  "patient_identifiers",
-  "clinics",
-  "clinic_memberships",
-  "organization_memberships",
-  "roles",
-  "user_role_assignments",
-  "invitations",
-  "role_permissions",
-  "organizations",
 ];
 
 /**
@@ -490,7 +483,27 @@ dbDescribe("tenant isolation across two organizations", () => {
   });
 
   afterAll(async () => {
-    if (seeded !== undefined) await destroyTwoOrganizations(seeded);
+    try {
+      if (seeded !== undefined) await destroyTwoOrganizations(seeded);
+    } finally {
+      // THE LAST NET. `destroyTwoOrganizations` removes the accounts it was given, and a
+      // test whose own finally did not run - a throw between `createProbeSession` and the
+      // session read, or a failure before a test's own cleanup - leaves its account
+      // behind. The auth fixture registered every probe user it created, so draining that
+      // list here catches all of them.
+      //
+      // NEVER THE TWO SEEDED ACCOUNTS. Deleting an auth user cascades its memberships and
+      // NOT its organization - there is no owner column - so if the destroy failed, a
+      // blanket delete here would orphan the tenant: no account, no way for the next run
+      // to find it, and the residue report already names it. Their cleanup belongs to the
+      // destroy that failed, and its own throw is the report.
+      const seededIds = new Set(
+        [seeded?.userA, seeded?.userB].filter((id): id is string => id !== undefined),
+      );
+      const stragglers = [...createdProbeUserIds].filter((id) => !seededIds.has(id));
+      const leftBehind = await deleteProbeUsers(stragglers);
+      expect(leftBehind, "no probe account this file created may survive the run").toEqual([]);
+    }
   });
 
   describe("a member of one tenant can read only its own rows", () => {
@@ -623,35 +636,39 @@ dbDescribe("tenant isolation across two organizations", () => {
     }, 180_000);
 
     it("refuses the commands that have no command policy at all", async () => {
-      const { clientA, orgB } = fixture();
-      // The FIVE command/table pairs the plan's EVERY-table rule demands that no policy
-      // covers: `organizations`, `organization_memberships` and `clinics` have no DELETE
-      // policy, and `audit_logs` has no UPDATE policy and neither UPDATE nor DELETE
-      // privileges for `authenticated`. MEASURED, the pairs take TWO refusal shapes,
-      // and both are ASSERTED here rather than documented: the audit statements are
-      // refused with "permission denied" before any policy is consulted
-      // (`has_table_privilege` is false for both), while the three policy-less DELETEs
-      // are RLS default-deny - the statement succeeds and matches zero rows, no error.
-      // A re-granted privilege or a shape change fails this test, not a comment.
+      const { clientA, orgB, userA } = fixture();
+      // The NINE command/table pairs the plan's EVERY-table rule demands that no policy
+      // covers: `organizations`, `organization_memberships` and `clinics` have neither an
+      // INSERT nor a DELETE policy, and `audit_logs` has no INSERT, UPDATE or DELETE
+      // policy and none of those three privileges for `authenticated`. MEASURED, the
+      // pairs take THREE refusal shapes, and each is ASSERTED here rather than
+      // documented: the audit statements are refused with "permission denied" before any
+      // policy is consulted (`has_table_privilege` is false for all three); the three
+      // policy-less INSERTs RAISE "new row violates row-level security policy", because
+      // an INSERT has no existing row to filter; the three policy-less DELETEs are RLS
+      // default-deny - the statement succeeds and matches zero rows, no error. A
+      // re-granted privilege or a shape change fails this test, not a comment.
       // `tests/security/rls-policies.test.ts` already pins the exact 39-policy
-      // catalogue, so ADDING a permissive `clinics_delete` fails a gate; what this
-      // test adds is the BEHAVIOURAL refusal, which no catalogue assertion can see.
-      // These commands are refused for EVERY tenant - there is no authorised twin to
-      // control against, because the refusal itself is the design.
+      // catalogue, so ADDING a permissive `clinics_delete` or `clinics_write` fails a
+      // gate; what this test adds is the BEHAVIOURAL refusal, which no catalogue
+      // assertion can see. These commands are refused for EVERY tenant - there is no
+      // authorised twin to control against, because the refusal itself is the design.
+      const suffix = randomUUID().slice(0, 8);
       const bAudit = await rowOfTenant("b", "audit_logs");
       const bMembership = await rowOfTenant("b", "organization_memberships");
       const bOrganization = await rowOfTenant("b", "organizations");
       const bClinic = await rowOfTenant("b", "clinics");
 
-      // The revoked-privilege shape: the statement RAISES.
+      // The revoked-privilege and RLS-raise shapes: the statement RAISES.
       const mustRaise = (
         reply: { data: unknown[] | null; error: { message: string } | null },
         why: string,
+        shape: RegExp,
       ) => {
         expect(reply.error, why).not.toBeNull();
         expect(
-          /permission denied/i.test(reply.error?.message ?? ""),
-          `${why}: the refusal must be the revoked privilege, got: ${reply.error?.message}`,
+          shape.test(reply.error?.message ?? ""),
+          `${why}: the refusal must match ${shape}, got: ${reply.error?.message}`,
         ).toBe(true);
       };
       // The policy-less shape: the statement SUCCEEDS and matches zero rows.
@@ -666,6 +683,16 @@ dbDescribe("tenant isolation across two organizations", () => {
         expect((reply.data ?? []).length, why).toBe(0);
       };
 
+      // audit_logs: INSERT, UPDATE and DELETE all lack the privilege, one shape.
+      mustRaise(
+        await clientA.from("audit_logs").insert({
+          organization_id: orgB.organizationId,
+          action: `cross.insert.${suffix}`,
+          resource_type: "probe",
+        }),
+        "a tenant must not be able to insert an audit row",
+        /permission denied/i,
+      );
       mustRaise(
         await clientA
           .from("audit_logs")
@@ -673,6 +700,7 @@ dbDescribe("tenant isolation across two organizations", () => {
           .eq("id", bAudit["id"] ?? "")
           .select(),
         "a tenant must not be able to update another tenant's audit row",
+        /permission denied/i,
       );
       mustRaise(
         await clientA
@@ -681,7 +709,44 @@ dbDescribe("tenant isolation across two organizations", () => {
           .eq("id", bAudit["id"] ?? "")
           .select(),
         "a tenant must not be able to delete another tenant's audit row",
+        /permission denied/i,
       );
+
+      // The three policy-less INSERTs: no policy means no row may be written, and the
+      // claim is stronger than the DELETEs below because an INSERT that got through
+      // would LAND. A FRESH organization id is used rather than B's, because B's id is
+      // already taken and a permissive policy would then break on the primary key
+      // instead of admitting the write.
+      const freshOrgId = randomUUID();
+      const clinicName = `Cross clinic ${suffix}`;
+      mustRaise(
+        await clientA.from("organizations").insert({
+          id: freshOrgId,
+          name: "Cross-tenant",
+          slug: `cross-org-${suffix}`,
+        }),
+        "a tenant must not be able to insert an organization row",
+        /row-level security/i,
+      );
+      mustRaise(
+        await clientA.from("clinics").insert({
+          organization_id: orgB.organizationId,
+          name: clinicName,
+        }),
+        "a tenant must not be able to insert a clinic row",
+        /row-level security/i,
+      );
+      mustRaise(
+        await clientA.from("organization_memberships").insert({
+          organization_id: orgB.organizationId,
+          user_id: userA,
+        }),
+        "a tenant must not be able to insert a membership row",
+        /row-level security/i,
+      );
+
+      // The three policy-less DELETEs: default-deny, so the statement succeeds with no
+      // rows returned rather than raising.
       mustFilter(
         await clientA.from("organizations").delete().eq("id", orgB.organizationId).select(),
         "a tenant must not be able to delete another tenant's organization",
@@ -703,7 +768,24 @@ dbDescribe("tenant isolation across two organizations", () => {
         "a tenant must not be able to delete another tenant's clinic",
       );
 
-      // And the five targets are untouched, not merely unreported.
+      // Nothing landed, read by the service role - the INSERT refusals are the only
+      // place a write could have become a row rather than a filtered-out statement.
+      const lodgedOrg = await admin().from("organizations").select("id").eq("id", freshOrgId);
+      expect(lodgedOrg.data ?? [], "no organization row may have landed").toEqual([]);
+      const lodgedClinic = await admin()
+        .from("clinics")
+        .select("id")
+        .eq("organization_id", orgB.organizationId)
+        .eq("name", clinicName);
+      expect(lodgedClinic.data ?? [], "no clinic row may have landed").toEqual([]);
+      const lodgedMembership = await admin()
+        .from("organization_memberships")
+        .select("id")
+        .eq("organization_id", orgB.organizationId)
+        .eq("user_id", userA);
+      expect(lodgedMembership.data ?? [], "no membership row may have landed").toEqual([]);
+
+      // And the rows the DELETEs targeted are untouched, not merely unreported.
       expect(await rowOfTenant("b", "audit_logs")).toEqual(bAudit);
       expect(await rowOfTenant("b", "organizations")).toEqual(bOrganization);
       expect(await rowOfTenant("b", "organization_memberships")).toEqual(bMembership);
@@ -739,6 +821,128 @@ dbDescribe("tenant isolation across two organizations", () => {
         `A must be able to create a patient in its own tenant: ${own.error?.message}`,
       ).toBeNull();
     }, 60_000);
+
+    it("cannot insert a row into the other tenant's organization", async () => {
+      const { orgA, orgB, clientA, userA } = fixture();
+      const suffix = randomUUID().slice(0, 8);
+
+      // MEASURED, the shipped refusal for every one of the five is the WITH-CHECK: the
+      // statement RAISES "new row violates row-level security policy". The shape is
+      // pinned rather than merely checked, because it is what makes the mutation half's
+      // loosening catchable - with the with-check opened to (true) the insert either
+      // lands or is stopped by an integrity constraint, and either way the message
+      // stops matching.
+      const mustRefuseRls = async (
+        table: string,
+        payload: Record<string, unknown>,
+      ): Promise<void> => {
+        const reply = await clientA.from(table).insert(payload);
+        expect(reply.error, `a cross-tenant insert into ${table} must be refused`).not.toBeNull();
+        expect(
+          /row-level security/i.test(reply.error?.message ?? ""),
+          `${table}: the refusal must be the with-check, got: ${reply.error?.message}`,
+        ).toBe(true);
+      };
+
+      // B's patient, in B's organization, with B's organization_id on the row.
+      await mustRefuseRls("patient_identifiers", {
+        organization_id: orgB.organizationId,
+        patient_id: orgB.patientId,
+        kind: "mrn_alt",
+        value: `CROSS-${suffix}`,
+      });
+      // B's membership in B's clinic - the with-check fails before the unique key is
+      // even reached, which the mutation half proves by loosening the policy and
+      // watching the unique key refuse instead.
+      await mustRefuseRls("clinic_memberships", {
+        organization_id: orgB.organizationId,
+        membership_id: orgB.membershipId,
+        clinic_id: orgB.clinicId,
+      });
+      // A brand-new role in B's organization.
+      await mustRefuseRls("roles", {
+        organization_id: orgB.organizationId,
+        key: `cross_${suffix}`,
+        name: "Cross-tenant",
+      });
+      // A permission row onto a FRESH role of B's, staged by the service role so no
+      // existing (role_id, permission_key) pair of B's is in the way - under the
+      // loosened policy the break is then the insert landing, not a collision.
+      const bRole = await admin()
+        .from("roles")
+        .insert({
+          organization_id: orgB.organizationId,
+          key: `probe_cross_${suffix}`,
+          name: "Probe",
+        })
+        .select("id");
+      expect(bRole.error, `staging B's fresh role: ${bRole.error?.message}`).toBeNull();
+      await mustRefuseRls("role_permissions", {
+        role_id: bRole.data?.[0]?.id,
+        permission_key: "patients.read",
+      });
+      // An invitation into B's organization naming B's own role: the `guard_role_org_scope`
+      // BEFORE trigger passes the consistent pair, so the refusal is the with-check alone.
+      await mustRefuseRls("invitations", {
+        organization_id: orgB.organizationId,
+        email: `cross-${suffix}@example.test`,
+        role_id: orgB.adminRoleId,
+        token_hash: `cross-token-${suffix}`,
+        invited_by: userA,
+        expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        clinic_ids: [],
+      });
+
+      // The authorised twin PER TABLE - the fixture's own-row insert shape, reused, so
+      // a policy that refused every insert could not pass the five refusals above.
+      // `clinic_memberships` is the one honest exception: its UNIQUE (membership_id,
+      // clinic_id) leaves no second pair to insert, so its twin is the fixture's own
+      // row itself - which was inserted through this very policy by the same client at
+      // seed time.
+      const mustAccept = async (table: string, payload: Record<string, unknown>): Promise<void> => {
+        const reply = await clientA.from(table).insert(payload);
+        expect(
+          reply.error,
+          `A must be able to insert its own row into ${table}: ${reply.error?.message}`,
+        ).toBeNull();
+      };
+      await mustAccept("patient_identifiers", {
+        organization_id: orgA.organizationId,
+        patient_id: orgA.patientId,
+        kind: "mrn_alt",
+        value: `INSERT-CTRL-${suffix}`,
+      });
+      await mustAccept("roles", {
+        organization_id: orgA.organizationId,
+        key: `insert_ctrl_${suffix}`,
+        name: "Control",
+      });
+      const aRole = await clientA
+        .from("roles")
+        .insert({
+          organization_id: orgA.organizationId,
+          key: `insert_perm_${suffix}`,
+          name: "Control",
+        })
+        .select("id");
+      expect(
+        aRole.error,
+        `A must be able to create its own fresh role: ${aRole.error?.message}`,
+      ).toBeNull();
+      await mustAccept("role_permissions", {
+        role_id: aRole.data?.[0]?.id,
+        permission_key: "patients.read",
+      });
+      await mustAccept("invitations", {
+        organization_id: orgA.organizationId,
+        email: `insert-ctrl-${suffix}@example.test`,
+        role_id: orgA.adminRoleId,
+        token_hash: `insert-ctrl-token-${suffix}`,
+        invited_by: userA,
+        expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        clinic_ids: [],
+      });
+    }, 120_000);
   });
 
   describe("a member of one tenant cannot raise its own access", () => {
@@ -1192,7 +1396,7 @@ dbDescribe("tenant isolation across two organizations", () => {
        * as EITHER is intact: a deleted or permissive update policy cannot leak another
        * tenant's rows while the select policy still stands.
        */
-      for (const table of UPDATE_MUTATIONS) {
+      for (const table of UPDATABLE) {
         const policy = `${table}_update`;
         const select = `${table}_select`;
         const noop = NOOP_COLUMN[table]!;
@@ -1273,6 +1477,147 @@ dbDescribe("tenant isolation across two organizations", () => {
             : /cross-tenant delete must touch nothing/,
         );
       }
+    }, 300_000);
+
+    it("proves the five insert policies the composite-key and ceiling tests do not reach are load-bearing", async () => {
+      const { orgA, orgB, userA } = fixture();
+
+      /*
+       * The same shape as the client half - the cross-tenant insert must be refused by
+       * the WITH-CHECK, and pinning that shape is what makes the loosening catchable:
+       * opened to (true), the insert either lands or is stopped by an integrity
+       * constraint, and the message stops matching either way. `patients` and
+       * `user_role_assignments` are covered by the composite-key and ceiling tests, so
+       * these are the five the rest of this file never exercised.
+       */
+      const loosenedBreak = /row-level security[\s\S]*but the statement succeeded/;
+
+      await harness.mutationBreaks(
+        "loosening patient_identifiers_write lets a cross-tenant identifier be written",
+        () => harness.openPolicy("patient_identifiers", "patient_identifiers_write"),
+        async () => {
+          const [row] = await harness.readPolicies(
+            "patient_identifiers",
+            "patient_identifiers_write",
+          );
+          expect(row?.with_check, "the insert policy must now accept anything").toBe("true");
+        },
+        async () => {
+          await harness.become(orgA.userId);
+          await expectRejection(
+            harness.owned,
+            `insert into public.patient_identifiers (organization_id, patient_id, kind, value)
+             values ($1, $2, 'mrn_alt', $3)`,
+            [orgB.organizationId, orgB.patientId, `LOOSENED-${randomUUID().slice(0, 8)}`],
+            /row-level security/i,
+          );
+        },
+        loosenedBreak,
+      );
+
+      await harness.mutationBreaks(
+        "loosening clinic_memberships_write lets a cross-tenant clinic membership reach the unique key",
+        () => harness.openPolicy("clinic_memberships", "clinic_memberships_write"),
+        async () => {
+          const [row] = await harness.readPolicies(
+            "clinic_memberships",
+            "clinic_memberships_write",
+          );
+          expect(row?.with_check, "the insert policy must now accept anything").toBe("true");
+        },
+        async () => {
+          await harness.become(orgA.userId);
+          await expectRejection(
+            harness.owned,
+            `insert into public.clinic_memberships (organization_id, membership_id, clinic_id)
+             values ($1, $2, $3)`,
+            [orgB.organizationId, orgB.membershipId, orgB.clinicId],
+            /row-level security/i,
+          );
+        },
+        // B's (membership, clinic) pair already exists, so with the with-check gone the
+        // insert is stopped by the UNIQUE key instead - the same two-layer break as the
+        // patients delete: the insert REACHED the table, which is the leak.
+        /clinic_memberships_membership_id_clinic_id_key/,
+      );
+
+      await harness.mutationBreaks(
+        "loosening roles_write lets a cross-tenant role be created",
+        () => harness.openPolicy("roles", "roles_write"),
+        async () => {
+          const [row] = await harness.readPolicies("roles", "roles_write");
+          expect(row?.with_check, "the insert policy must now accept anything").toBe("true");
+        },
+        async () => {
+          await harness.become(orgA.userId);
+          await expectRejection(
+            harness.owned,
+            `insert into public.roles (organization_id, key, name)
+             values ($1, $2, 'Cross-tenant')`,
+            [orgB.organizationId, `loosened_${randomUUID().slice(0, 8)}`],
+            /row-level security/i,
+          );
+        },
+        loosenedBreak,
+      );
+
+      await harness.mutationBreaks(
+        "loosening role_permissions_write lets a cross-tenant permission be granted",
+        () => harness.openPolicy("role_permissions", "role_permissions_write"),
+        async () => {
+          const [row] = await harness.readPolicies("role_permissions", "role_permissions_write");
+          expect(row?.with_check, "the insert policy must now accept anything").toBe("true");
+        },
+        async () => {
+          // B's fresh role is staged as the owner inside the savepoint, so no existing
+          // (role_id, permission_key) pair is in the way and the break under the
+          // loosened policy is the permission row landing.
+          await harness.resetRole();
+          const [staged] = await harness.owned.query<{ id: string }>(
+            `insert into public.roles (organization_id, key, name)
+             values ($1, $2, 'Probe') returning id`,
+            [orgB.organizationId, `probe_loosened_${randomUUID().slice(0, 8)}`],
+          );
+          await harness.become(orgA.userId);
+          await expectRejection(
+            harness.owned,
+            `insert into public.role_permissions (role_id, permission_key)
+             values ($1, 'patients.read')`,
+            [staged?.id],
+            /row-level security/i,
+          );
+        },
+        loosenedBreak,
+      );
+
+      await harness.mutationBreaks(
+        "loosening invitations_write lets a cross-tenant invitation be issued",
+        () => harness.openPolicy("invitations", "invitations_write"),
+        async () => {
+          const [row] = await harness.readPolicies("invitations", "invitations_write");
+          expect(row?.with_check, "the insert policy must now accept anything").toBe("true");
+        },
+        async () => {
+          // The `guard_role_org_scope` BEFORE trigger passes this consistent (B role in
+          // B's organization), so the refusal the with-check owns is the only one left.
+          await harness.become(orgA.userId);
+          await expectRejection(
+            harness.owned,
+            `insert into public.invitations
+               (organization_id, email, role_id, token_hash, invited_by, expires_at, clinic_ids)
+             values ($1, $2, $3, $4, $5, now() + interval '1 day', '{}')`,
+            [
+              orgB.organizationId,
+              `loosened-${randomUUID().slice(0, 8)}@example.test`,
+              orgB.adminRoleId,
+              `loosened-token-${randomUUID().slice(0, 8)}`,
+              userA,
+            ],
+            /row-level security/i,
+          );
+        },
+        loosenedBreak,
+      );
     }, 300_000);
 
     it("proves the composite foreign key refuses a cross-tenant reference behind the policy", async () => {
@@ -1495,14 +1840,15 @@ dbDescribe("tenant isolation across two organizations", () => {
       expect(cols[0]?.cols, "the live constraint must be the pair").toBe("organization_id,user_id");
     }, 60_000);
 
-    it("records every mutation it applied, so the report is the evidence it claims to be", async () => {
+    it("records every mutation it applied, and that nothing it touched survived", async () => {
       // The harness already THROWS if a mutation fails to break its assertion, breaks it
       // for an unexpected reason, or fails to restore; this pins the LEDGER, so a
       // mutation that applied, broke and restored but never recorded cannot pass
-      // silently. 33 = the 11 select drops, the patients leak, 10 update pairs, 6 delete
-      // pairs, the composite foreign key, the grant ceiling with its trigger, the
-      // platform guard, the storage policy and the unique key.
-      expect(mutationReport).toHaveLength(33);
+      // silently. 38 = the 11 select drops, the patients leak, 10 update pairs, 6
+      // delete pairs, the 5 insert policies, the composite foreign key, the grant
+      // ceiling with its trigger, the platform guard, the storage policy and the
+      // unique key.
+      expect(mutationReport).toHaveLength(38);
       // Every row must carry how the mutation was catalogued, the break it was required
       // to produce, and a message that satisfied that requirement. "applied" is the
       // descriptor for a mutation that returned nothing, which none here may, and an
@@ -1510,6 +1856,36 @@ dbDescribe("tenant isolation across two organizations", () => {
       expect(mutationReport.every((row) => row.cataloguedAs !== "applied")).toBe(true);
       expect(mutationReport.every((row) => row.mustBreak !== "")).toBe(true);
       expect(mutationReport.every((row) => row.brokeWith !== "")).toBe(true);
+
+      // THE WHOLE-CATALOGUE PROOF. Every mutation's restore is already proved field for
+      // field by the harness, but only for the ONE policy that mutation touched. This
+      // outer-session read is the complement: it sees the whole set after every mutation
+      // transaction has rolled back, so a policy no mutation touched cannot be quietly
+      // permissive, and the total cannot drift. MEASURED: 39 public + 20 storage
+      // policies, and the ONE shipped-permissive among them is `permissions_select`,
+      // because the permission catalogue is GLOBAL and read-only - it admits every
+      // signed-in reader BY DESIGN (migration 01100) and its writes are revoked - so the
+      // exemption is pinned too, and cannot quietly widen.
+      const catalogue = await harness.owned.query<{
+        schemaname: string;
+        policyname: string;
+        qual: string | null;
+        with_check: string | null;
+      }>(
+        `select schemaname, policyname, qual, with_check
+           from pg_catalog.pg_policies
+          where schemaname in ('public', 'storage')`,
+      );
+      expect(catalogue.length, "the live catalogue must hold the pinned policy total").toBe(59);
+      for (const row of catalogue) {
+        const name = `${row.schemaname}.${row.policyname}`;
+        if (row.schemaname === "public" && row.policyname === "permissions_select") {
+          expect(row.qual, "permissions_select must remain the shipped global read").toBe("true");
+          continue;
+        }
+        expect(row.qual, `${name} must not be left permissive`).not.toBe("true");
+        expect(row.with_check, `${name} must not be left permissive`).not.toBe("true");
+      }
     }, 30_000);
   });
 });

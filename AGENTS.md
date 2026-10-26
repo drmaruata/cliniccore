@@ -188,7 +188,7 @@ authenticated`, and `allowed_mime_types` = PDF/JPEG/PNG/DICOM/text. Object tenan
 
 ```bash
 npm run typecheck      # tsc --noEmit
-npm run lint           # eslint . && npm run check:secrets && npm run format:check
+npm run lint           # eslint . && check:secrets && format:check && migrations:check
 npm test               # vitest run
 npm run build          # next build (Turbopack); runs typecheck itself
 npm run format         # prettier --write .
@@ -196,7 +196,10 @@ npm run format         # prettier --write .
 
 Run in that order before claiming done. Two things catch people out:
 
-- **`lint` is three gates, not one.** A green `eslint` pass tells you nothing about the secret gate or formatting. `npm run lint` exits non-zero on any of the three; read the `check:secrets OK` line separately to know the security half passed.
+- **`lint` is FOUR gates, not one.** A green `eslint` pass tells you nothing about the
+  secret gate, formatting or the migration-lint gate. `npm run lint` exits non-zero on
+  any of the four; read the `check:secrets OK` line separately to know the security
+  half passed.
 - **`build` type-checks too**, so a typecheck failure shows up twice. Don't fix it in two places.
 
 Focused runs:
@@ -1213,7 +1216,7 @@ both exit 0 with no `SecurityFatalError`. Build results may be recorded as a pla
 
 Task 18 added `tests/security/tenant-isolation.test.ts`, `tests/security/fixtures.ts` and
 `tests/security/mutation-harness.ts` - two real tenants over real clients, a mutation
-harness that rolls everything back, and 33 recorded mutations. Consequences the next
+harness that rolls everything back, and 38 recorded mutations. Consequences the next
 agent must not have to rediscover:
 
 - **THE LIVE DATABASE HAD LOST `organizations_update`, AND `01880` RESTORED IT.** MEASURED:
@@ -1296,20 +1299,50 @@ permission_key` only), so the suite asks "is this row's ROLE one of A's own?" th
     FRESH role, because a permission row of a role the caller holds is refused by design
     (`NOT assigned_to_self`) and a duplicate org-wide assignment is refused by the
     `NULLS NOT DISTINCT` unique key.
-- **THE FIVE NO-POLICY COMMANDS ARE TESTED, NOT STATED, WITH BOTH REFUSAL SHAPES
-  ASSERTED.** `clinics` DELETE is the fifth, and the first version of this record said
-  "four" - MEASURED by the second review: `clinics` carries only SELECT and UPDATE
-  policies and `has_table_privilege('authenticated','public.clinics','DELETE')` is true,
-  so a cross-tenant delete is RLS default-deny, the same shape as the organizations and
-  membership DELETEs. The five pairs: `audit_logs` UPDATE and DELETE are refused with
+- **FIVE OF THE SEVEN INSERT POLICIES ARE MUTATION-VERIFIED, AND THE OTHER TWO ARE
+  COVERED ELSEWHERE.** `patient_identifiers_write`, `clinic_memberships_write`,
+  `roles_write`, `role_permissions_write` and `invitations_write` are loosened one at a
+  time; `patients_write` is loosened in the composite-key test (the foreign key is the
+  second layer) and `user_role_assignments_write` in the grant-ceiling test (with the
+  `guard_role_org_scope` trigger disabled in the same mutation). `clinic_memberships`'
+  break names the UNIQUE key rather than the policy, because once the with-check is gone
+  the insert REACHES the table and the key refuses it - reaching the table is the leak.
+- **THE NINE NO-POLICY COMMANDS ARE TESTED, NOT STATED, WITH ALL THREE REFUSAL SHAPES
+  ASSERTED.** The pair count has been wrong twice: the first record said four, and the
+  second review found `clinics` DELETE (it carries only SELECT and UPDATE policies, and
+  `has_table_privilege('authenticated','public.clinics','DELETE')` is true, so a
+  cross-tenant delete is RLS default-deny). The third review found the INSERT half:
+  `organizations`, `clinics` and `organization_memberships` carry NO INSERT policy
+  although the privilege is granted, and `audit_logs` carries no write privilege at all.
+  So NINE pairs, in THREE shapes: `audit_logs` INSERT, UPDATE and DELETE are refused with
   PERMISSION DENIED (the privileges are revoked from `authenticated` - MEASURED via
-  `has_table_privilege`), and `organizations`, `organization_memberships` and
-  `clinics` DELETE are RLS DEFAULT-DENY (the statement succeeds and matches zero rows,
-  no error). The two shapes are ASSERTED, not documented: a re-granted privilege or a
-  shape change fails the test. These commands are refused for EVERY tenant, so there is
-  no authorised twin - the refusal is the design. `rls-policies.test.ts` pins the exact
-  39-policy catalogue, so ADDING a permissive `clinics_delete` fails a gate; what the
-  suite adds is the BEHAVIOURAL refusal, which no catalogue assertion can see.
+  `has_table_privilege`); the three policy-less INSERTs RAISE "new row violates row-level
+  security policy", because an INSERT has no existing row to filter; and `organizations`,
+  `organization_memberships` and `clinics` DELETE are RLS DEFAULT-DENY (the statement
+  succeeds and matches zero rows, no error). The shapes are ASSERTED, not documented: a
+  re-granted privilege or a shape change fails the test. These commands are refused for
+  EVERY tenant, so there is no authorised twin - the refusal is the design.
+  `rls-policies.test.ts` pins the exact 39-policy catalogue, so ADDING a permissive
+  `clinics_delete` or `clinics_write` fails a gate; what the suite adds is the
+  BEHAVIOURAL refusal, which no catalogue assertion can see.
+- **THE `afterAll` NET NEVER DELETES THE TWO SEEDED ACCOUNTS.** `destroyTwoOrganizations`
+  removes the accounts it was given, and a test whose own cleanup did not run leaves its
+  account behind, so the hook drains `createdProbeUserIds` in a `finally`. But it must
+  EXCLUDE `userA` and `userB`: deleting an auth user cascades its memberships and NOT its
+  organization (there is no owner column), so if the destroy failed, a blanket delete
+  would orphan the tenant - no account, and no way for the next run to find it. The
+  destroy's own throw is the residue report.
+- **THE WHOLE-CATALOGUE READ IS THE COMPLEMENT TO THE PER-MUTATION RESTORE PROOF.** The
+  harness proves each restore field for field, but only for the ONE policy that mutation
+  touched. The ledger test then reads `pg_policies` on the OUTER session - after every
+  mutation transaction has rolled back - and pins 59 policies (39 public + 20 storage),
+  with `permissions_select` the ONE shipped-permissive and every other qual/with_check
+  not `true`. A policy no mutation touched cannot be quietly permissive, and the total
+  cannot drift.
+- **THE CLEANUP'S VERIFICATION WAS ONE PAGE DEEP.** `deleteProbeUsers` checked the
+  deletions against a SINGLE `listUsers` page of 200, so an account beyond the first page
+  was reported deleted without being read. It now walks at most 20 pages, stops on the
+  first short page, and throws on a list error instead of treating it as "no users".
 - **A MID-SEED FAILURE CLEANS UP.** `seedTwoOrganizations` creates tenant A then B; if
   the second call throws, `beforeAll`'s catch destroys the half-finished seed through
   `destroyPartialSeed()` - the tenants rediscovered from the accounts the auth fixture

@@ -217,7 +217,18 @@ export async function deleteProbeUsers(ids: string[]): Promise<string[]> {
       throw new Error(`cleanup failed for ${id}: ${error.message}`);
     }
   }
-  const { data } = await client.auth.admin.listUsers({ page: 1, perPage: 200 });
-  const remaining = new Set((data?.users ?? []).map((user) => user.id));
+  // PAGINATED, or the verification only sees the FIRST 200 accounts and a user beyond
+  // them is reported as deleted. Same bounded page walk as `deleteUserByEmail`, and a
+  // page comes back short exactly when it is the last one.
+  const remaining = new Set<string>();
+  for (let page = 1; page <= 20; page += 1) {
+    const { data, error } = await client.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) {
+      throw new Error(`cleanup could not list users to verify the deletions: ${error.message}`);
+    }
+    const users = data?.users ?? [];
+    for (const user of users) remaining.add(user.id);
+    if (users.length < 200) break;
+  }
   return ids.filter((id) => remaining.has(id));
 }

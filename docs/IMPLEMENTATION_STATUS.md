@@ -4486,8 +4486,8 @@ not the suite: **the live database had lost the `organizations_update` policy.**
 - `fileParallelism: false` in `vitest.config.ts`: the suite's policy DDL takes
   AccessExclusiveLocks that a concurrent catalogue reader can block on, and the DB-backed
   suites' cost is round trips, so serial files cost little and remove the interference.
-- The mutation ledger is pinned in-suite (33 rows, each with a catalogue action and a
-  break message) and written to the OS temp dir as
+- The mutation ledger is pinned in-suite (38 rows after review round 3; 33 at
+  implementation) and written to the OS temp dir as
   `tenant-isolation-mutation-report.txt`, because vitest 5 swallows afterAll console
   output on green runs.
 
@@ -4495,7 +4495,11 @@ not the suite: **the live database had lost the `organizations_update` policy.**
 
 Every entry is one mutation: applied, PROVED applied from `pg_policies`/`pg_constraint`/
 `pg_proc`/`pg_trigger`, run against the isolation assertion, observed to FAIL it, restored,
-and observed to PASS again. Recorded verbatim from the run:
+and observed to PASS again. Recorded verbatim from the IMPLEMENTATION run - 33 mutations,
+before review round 1 changed several assertion messages and round 3 added five INSERT
+mutations. The in-suite pin now reads 38; the five additions are named in the
+review-round-3 section, and each one was measured breaking with its pinned matcher.
+
 dropping patients_select breaks the "patients" isolation assertion
 catalogue: dropped policy patients_select on public.patients
 broke with: patients: A must see its own rows: expected 0 to be greater than 0
@@ -4685,6 +4689,88 @@ but every row now carries its required break beside the one it produced.
 `npm run format:check` all exit 0. The suite alone: 19 tests (18 before the review, plus
 the four-command no-policy test), all passing in ~133s. The live project after the runs:
 0 organizations, 0 audit logs, 0 auth users, 0 creation-ledger rows, 0 storage objects.
+
+## Task 18, review round 2 - the fifth no-policy command, and the shapes pinned
+
+The second review found no blocker. It found ONE gap and two nits, all closed in `e6b9d6e`.
+
+- GAP: `clinics` DELETE is a FIFTH command/table pair that no policy covers, and the
+  record said there were four. MEASURED: `clinics` carries only SELECT and UPDATE
+  policies, and `has_table_privilege('authenticated','public.clinics','DELETE')` is true,
+  so the cross-tenant delete is RLS default-deny - the statement succeeds and matches zero
+  rows, no error. The suite never issued one, so "every table, every command" was 10/11.
+- NIT: the refusal SHAPES were documented, not asserted - `refused` accepted either a
+  raise or zero rows for all the pairs. They are now SPLIT: `audit_logs` UPDATE and DELETE
+  must RAISE (permission denied), and `organizations`, `organization_memberships` and
+  `clinics` DELETE must return ZERO ROWS.
+- NIT: the grant-ceiling matcher stays loose, because its break IS the cross-tenant grant
+  succeeding; the `AGENTS.md` claim that every matcher names the policy is softened to
+  what is true - a matcher is REQUIRED for every mutation, but the message must be the
+  thing that actually broke.
+- The ledger stayed at 33: the round added assertions, not mutations.
+- PROCESS GAP: `e6b9d6e` changed the suite and `AGENTS.md` but not this file or the SDD
+  ledger, so the round-2 record is written here, in review round 3.
+
+## Task 18, review round 3 - the INSERT half, the catalogue, and the teardown that could orphan a tenant
+
+The third review found no blocker and closed seven gaps. The suite is 21 tests.
+
+- GAP 1, the INSERT half of the no-policy rule. MEASURED live: `organizations`, `clinics`
+  and `organization_memberships` have INSERT granted to `authenticated` and NO INSERT
+  policy, and `audit_logs` has neither an INSERT policy nor the privilege. The no-policy
+  test now asserts NINE command/table pairs in THREE shapes: permission denied for the
+  three `audit_logs` writes; an RLS RAISE for the three policy-less INSERTs (an INSERT has
+  no row to filter); RLS default-deny ZERO ROWS for the three policy-less DELETEs. The
+  INSERT attempts use a FRESH organization id (B's id would break on the primary key under
+  a permissive policy instead of landing), B's clinic, and a membership for `userA` in B;
+  the service role re-reads that nothing landed. The `organizations` case is the strong
+  one: a permissive policy would let a tenant create a tenant through the table door.
+- GAP 2, the client INSERT refusals were missing entirely. Five tables carry a write
+  policy (`patient_identifiers`, `clinic_memberships`, `roles`, `role_permissions`,
+  `invitations`) and each now has a cross-tenant refusal with an authorised twin. The
+  `clinic_memberships` twin is the fixture's own row - `UNIQUE (membership_id, clinic_id)`
+  leaves no second pair to insert - and the `role_permissions` twin grants a FRESH role,
+  because a permission row of a role the caller holds is refused by design.
+- GAP 3, five INSERT policies were never mutation-verified. `patient_identifiers_write`,
+  `clinic_memberships_write`, `roles_write`, `role_permissions_write` and
+  `invitations_write` are now loosened one at a time; `patients_write` and
+  `user_role_assignments_write` are covered by the composite-key and ceiling mutations.
+  The ledger is 38 (33 + 5). `clinic_memberships`' required break names the UNIQUE key,
+  because with the with-check gone the insert REACHES the table - reaching it is the leak.
+- GAP 4, the whole catalogue. The ledger test now reads `pg_policies` on the OUTER session
+  after every mutation transaction has rolled back: 59 policies (39 public + 20 storage),
+  `permissions_select` the ONE shipped-permissive, every other qual/with_check not `true`.
+  The per-mutation restore proof covers only the policy that mutation touched; this covers
+  the set.
+- GAP 5, the teardown could orphan a tenant. The new last-net drained
+  `createdProbeUserIds`, including `userA`/`userB`; if `destroyTwoOrganizations` failed,
+  deleting those accounts would cascade their memberships but leave the ORGANIZATION (no
+  owner column), and no later run could find it. The net now runs in `finally` and EXCLUDES
+  the two seeded accounts; the destroy's own throw is the residue report.
+- GAP 6, the cleanup's verification was one page deep. `deleteProbeUsers` checked
+  `listUsers` ONCE (200 accounts), so a survivor beyond page 1 was reported deleted. It
+  now walks at most 20 pages, stops on the first short page, and throws on a list error.
+- GAP 7, two source-level overstatements. `UPDATABLE` and `UPDATE_MUTATIONS` were the same
+  ten tables listed twice, so the refusal test and its mutation could drift; they are one
+  list. The insert-mutation test claimed "every table with a write path" while covering
+  five; it is renamed. The whole-catalogue comment claimed an outer-session re-read per
+  mutation that does not exist; it now says what the read actually adds.
+- MEASURED, the suite alone: 21 tests pass in 167s; the report holds 38 mutations, every
+  one breaking with its pinned matcher. Residue after the run: 0 organizations, 0 auth
+  users, 0 memberships, 0 clinics, 0 patients, 0 invitations, 0 assignments, 0 audit logs,
+  0 creation-ledger rows, 0 storage objects, 1 role (the platform role).
+- RECORDED LIMITS: the mutation half still cannot cover a `roles` DELETE (the trigger
+  refuses every seeded role for its own tenant too) or a policy-less INSERT (there is no
+  policy to loosen - those refusals are asserted in the client half only).
+
+### THE GATES
+
+`npm run typecheck`, `npm run lint` (eslint 0 errors - one pre-existing warning in
+`.opencode/plugins/graphify.js`; `check:secrets OK`; `format:check` clean;
+`migrations:check` 61 files), `npm run test` (39 files, 899 tests), `npm run build` and
+`npm run format:check` all exit 0. The suite alone is 21 of those tests. The live project
+after the runs reads 0 organizations, 0 auth users, 0 audit logs, 0 creation-ledger rows,
+0 storage objects and 1 role (the platform role).
 
 ---
 
