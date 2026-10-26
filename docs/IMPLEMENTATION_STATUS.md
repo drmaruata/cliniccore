@@ -4825,3 +4825,87 @@ The one runtime-adjacent chain: `@hookform/resolvers → ajv → fast-uri@3.1.8`
 URI scheme spoofing among four fast-uri findings). `@hookform/resolvers` IS a production
 dependency, but this app's validation layer is zod; no ajv-backed resolution path is
 exercised. Recorded as a residual risk and a later product decision, NOT as fixed.
+
+## Task 19 - the documentation set describes the actual foundation
+
+Task 19 added the documentation set required by spec §9. No application code, SQL, test or
+configuration changed. Outside the new files, false claims in `AGENTS.md` and `.env.example`
+were corrected; everything else in both files is unchanged.
+
+### Created
+
+- `README.md` - what the foundation is, prerequisites, environment variable names, scripts,
+  the four gates inside `lint`, the migration rule, test suites, documentation index and the
+  honest status.
+- `docs/PRD.md`, `docs/SRS.md`, `docs/ARCHITECTURE.md`, `docs/DATABASE_SCHEMA.md`,
+  `docs/RLS_POLICIES.md`, `docs/SECURITY.md`, `docs/DESIGN_SYSTEM.md`,
+  `docs/ROUTES_AND_PERMISSIONS.md`, `docs/TESTING.md`, `docs/DEPLOYMENT.md`,
+  `docs/OPERATIONS.md`.
+- This entry.
+
+### Measured, not copied
+
+| Measure                    | Value                                                 | Source                                                           |
+| -------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
+| Migration files            | 61, `00100`-`01880`                                   | `supabase/migrations/`; `migrations:check`                       |
+| Applied history            | 61 rows, every file named once                        | `supabase_migrations.schema_migrations` over `TEST_DATABASE_URL` |
+| Public tables              | 16, all `relrowsecurity = true`, none forced          | `pg_class`                                                       |
+| Columns                    | 100                                                   | `information_schema.columns`                                     |
+| Public foreign keys        | 21, of which 5 composite                              | `pg_constraint`                                                  |
+| Unique / check constraints | 12 / 6                                                | `pg_constraint`                                                  |
+| Indexes / triggers         | 36 / 18 trigger rows                                  | `pg_indexes`, `pg_trigger`                                       |
+| Public policies            | 39 across 14 of the 16 tables                         | `pg_policies`                                                    |
+| Storage policies / buckets | 20 / 5, all private                                   | `pg_policies`, `storage.buckets`                                 |
+| Public application RPCs    | 10                                                    | `types/database.types.ts` `Functions`                            |
+| `private` helpers          | 35                                                    | `pg_proc`                                                        |
+| Permissions / roles        | 21 / 15 (14 tenant roles plus `platform_super_admin`) | `public.permissions`, `lib/permissions/registry.ts`              |
+
+The brief says "15 catalogue tables"; the live catalogue holds **16 public tables**, and
+**14** of them carry policies. `tenant_sequences` and `tenant_creation_events` carry none.
+The artefacts and `AGENTS.md` use the measured value.
+
+### Gates, 2026-10-26
+
+| Gate                | Measured result                                                                                                                                                                                             |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run format`    | exit 0                                                                                                                                                                                                      |
+| `npm run typecheck` | exit 0                                                                                                                                                                                                      |
+| `npm run lint`      | exit 0. `eslint` 0 errors and 1 pre-existing warning in `.opencode/plugins/graphify.js`; `check:secrets OK`; `format:check` "All matched files use Prettier code style!"; `migrations:check` 61 files valid |
+| `npm test`          | exit 0: **39 files, 899 tests passed**, 464.42 s                                                                                                                                                            |
+
+### Banned claims
+
+`rg` is not on `PATH`; the command failed with "The term 'rg' is not recognized as the name of
+a cmdlet, function, script file, or operable program." The harness grep tool was run over
+`README.md`, `AGENTS.md` and the top-level `docs/*.md` (excluding `docs/superpowers/**`) with
+the same pattern. Every hit is benign: `isolation` / `isolating`, `ISO 4217` in the currency
+discussion, and `advisory` in the build-gate record. No certification, compliance, uptime,
+customer-count, integration or availability-percentage claim exists, and no hit is marked as
+implemented when it is not.
+
+### Corrected false claims
+
+- `AGENTS.md` said Tasks 1-18 were complete and Task 19 was next. It now says 1-19 complete,
+  Task 20 next.
+- It said the migration range ended at `01850`. It ends at `01880`, which is in the history.
+- It said "39 policies across 14 of the 15 tables". The catalogue has 16 public tables, 14
+  with policies, and `tenant_creation_events` also has none.
+- It called the signed-in routes "the `(app)` routes". They are `app/app/`, a real segment.
+- It said `tests/e2e/` and `tests/integration/` "hold only tracked placeholders", and that the
+  `e2e` scripts carried `--pass-with-no-tests`. Four E2E specs and fourteen integration
+  suites are real; `e2e` is a plain `playwright test`, and only `test:integration` keeps the
+  flag.
+- It said the marketing shell "replaces the ROOT `app/page.tsx` (which still serves `/`)".
+  The root page was deleted; `app/(marketing)/page.tsx` serves `/`.
+- `.env.example` described `NEXT_PUBLIC_SUPABASE_ANON_KEY` without saying nothing reads it.
+  It now says no client in this repository reads it, measured by grep.
+
+### Conclusion
+
+The documentation describes the **actual foundation**, not a product. Phases 4-10 remain
+unbuilt, and the product is **not production-ready**. The records a reader must not miss:
+invitation email delivery is BLOCKED; password-reset delivery is unverified and the hosted
+redirect allow-list is not configured; email confirmation is disabled and re-enabling it is a
+mandatory pre-launch step; billing is a refusing seam with no provider; there are no clinical
+modules; and rate-limit, CORS, error-leakage, load, backup and monitoring coverage do not
+exist.

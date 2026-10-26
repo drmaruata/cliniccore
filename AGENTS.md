@@ -21,8 +21,8 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1-18 of 20 are complete** (18 = the mutation-verified tenant isolation suite).
-  **Task 19 is next.** Run `git log --oneline` and
+  **Tasks 1-19 of 20 are complete** (18 = the mutation-verified tenant isolation suite,
+  19 = the documentation set). **Task 20 is next.** Run `git log --oneline` and
   `git status` before you start. Briefs, reports and review packages are in
   `.superpowers/sdd/cliniccore-foundation/`.
 
@@ -39,7 +39,7 @@ npm run build && npm run format:check`.
 - **Run the gates LAST, immediately before the commit.** A doc or plan edit made after a
   green run re-breaks `format:check` and leaves the report claiming a `lint 0` it no longer
   has. This happened twice on Task 6. `npm run format` after any markdown edit.
-- `supabase/migrations/` now holds `00100`–`01850` (extensions, core functions, identity/tenancy
+- `supabase/migrations/` now holds `00100`–`01880` (extensions, core functions, identity/tenancy
   schema, tenancy hardening, authorization schema + platform seed, authorization functions and
   their two corrections, onboarding RPC, tenant data, audit/platform and the Task 8 hardening,
   then the four Task 9 RLS migrations plus `01210`'s identifier correction, `01220`'s privilege
@@ -56,10 +56,11 @@ npm run build && npm run format:check`.
   Task 18's `01880` the restoration of `organizations_update` (which the live database
   had silently lost - see the Task 18 section), all
   applied - 61 history rows, all named by filename. **RLS is no longer deny-all: 39 policies across 14 of
-  the 15 tables**, asserted exactly (name, command, non-null predicates, and the total) by
+  the 16 public tables**, asserted exactly (name, command, non-null predicates, and the total) by
   `tests/security/rls-policies.test.ts`. `tenant_sequences` has **zero** policies and revoked
-  writes by design; its only writer is the `next_sequence_value` definer. `lib/supabase/` and
-  `proxy.ts` landed in Task 12; the `(app)` routes landed in Task 16. **Storage:** five private
+  writes by design; its only writer is the `next_sequence_value` definer.
+  `tenant_creation_events` also has none - it is a write-only definer ledger. `lib/supabase/` and
+  `proxy.ts` landed in Task 12; the `app/app/` routes landed in Task 16. **Storage:** five private
   buckets (`patient-documents`, `clinical-attachments`, `investigation-reports`, `org-assets`,
   `prescription-documents`), all `public = false`, 20 policies on `storage.objects` all `to
 authenticated`, and `allowed_mime_types` = PDF/JPEG/PNG/DICOM/text. Object tenancy is the
@@ -252,8 +253,8 @@ These were all measured. Each one silently produces a green build and a wrong re
 ## Testing quirks
 
 - `vitest.config.ts` runs in `jsdom` so shadcn components can render.
-- `tests/e2e/` and `tests/integration/` currently hold only tracked placeholders. Playwright browsers are **not installed** — run `npx playwright install` before the first real E2E spec.
-- The `e2e` / `test:e2e` scripts carry `--pass-with-no-tests` as a temporary measure. **Task 15 removes it** when it adds the first real spec; after that an empty spec set must be a hard failure again.
+- `tests/e2e/` holds four real specs (`auth`, `invitations`, `onboarding`, `platform-gate`) and `tests/integration/` holds fourteen real suites; each still carries its original `placeholder.ts`. Playwright browsers are **not installed** — run `npx playwright install` before running E2E.
+- The `e2e` / `test:e2e` scripts are a plain `playwright test`, so an empty spec set is a hard failure. `test:integration` still carries `--passWithNoTests`.
 - Playwright's `webServer` runs `npm run build && npm run start`, not `dev`, so a build-time break cannot hide from E2E.
 - A scratch measurement file must never be left in `tests/` (see Current state). That is how the current red gates happened.
 
@@ -607,7 +608,8 @@ invitation flow. Consequences the next agent must not have to rediscover:
   created `app/app/`, NOT `app/(app)/`.** The live routes are `/app`, `/app/dashboard`,
   `/app/onboarding`, `/app/settings/members` and `/invite/[token]`. A route group would
   have added a pathless directory level with no behaviour, so none was created. Task 17's
-  marketing shell replaces the ROOT `app/page.tsx` (which still serves `/`).
+  marketing shell serves `/` from `app/(marketing)/page.tsx`; the old root `app/page.tsx`
+  was deleted, because two pages serving `/` is a build conflict.
 - **THE SHELL HAS FOUR STATES, AND ONLY ONE OF THEM IS "NO ORGANIZATION".**
   (1) ZERO memberships -> the onboarding screen, rendered INSTEAD of the shell.
   (2) MEMBERSHIPS, BUT ALL OF THEM HIDDEN -> the "your access is not active" notice,
