@@ -4909,3 +4909,35 @@ redirect allow-list is not configured; email confirmation is disabled and re-ena
 mandatory pre-launch step; billing is a refusing seam with no provider; there are no clinical
 modules; and rate-limit, CORS, error-leakage, load, backup and monitoring coverage do not
 exist.
+
+### Task 19 fix round 1
+
+A review of the Task 19 documentation found four factual errors and several smaller ones. The
+documentation set was corrected; **no application code, SQL, test or runtime configuration
+changed**. The paragraph above that says "no ... configuration changed" is corrected to "no runtime
+configuration": `.env.example` - the only tracked environment template - was edited to say that no
+client reads `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and that edit is not a runtime setting.
+
+- **Storage policy roles.** `pg_policies` reports 15 policies `to authenticated` and the five
+  DELETE policies `to public`, not 20 `to authenticated`. `AGENTS.md`, the Task 19 report and the
+  rest of the set now say so. The report's table had presented the wrong value as measured.
+- **Email confirmation does expose the invitation path.** With "Confirm email" off, Supabase
+  implicitly sets `email_confirmed_at` at signup, so an attacker who registers the invited address
+  passes the acceptance check. The check binds the account to the stored address; it does not prove
+  mailbox control. `SECURITY.md`, `AGENTS.md`, `OPERATIONS.md` and `SRS.md` now say so, and
+  re-enabling confirmation remains a production blocker.
+- **`invitations.clinic_ids` is `uuid[]`**, not `text[]` (`information_schema.columns`).
+- **`delete_organization` does not cascade to storage.** It deletes `public.organizations` only;
+  object tenancy is the object name, so `storage.objects` and its bytes survive and need manual
+  removal. `OPERATIONS.md` now says so, and the backup caveat no longer claims a storage cascade.
+- **Cookie `secure` follows `NODE_ENV`, not the request scheme** (`lib/auth/session.ts`):
+  `secure: process.env.NODE_ENV === "production"`. On plain HTTP in production the browser discards
+  the cookie; outside production it is not marked `secure`.
+- **`supabase/config.toml` is committed** and configures a local `supabase start` stack only.
+  `README.md` and `DEPLOYMENT.md` no longer say no CLI configuration is committed.
+- Smaller corrections: the storage section says five buckets; the trigger table is headed 14 rules
+  over 18 `pg_trigger` rows; removing a member needs the service role or SQL editor because
+  `organization_memberships` has no DELETE policy; `org-assets` UPDATE and DELETE omit the
+  archived/delete-marker clauses; the auth E2E spec uses the public signup endpoint exactly once;
+  and the anon key is documented as an unread placeholder whose plan-required fallback is not
+  implemented.

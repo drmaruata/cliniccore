@@ -111,7 +111,8 @@ Four policies per bucket, one per command. Every predicate is a conjunction of:
 - `private.can(org, '<permission>', private.storage_clinic_id(name))`;
 - `private.storage_clinic_id(name) in (select private.clinic_ids(org))` - except `org-assets`,
   which has no clinic segment;
-- on INSERT/UPDATE/DELETE, `owner_id = auth.uid()::text` and `(owner IS NULL OR owner = auth.uid())`.
+- on INSERT and UPDATE, `owner_id = auth.uid()::text` and `(owner IS NULL OR owner = auth.uid())`;
+  DELETE accepts the owner **or** a holder of `settings.manage`.
 
 | Bucket                   | SELECT                 | INSERT / UPDATE         | DELETE                                                  |
 | ------------------------ | ---------------------- | ----------------------- | ------------------------------------------------------- |
@@ -123,8 +124,11 @@ Four policies per bucket, one per command. Every predicate is a conjunction of:
 
 The SELECT/INSERT/UPDATE policies are `to authenticated`. The DELETE policies are `to public` but
 still require `auth.uid()` through `owner_id` and through `is_member`, so an unauthenticated caller
-matches nothing. `archived_at IS NULL` and `is_delete_marker IS FALSE` are part of the write
-predicates, so an object already archived cannot be updated or deleted again.
+matches nothing. For the four clinical buckets, `archived_at IS NULL` and
+`is_delete_marker IS FALSE` are part of the INSERT, UPDATE and DELETE predicates, so an object
+already archived cannot be touched again. `org-assets` keeps both clauses on INSERT but omits them
+on UPDATE and DELETE, so an archived org asset can still be updated or deleted - deliberate, because
+refusing to delete something the service role archived would be a dead end.
 
 `storage.protect_delete()` refuses a **direct** DELETE on `storage.objects` for every role unless
 `storage.allow_delete_query` is set. A DELETE test that does not set that GUC measures the trigger,

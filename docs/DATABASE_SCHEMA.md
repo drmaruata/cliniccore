@@ -64,7 +64,7 @@ tenant itself; `global` = no tenant.
 ### Full column list
 
 Types are abbreviated (`text`, `uuid`, `timestamptz`, `jsonb`, `bigint`, `boolean`, `date`,
-`citext`, `text[]`, `char(3)`). `!` = NOT NULL. Every `id` is `uuid` with `gen_random_uuid()`
+`citext`, `uuid[]`, `char(3)`). `!` = NOT NULL. Every `id` is `uuid` with `gen_random_uuid()`
 except `audit_logs.id`, which is `bigint` identity.
 
 | Table                      | Columns                                                                                                                                                                                                                                                                                            |
@@ -72,7 +72,7 @@ except `audit_logs.id`, which is `bigint` identity.
 | `audit_logs`               | `id bigint!`, `organization_id uuid`, `actor_user_id uuid`, `action text!`, `resource_type text!`, `resource_id uuid`, `metadata jsonb!`, `created_at timestamptz!`                                                                                                                                |
 | `clinic_memberships`       | `id uuid!`, `organization_id uuid!`, `membership_id uuid!`, `clinic_id uuid!`, `created_at timestamptz!`                                                                                                                                                                                           |
 | `clinics`                  | `id uuid!`, `organization_id uuid!`, `name text!`, `code citext`, `timezone text!`, `address jsonb`, `is_active boolean!`, `created_at timestamptz!`, `updated_at timestamptz!`                                                                                                                    |
-| `invitations`              | `id uuid!`, `organization_id uuid!`, `email citext!`, `role_id uuid!`, `token_hash text!`, `clinic_ids text[]!`, `expires_at timestamptz!`, `accepted_at timestamptz`, `invited_by uuid!`, `created_at timestamptz!`                                                                               |
+| `invitations`              | `id uuid!`, `organization_id uuid!`, `email citext!`, `role_id uuid!`, `token_hash text!`, `clinic_ids uuid[]!`, `expires_at timestamptz!`, `accepted_at timestamptz`, `invited_by uuid!`, `created_at timestamptz!`                                                                               |
 | `organization_memberships` | `id uuid!`, `organization_id uuid!`, `user_id uuid!`, `status text!`, `created_at timestamptz!`, `updated_at timestamptz!`                                                                                                                                                                         |
 | `organizations`            | `id uuid!`, `name text!`, `slug citext!`, `timezone text!`, `locale text!`, `currency char(3)!`, `status text!`, `created_at timestamptz!`, `updated_at timestamptz!`                                                                                                                              |
 | `patient_identifiers`      | `id uuid!`, `organization_id uuid!`, `patient_id uuid!`, `kind text!`, `value text!`, `created_at timestamptz!`                                                                                                                                                                                    |
@@ -154,7 +154,7 @@ rate-limit evidence for tenant creation.
 default-denies every read and write. Its only writer is `private.next_sequence_value(p_org_id,
 p_sequence_key)`, a definer that checks `private.is_member` itself.
 
-## Triggers (18)
+## Triggers (14 rules; 18 `pg_trigger` event rows)
 
 | Table                      | Trigger                        | Timing                | Does                                                                                                                                   |
 | -------------------------- | ------------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
@@ -220,7 +220,7 @@ No bucket sets `file_size_limit`; the MIME allow-list is the only object-level r
 lives on the bucket row rather than in a policy. Tenancy is the object **name**, because a text
 path cannot carry a foreign key - so the composite-key rule is satisfied here by policy, not by
 constraint. `private.storage_path_is_safe` refuses a dot-dot segment and requires the first
-segment to be a UUID. The four buckets share the same five MIME types; `public` is `false` on all
+segment to be a UUID. The five buckets share the same five MIME types; `public` is `false` on all
 five, which is what makes a signed URL the only way to read an object.
 
 `storage.objects` itself is owned by `supabase_storage_admin`, not `postgres`, and carries the 20

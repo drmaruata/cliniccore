@@ -78,6 +78,9 @@ job archives or purges anything.
   exists, so the cascade succeeds - but a **deliberate** role delete that still holds grants or
   assignments is still refused.
 - There is no soft delete and no restore for a deleted tenant.
+- **Storage objects survive.** `delete_organization` deletes only `public.organizations`; object
+  tenancy is the object name and there is no foreign key to cascade, so the bucket rows and their
+  bytes must be removed manually.
 - The `tenant_creation_events` row is **not** deleted: the ledger has no foreign key, because it is
   the rate-limit evidence. Delete the rows by `user_id` only when removing the accounts that made
   them.
@@ -109,7 +112,9 @@ override the ceiling - and if you do, say so in the audit trail.
 ### Remove a member
 
 There is no remove endpoint. Delete the `user_role_assignments` rows, then the
-`organization_memberships` row. Deleting the auth user cascades the membership but **not** the
+`organization_memberships` row. `authenticated` holds no DELETE policy on
+`organization_memberships`, so a client DELETE matches zero rows and reports no error - use the
+service role or the SQL editor. Deleting the auth user cascades the membership but **not** the
 organization, so do not expect a user deletion to tidy a tenant.
 
 ## Invitations
@@ -119,9 +124,11 @@ organization, so do not expect a user deletion to tidy a tenant.
   new one.
 - Lifetime is 7 days (`INVITATION_LIFETIME_DAYS`). An expired or accepted invitation cannot be
   re-issued; `invitations_update` refuses any change to an accepted row.
-- Redemption requires the acceptor's account address to be **confirmed** and equal to the
-  invitation's address, and the JWT's email claim to match the session. A bearer of the link who is
-  not the invited person gets nothing.
+- Redemption requires the acceptor's account address to equal the invitation's address, and the
+  JWT's email claim to match the session. A bearer whose account carries a different address gets
+  nothing. While "Confirm email" is disabled the address is implicitly confirmed at signup, so
+  this binds the account to the **stored** address and does not prove mailbox control - re-enabling
+  confirmation is the control.
 - An invitation naming `clinic_ids` is refused rather than over-granted. The invite form offers no
   clinic choice.
 - Look up an invitation by address:
@@ -222,8 +229,11 @@ problem is at the platform, not in this schema.
 
 - **There is no backup job in this repository.** Whatever the Supabase plan provides is the backup.
 - A tenant restore is not a one-table operation. `organizations` cascades to clinics, memberships,
-  assignments, roles, invitations, patients, identifiers, sequences and storage rows; restoring only
-  the organization leaves the rest missing.
+  assignments, roles, invitations, patients, identifiers and sequences; restoring only the
+  organization leaves the rest missing.
+- **Storage objects are not in that cascade.** Tenancy is the object name and there is no foreign
+  key, so a tenant restore does not bring the bucket objects back - and deleting a tenant does not
+  remove them. They must be handled separately.
 - `audit_logs`, `platform_settings` and `tenant_creation_events` have **no foreign keys**, so a
   tenant restore does **not** bring its audit trail or its creation ledger back. They must be
   restored separately, by `organization_id` or `user_id`.

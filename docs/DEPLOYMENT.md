@@ -15,22 +15,27 @@ readiness claim; Phases 4–10 are unbuilt.
 | Build output | `.next`; `npm run build` type-checks as part of the build            |
 | Migrations   | through the Composio MCP. There is no Supabase Personal Access Token |
 
-No `Dockerfile` and no Supabase CLI configuration are committed; neither is required by the
-scripts in this repository.
+No `Dockerfile` is committed, and neither Docker nor the Supabase CLI is required by the scripts
+in this repository. `supabase/config.toml` **is** committed, but it configures a local
+`supabase start` stack only; it does not describe or change the hosted project.
 
 ## Environment variables
 
 Names only; values live in `.env.local` (gitignored) or the host's environment.
 
-| Name                                   | Read by                            | Notes                                                                     |
-| -------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------- |
-| `NEXT_PUBLIC_SUPABASE_URL`             | browser + server                   | `lib/supabase/*`                                                          |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | browser + server                   | the key the clients actually read                                         |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY`        | **nothing**                        | retained as an inert placeholder for Supabase tooling; no client reads it |
-| `SUPABASE_SERVICE_ROLE_KEY`            | `lib/supabase/server.ts`, `tests/` | **server only**. Never `NEXT_PUBLIC_`. Never a `"use client"` file        |
-| `SUPABASE_PROJECT_REF`                 | the Composio apply                 | not read at runtime                                                       |
-| `TEST_DATABASE_URL`                    | tests only                         | pooler host, `postgres.<ref>` user                                        |
-| `NEXT_PUBLIC_APP_URL`                  | the password-reset redirect        | must match the hosted allow-list                                          |
+| Name                                   | Read by                            | Notes                                                                                      |
+| -------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------ |
+| `NEXT_PUBLIC_SUPABASE_URL`             | browser + server                   | `lib/supabase/*`                                                                           |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | browser + server                   | the key the clients actually read                                                          |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY`        | **nothing**                        | retained placeholder; no client reads it, and the plan's fallback to it is not implemented |
+| `SUPABASE_SERVICE_ROLE_KEY`            | `lib/supabase/server.ts`, `tests/` | **server only**. Never `NEXT_PUBLIC_`. Never a `"use client"` file                         |
+| `SUPABASE_PROJECT_REF`                 | the Composio apply                 | not read at runtime                                                                        |
+| `TEST_DATABASE_URL`                    | tests only                         | pooler host, `postgres.<ref>` user                                                         |
+| `NEXT_PUBLIC_APP_URL`                  | the password-reset redirect        | must match the hosted allow-list                                                           |
+
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` exists because the plan requires the clients to fall back to it
+when the publishable key is absent. The clients do not implement that fallback and read no
+`ANON_KEY` variable, so it is an unread placeholder; the publishable key is the only one in use.
 
 `.env.example` is the only tracked template and is scanned by `check-no-secrets` like every other
 file. It contains inert placeholders, never credentials.

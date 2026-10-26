@@ -12,13 +12,13 @@ elsewhere as more current than that log.
 
 ## Prerequisites
 
-| Requirement           | Version / note                                                         |
-| --------------------- | ---------------------------------------------------------------------- |
-| Node.js               | `>=24` (`package.json` `engines`)                                      |
-| npm                   | 11.x measured on the development machine                               |
-| Supabase project      | hosted; the browser and server clients read `NEXT_PUBLIC_SUPABASE_URL` |
-| Composio MCP          | the only migration applier; there is no Supabase Personal Access Token |
-| Docker / Supabase CLI | **not required**; no Dockerfile or CLI configuration is committed      |
+| Requirement           | Version / note                                                                    |
+| --------------------- | --------------------------------------------------------------------------------- |
+| Node.js               | `>=24` (`package.json` `engines`)                                                 |
+| npm                   | 11.x measured on the development machine                                          |
+| Supabase project      | hosted; the browser and server clients read `NEXT_PUBLIC_SUPABASE_URL`            |
+| Composio MCP          | the only migration applier; there is no Supabase Personal Access Token            |
+| Docker / Supabase CLI | **not required**; no Dockerfile. `supabase/config.toml` serves a local stack only |
 
 ## Install
 
@@ -33,15 +33,19 @@ npm run dev                  # http://localhost:3000
 Names only. Values live in `.env.local`, which is gitignored; `.env.example` is the only
 tracked template.
 
-| Name                                   | Scope              | Read by                                                     |
-| -------------------------------------- | ------------------ | ----------------------------------------------------------- |
-| `NEXT_PUBLIC_SUPABASE_URL`             | browser + server   | `lib/supabase/*`                                            |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | browser + server   | `lib/supabase/*`                                            |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY`        | browser + server   | documented legacy fallback; not read by the current clients |
-| `SUPABASE_SERVICE_ROLE_KEY`            | **server only**    | `lib/supabase/server.ts` and `tests/` only                  |
-| `SUPABASE_PROJECT_REF`                 | operator tooling   | the Composio migration apply                                |
-| `TEST_DATABASE_URL`                    | server only, tests | `tests/integration/helpers/database.ts`                     |
-| `NEXT_PUBLIC_APP_URL`                  | server             | the password-reset redirect                                 |
+| Name                                   | Scope              | Read by                                                                                    |
+| -------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------ |
+| `NEXT_PUBLIC_SUPABASE_URL`             | browser + server   | `lib/supabase/*`                                                                           |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | browser + server   | `lib/supabase/*`                                                                           |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY`        | unused             | retained placeholder; no client reads it, and the plan's fallback to it is not implemented |
+| `SUPABASE_SERVICE_ROLE_KEY`            | **server only**    | `lib/supabase/server.ts` and `tests/` only                                                 |
+| `SUPABASE_PROJECT_REF`                 | operator tooling   | the Composio migration apply                                                               |
+| `TEST_DATABASE_URL`                    | server only, tests | `tests/integration/helpers/database.ts`                                                    |
+| `NEXT_PUBLIC_APP_URL`                  | server             | the password-reset redirect                                                                |
+
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` exists because the plan requires the clients to fall back to it
+when the publishable key is absent. The clients do not implement that fallback and read no
+`ANON_KEY` variable, so it is an unread placeholder; the publishable key is the only one in use.
 
 `SUPABASE_SERVICE_ROLE_KEY` must never be prefixed `NEXT_PUBLIC_` and must never be
 referenced from a `"use client"` file. `npm run check:secrets` enforces the path rule; the

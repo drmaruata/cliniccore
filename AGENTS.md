@@ -62,8 +62,9 @@ npm run build && npm run format:check`.
   `tenant_creation_events` also has none - it is a write-only definer ledger. `lib/supabase/` and
   `proxy.ts` landed in Task 12; the `app/app/` routes landed in Task 16. **Storage:** five private
   buckets (`patient-documents`, `clinical-attachments`, `investigation-reports`, `org-assets`,
-  `prescription-documents`), all `public = false`, 20 policies on `storage.objects` all `to
-authenticated`, and `allowed_mime_types` = PDF/JPEG/PNG/DICOM/text. Object tenancy is the
+  `prescription-documents`), all `public = false`, 20 policies on `storage.objects` - 15 `to
+authenticated` and the five DELETE policies `to public` - and `allowed_mime_types` =
+  PDF/JPEG/PNG/DICOM/text. Object tenancy is the
   object NAME (`<org>/<clinic>/<file>`, `<org>/<file>` for org-assets) because a text path cannot
   carry a foreign key — so the project's composite-tenant-FK rule is satisfied here BY POLICY,
   not by constraint.
@@ -897,16 +898,19 @@ org, self, owner_role` - and become the tenant's owner, with `settings.manage`,
   section's claim that it had one was FALSE for `clinic_ids`. The unit assertion was
   pinning the duplicate, which made the duplication a requirement rather than an
   accident. `clinic_ids` asks `is_member_for` now too.
-- **A CLAIM IS NOT A PROVEN ADDRESS.** The acceptance now requires the ACCEPTOR's
-  ACCOUNT to be confirmed (`auth.users.email_confirmed_at is not null`) and to carry
-  the invitation's address (`auth.users.email = the invitation's address`), and it
-  FAILS CLOSED - no row, an unconfirmed address, or a different address are all a
-  refusal. The claim check stays, because it binds the SESSION to the invitation.
-  This matters because the signup action signs a user in immediately when "Confirm
-  email" is off, which it is here - so anybody could otherwise register the invited
-  address and redeem. The E2E probe account is now confirmed EXPLICITLY through the
-  admin API, and the invitation spec passing is the proof that the account is
-  confirmed.
+- **A CLAIM IS NOT A PROVEN ADDRESS, AND AN IMPLICITLY CONFIRMED ADDRESS IS NOT PROOF
+  OF MAILBOX CONTROL.** The acceptance requires the ACCEPTOR's ACCOUNT to carry the
+  invitation's address (`auth.users.email = the invitation's address`) and that address
+  to be confirmed (`auth.users.email_confirmed_at is not null`), and it FAILS CLOSED -
+  no row, an unconfirmed address, or a different address are all a refusal. The claim
+  check stays, because it binds the SESSION to the invitation. **But "Confirm email" is
+  OFF on this project, and Supabase then sets `email_confirmed_at` implicitly at
+  signup - so anybody who registers the invited address gets a "confirmed" account
+  without receiving a mail. The acceptance therefore binds the account to the STORED
+  address; it does NOT prove the person controls the mailbox. Re-enabling email
+  confirmation is the control, and it is a production blocker.** The E2E probe account
+  is confirmed EXPLICITLY through the admin API; that is fixture setup, not a product
+  guarantee.
 - **A SUSPENDED MEMBER'S REDEMPTION NO LONGER BURNS THE TOKEN.** The acceptance
   refuses a membership whose status is not `active` - and it refuses BEFORE the
   acceptance stamp, so the invitation is still redeemable once the membership is

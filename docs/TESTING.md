@@ -193,9 +193,11 @@ Four specs, two browser projects (Chromium and Firefox). `playwright.config.ts` 
 | `invitations.spec.ts`   | Invite, link display, acceptance, digest agreement, suspended-member non-spend                                        |
 | `platform-gate.spec.ts` | Marketing shell is public and reads no session; `/platform` is 404 for a non-operator and a directory for an operator |
 
-Accounts are created through the **admin API**, never the public signup endpoint, because the
-provider's signup rate limit is shared per project (about 2–3 calls per window). The probe account
-is confirmed explicitly, because acceptance requires `email_confirmed_at`.
+Accounts are created through the **admin API**, except the signup test itself, which goes through
+the public endpoint exactly once, because the provider's signup rate limit is shared per project
+(about 2–3 calls per window). Probe accounts are confirmed explicitly through the admin API; with
+project-wide email confirmation disabled a signup address is implicitly confirmed, so this is
+fixture setup, not proof of mailbox control.
 
 `tests/helpers/e2e-cleanup.ts` deletes children before parents, deletes the audit rows and the
 creation ledger (neither has a foreign key), then **re-counts** what it removed and throws if
