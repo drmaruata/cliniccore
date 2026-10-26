@@ -21,10 +21,12 @@ that had already been deleted and sent the next agent chasing it. Re-derive from
 gates instead — they are the only source of truth.
 
 - **Branch `feature/foundation` (master is the untouched base). Do not implement on master.**
-  **Tasks 1-19 of 20 are complete** (18 = the mutation-verified tenant isolation suite,
-  19 = the documentation set). **Task 20 is next.** Run `git log --oneline` and
+  **All 20 tasks of the plan are complete** (18 = the mutation-verified tenant
+  isolation suite, 19 = the documentation set, 20 = the final gate). **The foundation
+  plan is finished; there is no next task in this plan.** Run `git log --oneline` and
   `git status` before you start. Briefs, reports and review packages are in
-  `.superpowers/sdd/cliniccore-foundation/`.
+  `.superpowers/sdd/cliniccore-foundation/`. Later phases (4-10) are separate work,
+  not continuations of this plan.
 
   A third review found this section claiming Task 11 was next and that `lib/supabase/`
   and `proxy.ts` “do not exist yet” — while a LATER section of this same file described

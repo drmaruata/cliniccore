@@ -4983,27 +4983,28 @@ Run on 2026-10-26 on branch `feature/foundation` at `fb54f1f` (base commit, tree
 Node v24.22.1, npm 11.19.1. Every command below was run separately and its exit code was read
 from `$LASTEXITCODE`; no result here is restated from an earlier task. This task adds NO
 application code, SQL, migration or runtime configuration - it appends this section and corrects
-one stale E2E locator (below). **`AGENTS.md` is NOT edited, and that is a deliberate choice with
-a reason:** its "Current state" says "Tasks 1-19 of 20 are complete ... Task 20 is next", which
-is now false, and the brief allows a minimal factual update only in that case - but every other
-sentence in it is confirmed by this run, so the bare correction is left to the reviewer rather
-than guessed at here.
+one stale E2E locator (below). **`AGENTS.md` was NOT edited by this task's first pass, and that
+was left to the reviewer:** its "Current state" said "Tasks 1-19 of 20 are complete ... Task 20
+is next", which was false, and the brief allows a minimal factual update only in that case.
+**Corrected in "Task 20 fix round 1" below**, which updates that sentence to "all 20 tasks
+complete, no next task in this plan" and leaves every other sentence - including the Next.js
+marker block - untouched.
 
 ### THE GATES
 
-| Gate                | Command                | Exit      | Decisive output                                                                                                                                                            |
-| ------------------- | ---------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| typecheck           | `npm run typecheck`    | 0         | `tsc --noEmit` completed with no diagnostics printed                                                                                                                       |
-| lint sub-gate 1     | `eslint .`             | 0         | 0 errors, 1 pre-existing warning in `.opencode/plugins/graphify.js` (`import/no-anonymous-default-export`, line 32)                                                        |
-| lint sub-gate 2     | `check:secrets`        | 0         | `check:secrets OK - no service-role or hard-coded secret references found.`                                                                                                |
-| lint sub-gate 3     | `format:check`         | 0         | `All matched files use Prettier code style!`                                                                                                                               |
-| lint sub-gate 4     | `migrations:check`     | 0         | `migrations check OK: 61 file(s), all valid`, each file listed with its `idempotency_key`                                                                                  |
-| lint (combined)     | `npm run lint`         | 0         | all four sub-gates above ran in sequence and all passed                                                                                                                    |
-| test                | `npm test`             | 0         | `Test Files 39 passed (39)`; `Tests 899 passed (899)`; duration 463.55 s; 39 workers, `fileParallelism: false`                                                             |
-| build               | `npm run build`        | 0         | `next build` with Next.js 16.4.3 (Turbopack): compiled in 1428 ms, TypeScript 2.1 s, 14 static pages generated, 14 routes plus `/api/auth/verify` and `Proxy (Middleware)` |
-| e2e (first run)     | `npm run e2e`          | 1         | 32 tests, 30 passed, 2 failed - see the section below                                                                                                                      |
-| e2e (after fix)     | `npm run e2e`          | 0         | 32 passed (1.4 m) across chromium and firefox                                                                                                                              |
-| format:check (post) | `npm run format:check` | see below | recorded verbatim in the closing block                                                                                                                                     |
+| Gate                | Command                | Exit | Decisive output                                                                                                                                                            |
+| ------------------- | ---------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| typecheck           | `npm run typecheck`    | 0    | `tsc --noEmit` completed with no diagnostics printed                                                                                                                       |
+| lint sub-gate 1     | `eslint .`             | 0    | 0 errors, 1 pre-existing warning in `.opencode/plugins/graphify.js` (`import/no-anonymous-default-export`, line 32)                                                        |
+| lint sub-gate 2     | `check:secrets`        | 0    | `check:secrets OK - no service-role or hard-coded secret references found.`                                                                                                |
+| lint sub-gate 3     | `format:check`         | 0    | `All matched files use Prettier code style!`                                                                                                                               |
+| lint sub-gate 4     | `migrations:check`     | 0    | `migrations check OK: 61 file(s), all valid`, each file listed with its `idempotency_key`                                                                                  |
+| lint (combined)     | `npm run lint`         | 0    | all four sub-gates above ran in sequence and all passed                                                                                                                    |
+| test                | `npm test`             | 0    | `Test Files 39 passed (39)`; `Tests 899 passed (899)`; duration 463.55 s; 39 workers, `fileParallelism: false`                                                             |
+| build               | `npm run build`        | 0    | `next build` with Next.js 16.4.3 (Turbopack): compiled in 1428 ms, TypeScript 2.1 s, 14 static pages generated, 14 routes plus `/api/auth/verify` and `Proxy (Middleware)` |
+| e2e (first run)     | `npm run e2e`          | 1    | 32 tests, 30 passed, 2 failed - see the section below                                                                                                                      |
+| e2e (after fix)     | `npm run e2e`          | 0    | 32 passed (1.4 m) across chromium and firefox                                                                                                                              |
+| format:check (post) | `npm run format:check` | 0    | `All matched files use Prettier code style!` - re-run after the documentation append, as the brief's step 4 requires                                                       |
 
 `npm run build` type-checks itself ("Running TypeScript ... Finished TypeScript in 2.1s"), so
 the typecheck result is confirmed twice, in two different runs.
@@ -5064,27 +5065,54 @@ Measured over `TEST_DATABASE_URL` after the final E2E run:
 | schema_migrations                              | 61                                                                                           |
 
 These rows are the **security isolation fixture's own tenants** (`tests/security/fixtures.ts`
-line 110 names them `Isolation Tenant ${label}`), and their account ids and slugs date them to
-`2026-10-26T07:47:32Z-07:47:39Z` - during the `npm test` run this task executed, not during the
-E2E runs. Two decisive measurements:
+line 110 names them `Isolation Tenant ${label}`), and their row timestamps place them at
+`2026-10-26T07:47:32Z`–`07:48:38Z`. **That is NOT this task's `npm test` window, and the earlier
+record saying it was is FALSE** - corrected in "Task 20 fix round 1" below. Measured: this task's
+`npm test` started at 16:43:23 local (+0530) = `11:13:23Z` and ran 463.55 s, ending about
+`11:17:26Z`. The residue rows are roughly **2 hours 26 minutes BEFORE** that run started, so they
+belong to an **earlier session's `npm test` that was interrupted**, and the conclusion - not this
+task's residue - is unchanged and better supported. Two decisive measurements:
 
 1. **The suite cleans up after itself.** `npx vitest run
 tests/security/tenant-isolation.test.ts` alone: `Test Files 1 passed (1)`, `Tests 21 passed
 (21)`, exit 0, 162.25 s. The residue counts above were UNCHANGED afterwards - so the run
    added and removed its own tenants successfully.
-2. **The survivors carry identifiers only an aborted run can produce.** Tenant A's patient row
-   has `last_name = "Own rename"` (written by the UPDATE test at line 606, whose positive
-   control deliberately renames A's OWN patient and leaves it); a second patient
-   `CROSS-TENANT-CONTROL` and an invitation `insert-ctrl-e31bd1c4@example.test` are the INSERT
-   tests' positive controls. A completed run's `destroyTwoOrganizations` deletes all of them.
-   So the run that produced these rows was interrupted after seeding, before the tests, and
-   before its `afterAll`.
+2. **The survivors carry identifiers only an aborted run can produce - and they date the
+   interruption to the MIDDLE of the suite.** Tenant A's patient row has `last_name =
+"Own rename"` (written by the UPDATE test at line 606, whose positive control deliberately
+   renames A's OWN patient and leaves it). The `CROSS-TENANT-CONTROL` patient (created
+   `07:48:34.297Z`) and the `insert-ctrl-e31bd1c4@example.test` invitation (created
+   `07:48:38.141Z`) are INSERT positive controls that **the tests themselves write**
+   (`tests/security/tenant-isolation.test.ts`) - so the run had already seeded, then executed
+   several tests, before it was killed. **The earlier record said "interrupted after seeding,
+   before the tests"; that is FALSE and is corrected in "Task 20 fix round 1" below.** A
+   completed run's `destroyTwoOrganizations` deletes all of them.
 
 **This is recorded, not cleaned, and it is not fixed here.** Removing two tenants and two
 accounts from a live database that is not this task's to mutate would itself be an unauthorised
-write, and the residue is inert: both accounts hold no administrator permission, both
-organizations are `active` with one membership each, and no cross-tenant exposure exists. The
-next agent must know the two accounts and the two organizations are there, and that a full
+write, and the recorded-not-deleted decision stands.
+
+**The earlier record said the residue is "inert: both accounts hold no administrator
+permission". That sentence is FALSE and is corrected in "Task 20 fix round 1" below.** Measured
+against the live catalogue: Tenant A's account holds **both `organization_admin` and
+`organization_owner`**, and Tenant B's account holds **`organization_owner`**. That is by
+design - the isolation fixture's positive controls need an administrator of their OWN tenant,
+and the fixture grants exactly that. The two accounts are NOT unprivileged.
+
+What IS true, and is the real basis for recording this residue as contained:
+
+- Each organization has exactly one membership, and it is **active** - the fixture's own probe
+  account.
+- The rows are the isolation fixture's own test data. **There is no real PHI**: the three
+  patients are the suite's `Own rename` and `CROSS-TENANT-CONTROL` doubles, the invitations are
+  the INSERT tests' `insert-ctrl-...` controls, and the storage objects are the suite's own.
+- **RLS still isolates them from every other tenant.** Each account is a member of its own
+  organization only, and the 39-policy catalogue they live under is asserted exactly - name,
+  command and non-null predicates - by `tests/security/rls-policies.test.ts`.
+- Being the owner of one's own tenant is not an exposure to others: an owner's authority stops
+  at their own `organization_id`, which is the boundary the mutation-verified suite proves.
+
+The next agent must know the two accounts and the two organizations are there, and that a full
 green `npm test` does NOT imply zero residue in this project.
 
 ### MIGRATION EVIDENCE
@@ -5147,9 +5175,10 @@ record; none is claimed as fixed.
   `shadcn` / `@shadcn/registry`; the fix requires `npm audit fix --force`, which would install
   `shadcn@4.22.1`, outside the stated dependency range.
 
-All are dev-toolchain dependencies except `body-parser`/`fast-uri` via `@hookform/resolvers ->
-ajv`, which Task 18 already named as the one moderate that reaches the application dependency
-path. No advisory is closed by this task.
+All are dev-toolchain dependencies except **`fast-uri`, the one moderate**, which reaches the
+application dependency path via `@hookform/resolvers -> ajv`; Task 18 already named that path.
+`body-parser` is the other advisory on that path and it is **high**, not moderate. No advisory is
+closed by this task.
 
 ### EVERY BLOCKED ITEM, CARRIED FORWARD
 
@@ -5178,8 +5207,9 @@ install` was required first and is recorded above. `npm audit` ran and is report
    password-reset provider measurements, and the clinicDayBounds sweep (601,920 samples) is
    pinned by the test suite, not re-run here.
 8. **The two surviving isolation tenants and probe accounts** described above are residue in
-   the live project. They are inert, they are not this task's, and they are NOT claimed as
-   clean.
+   the live project. They are contained by RLS and bounded to their own tenant, they are not
+   this task's, and they are NOT claimed as clean. The "no administrator permission" basis the
+   first pass wrote is FALSE - see the corrected basis above and the fix-round-1 note below.
 
 ### CONCLUSION
 
@@ -5196,3 +5226,66 @@ marketing page deliberately names only what exists, and the dashboard shows no c
 because there are none to show. **This system is NOT production-ready and must not be presented
 as such.** The blockers are the eight above, led by the disabled email confirmation and the
 unverified migration-from-zero apply.
+
+---
+
+## Task 20 fix round 1 - three false records corrected
+
+Appended on branch `feature/foundation` at `a8cbb9b`, after review round 1 of Task 20. This
+change is **documentation only**: this note, three in-place corrections inside the Task 20
+section above (that section is this task's own authorship, so the corrections are made in place
+as this repository's rule for false records requires), a fifth in-place fill for a table row
+that pointed at a block that never existed, a sixth in-place correction to the audit
+attribution, and one factual update to `AGENTS.md`'s "Current state". No code, SQL, migration,
+config, test or runtime file changed, and the test suite, build and E2E were NOT re-run: the
+review found no gate result in doubt. **The live database was not written to** - the corrections
+come from the controller's verification against the live catalogue, not from a probe of my own.
+
+Each corrected record, with the measurement that replaces the false statement:
+
+1. **"both accounts hold no administrator permission" - FALSE.** Measured against the live
+   catalogue: Tenant A (`Isolation Tenant A`, slug `iso-a-mvoyeyloksv4`) holds roles
+   `organization_admin` AND `organization_owner`, and Tenant B (`iso-b-mvoyeyloksv4`) holds
+   `organization_owner`. Both organizations are `active`, each with exactly one active
+   membership. Corrected in place on what is true instead: one active membership per
+   organization, the rows are the suite's own test data with no real PHI, **RLS still isolates
+   them from every other tenant**, and an owner's authority over its OWN tenant is by design -
+   the fixture's positive controls need an administrator. The recorded-not-deleted decision
+   stands untouched.
+2. **Residue timestamps described as "during the `npm test` run this task executed" - FALSE.**
+   This task's `npm test` started at 16:43:23 local (+0530) = `11:13:23Z` and ran 463.55 s,
+   ending about `11:17:26Z`. The residue rows are `2026-10-26T07:47:32Z`-`07:48:38Z` - about
+   2 hours 26 minutes BEFORE that run started. They belong to an **earlier session's `npm
+test`**, and the conclusion (not this task's residue) is unchanged and better supported.
+3. **"interrupted after seeding, before the tests" - FALSE.** The `CROSS-TENANT-CONTROL`
+   patient (created `07:48:34.297Z`) and the `insert-ctrl-e31bd1c4@example.test` invitation
+   (created `07:48:38.141Z`) are INSERT positive controls written by the tests themselves
+   (`tests/security/tenant-isolation.test.ts`), so the run reached several tests. Corrected to:
+   **interrupted mid-suite, after seeding and several tests, before its `afterAll`.**
+
+Two records filled rather than corrected:
+
+4. The gate table's `format:check (post)` row said "see below | recorded verbatim in the closing
+   block", and no closing block existed. The row now carries the actual result: exit 0,
+   `All matched files use Prettier code style!`, re-run after the documentation append as the
+   brief's step 4 requires.
+5. The `npm audit` residual paragraph attributed the one moderate to
+   `body-parser`/`fast-uri` via `@hookform/resolvers -> ajv`. The section's own list names
+   **`fast-uri`** as the moderate and `body-parser` as **high**. Corrected.
+
+And `AGENTS.md`'s "Current state", which Task 20's first pass left false because it was not
+edited: it now reads that **all 20 tasks of the plan are complete, the foundation plan is
+finished, and there is no next task in this plan**. The branch sentence and the
+run-gates-before-start rule are unchanged, and the `<!-- BEGIN:nextjs-agent-rules -->` marker
+block is untouched.
+
+### Gates re-run after the last edit
+
+Run in this order, each exit code read from `$LASTEXITCODE`, as the repository rule requires -
+the documentation edit comes first and the gates come last:
+
+| Gate                      | Command             | Exit | Decisive output                                                                                                                                            |
+| ------------------------- | ------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| format                    | `npm run format`    | 0    | files rewritten where needed, no error                                                                                                                     |
+| typecheck                 | `npm run typecheck` | 0    | `tsc --noEmit`, no diagnostics                                                                                                                             |
+| lint (all four sub-gates) | `npm run lint`      | 0    | `eslint .` 0 errors 1 pre-existing warning, `check:secrets OK`, `All matched files use Prettier code style!`, `migrations check OK: 61 file(s), all valid` |
