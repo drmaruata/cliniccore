@@ -5035,8 +5035,9 @@ The cause is a stale assertion, not a product defect, and it is traceable:
   the hero said "Each clinic gets its own workspace", but **an organization is the isolation
   boundary and intra-tenant multi-clinic is not built**. The old sentence was false.
 - The spec still asserted the old string, and no E2E run had happened since `5929ba6` - the
-  E2E gate was last run at `1756b9b`/`12cfbd5`, and Tasks 18 and 19 did not run it. So the
-  red gate was latent, and this task is the first run to see it.
+  spec was last changed in `12cfbd5`, before the copy correction `5929ba6`, and no E2E run
+  has happened since `5929ba6`; Tasks 18 and 19 did not run it either. So the red gate was
+  latent, and this task is the first run to see it.
 
 The fix is the assertion, not the copy: `tests/e2e/platform-gate.spec.ts` now looks for
 `/Every organization is its own isolated workspace/`, with a comment naming the earlier
@@ -5066,10 +5067,10 @@ Measured over `TEST_DATABASE_URL` after the final E2E run:
 
 These rows are the **security isolation fixture's own tenants** (`tests/security/fixtures.ts`
 line 110 names them `Isolation Tenant ${label}`), and their row timestamps place them at
-`2026-10-26T07:47:32Z`–`07:48:38Z`. **That is NOT this task's `npm test` window, and the earlier
+`2026-10-26T07:47:32Z`–`07:48:39Z`. **That is NOT this task's `npm test` window, and the earlier
 record saying it was is FALSE** - corrected in "Task 20 fix round 1" below. Measured: this task's
 `npm test` started at 16:43:23 local (+0530) = `11:13:23Z` and ran 463.55 s, ending about
-`11:17:26Z`. The residue rows are roughly **2 hours 26 minutes BEFORE** that run started, so they
+`11:17:26Z`. The residue rows are roughly **3 hours 26 minutes BEFORE** that run started, so they
 belong to an **earlier session's `npm test` that was interrupted**, and the conclusion - not this
 task's residue - is unchanged and better supported. Two decisive measurements:
 
@@ -5214,9 +5215,9 @@ install` was required first and is recorded above. `npm audit` ran and is report
 ### CONCLUSION
 
 The foundation is **verified**: typecheck, the four lint sub-gates, 899 tests in 39 files, the
-production build and 32 E2E tests across chromium and firefox all ran and all passed, with the
-one real defect this run found (the stale marketing-copy assertion, introduced by a copy
-correction on 2026-10-22 that no E2E run had caught since) fixed and re-proven. The 59-policy
+production build and 32 E2E tests across chromium and firefox all ran and all passed, with
+a stale test assertion (the marketing-copy assertion, made stale by a copy correction on
+2026-10-22 that no E2E run had caught since) fixed and re-proven. The 59-policy
 catalogue (39 public, 20 storage), the mutation-verified tenant-isolation suite, and the
 RLS/HTTP measurements in the record stand as evidence that the tenancy boundary holds.
 
@@ -5254,8 +5255,8 @@ Each corrected record, with the measurement that replaces the false statement:
    stands untouched.
 2. **Residue timestamps described as "during the `npm test` run this task executed" - FALSE.**
    This task's `npm test` started at 16:43:23 local (+0530) = `11:13:23Z` and ran 463.55 s,
-   ending about `11:17:26Z`. The residue rows are `2026-10-26T07:47:32Z`-`07:48:38Z` - about
-   2 hours 26 minutes BEFORE that run started. They belong to an **earlier session's `npm
+   ending about `11:17:26Z`. The residue rows are `2026-10-26T07:47:32Z`-`07:48:39Z` - about
+   3 hours 26 minutes BEFORE that run started. They belong to an **earlier session's `npm
 test`**, and the conclusion (not this task's residue) is unchanged and better supported.
 3. **"interrupted after seeding, before the tests" - FALSE.** The `CROSS-TENANT-CONTROL`
    patient (created `07:48:34.297Z`) and the `insert-ctrl-e31bd1c4@example.test` invitation
@@ -5289,3 +5290,41 @@ the documentation edit comes first and the gates come last:
 | format                    | `npm run format`    | 0    | files rewritten where needed, no error                                                                                                                     |
 | typecheck                 | `npm run typecheck` | 0    | `tsc --noEmit`, no diagnostics                                                                                                                             |
 | lint (all four sub-gates) | `npm run lint`      | 0    | `eslint .` 0 errors 1 pre-existing warning, `check:secrets OK`, `All matched files use Prettier code style!`, `migrations check OK: 61 file(s), all valid` |
+
+---
+
+## Task 20 review round 2 minor corrections
+
+Appended on branch `feature/foundation` after review round 2 of Task 20. Documentation only:
+four in-place corrections inside the Task 20 sections above (this task's own authorship) and
+this note. No code, SQL, migration, config, test or runtime file changed, and the gates were
+not re-run for the corrections themselves - only the format, typecheck and lint gates were
+re-run afterwards, and their exit codes are recorded below.
+
+1. **The residue time offset said "roughly 2 hours 26 minutes" - FALSE, it is 3 hours 26
+   minutes.** This task's `npm test` started `11:13:23Z`; the first residue row is
+   `07:47:32Z`. The difference is 3 h 25 min 51 s, which rounds to 3 hours 26 minutes
+   either way, so "2 hours 26 minutes" was simply wrong. Corrected in both places it
+   appears.
+2. **The residue window end said `07:48:38Z` - the last control row lands at `07:48:39.161Z`**
+   (an admin-grant assignment), so the window ends `07:48:39Z`. Corrected in both places;
+   the other timestamps in those sentences (`07:47:32Z`, `11:13:23Z`, `11:17:26Z`,
+   `07:48:34.297Z`, `07:48:38.141Z`) are unchanged.
+3. **The CONCLUSION called the E2E finding "the one real defect this run found" - FALSE.**
+   The finding was a stale test assertion (`tests/e2e/platform-gate.spec.ts` asserting
+   copy that commit `5929ba6` had corrected on 2026-10-22), not a product defect. The
+   conclusion now says "a stale test assertion".
+4. **"the E2E gate was last run at `1756b9b`/`12cfbd5`" conflated commits with runs.**
+   Reworded: the spec was last changed in `12cfbd5`, before the copy correction `5929ba6`,
+   and no E2E run has happened since `5929ba6`. The ordering claim is kept; Tasks 18 and 19
+   did not run E2E either.
+
+### Gates re-run after these edits
+
+Run in this order, each exit code read from `$LASTEXITCODE`, after the final documentation edit:
+
+| Gate      | Command             | Exit | Decisive output                                                                                                                                            |
+| --------- | ------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| format    | `npm run format`    | 0    | files rewritten where needed, no error                                                                                                                     |
+| typecheck | `npm run typecheck` | 0    | `tsc --noEmit`, no diagnostics                                                                                                                             |
+| lint      | `npm run lint`      | 0    | `eslint .` 0 errors 1 pre-existing warning, `check:secrets OK`, `All matched files use Prettier code style!`, `migrations check OK: 61 file(s), all valid` |
