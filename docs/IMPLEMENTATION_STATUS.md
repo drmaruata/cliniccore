@@ -4845,20 +4845,20 @@ were corrected; everything else in both files is unchanged.
 
 ### Measured, not copied
 
-| Measure                    | Value                                                 | Source                                                           |
-| -------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------- |
-| Migration files            | 61, `00100`-`01880`                                   | `supabase/migrations/`; `migrations:check`                       |
-| Applied history            | 61 rows, every file named once                        | `supabase_migrations.schema_migrations` over `TEST_DATABASE_URL` |
-| Public tables              | 16, all `relrowsecurity = true`, none forced          | `pg_class`                                                       |
-| Columns                    | 100                                                   | `information_schema.columns`                                     |
-| Public foreign keys        | 21, of which 5 composite                              | `pg_constraint`                                                  |
-| Unique / check constraints | 12 / 6                                                | `pg_constraint`                                                  |
-| Indexes / triggers         | 36 / 18 trigger rows                                  | `pg_indexes`, `pg_trigger`                                       |
-| Public policies            | 39 across 14 of the 16 tables                         | `pg_policies`                                                    |
-| Storage policies / buckets | 20 / 5, all private                                   | `pg_policies`, `storage.buckets`                                 |
-| Public application RPCs    | 10                                                    | `types/database.types.ts` `Functions`                            |
-| `private` helpers          | 35                                                    | `pg_proc`                                                        |
-| Permissions / roles        | 21 / 15 (14 tenant roles plus `platform_super_admin`) | `public.permissions`, `lib/permissions/registry.ts`              |
+| Measure                    | Value                                                                     | Source                                                           |
+| -------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Migration files            | 61, `00100`-`01880`                                                       | `supabase/migrations/`; `migrations:check`                       |
+| Applied history            | 61 rows, every file named once                                            | `supabase_migrations.schema_migrations` over `TEST_DATABASE_URL` |
+| Public tables              | 16, all `relrowsecurity = true`, none forced                              | `pg_class`                                                       |
+| Columns                    | 100                                                                       | `information_schema.columns`                                     |
+| Public foreign keys        | 21, of which 5 composite                                                  | `pg_constraint`                                                  |
+| Unique / check constraints | 12 / 6                                                                    | `pg_constraint`                                                  |
+| Indexes / triggers         | 36 / 18 trigger rows (14 definitions, 8 functions - see the round-2 note) | `pg_indexes`, `pg_trigger`                                       |
+| Public policies            | 39 across 14 of the 16 tables                                             | `pg_policies`                                                    |
+| Storage policies / buckets | 20 / 5, all private                                                       | `pg_policies`, `storage.buckets`                                 |
+| Public application RPCs    | 10                                                                        | `types/database.types.ts` `Functions`                            |
+| `private` helpers          | 35                                                                        | `pg_proc`                                                        |
+| Permissions / roles        | 21 / 15 (14 tenant roles plus `platform_super_admin`)                     | `public.permissions`, `lib/permissions/registry.ts`              |
 
 The brief says "15 catalogue tables"; the live catalogue holds **16 public tables**, and
 **14** of them carry policies. `tenant_sequences` and `tenant_creation_events` carry none.
@@ -5378,3 +5378,42 @@ is what the build gate row now quotes.
 The residue is unchanged and still recorded, not cleaned. Nothing here changes a gate result:
 the only gate row corrected is a description of the build output, and its replacement is the
 controller's measured re-run.
+
+## Final review fix wave
+
+Documentation only. No application code, SQL, migration, config or runtime file changed, and no
+gate result above is altered. Nothing below weakens an existing blocker: every BLOCKED record
+stays BLOCKED, and the dependency audit and the clean-room migration apply are now ADDED as
+go-live items instead of living only in this log.
+
+1. **The go-live checklist now names the dependency audit.** `DEPLOYMENT.md` gained item 13:
+   run `npm audit`, and remediate the 6 findings (1 moderate, 5 high) or record an accepted
+   risk. The moderate is `fast-uri`, and it is the one finding that reaches the application
+   path - `@hookform/resolvers` is a production dependency and pulls `ajv` -> `fast-uri@3.1.8`,
+   though this app's validation layer is zod and no ajv-backed path is exercised. Items 1-12
+   keep their numbering and their wording.
+2. **"Not required" no longer reads as "impossible".** `DEPLOYMENT.md`'s `Supabase project
+setup` block now says applying the migrations from zero needs one of Docker, the Supabase
+   CLI, or a Supabase PAT; none exists in this environment, so the clean-room apply is recorded
+   BLOCKED - which is what go-live item 8 asserts and what the Task 20 section already records.
+   `README.md`'s prerequisites row for Docker / the Supabase CLI gains the same clause and
+   points at that page. Both pages still say the scripts in this repository do not require
+   them, which remains true; the contradiction was that a launch reader could have read it as
+   "a fresh project needs nothing".
+3. **The Task 19 trigger cell is corrected in place.** The `Indexes / triggers` row of the
+   Task 19 measurements read `36 / 18 trigger rows` with no split, while Task 19 fix round 2
+   above measured 14 definitions, 18 trigger events and 8 trigger functions. It now says
+   `(14 definitions, 8 functions - see the round-2 note)`. The measurement is unchanged; only
+   the pointer was missing.
+4. **A raw migration file count is explained.** `supabase/migrations/` also holds a
+   `README.md`, so counting directory entries reads 62 against the 61 SQL files
+   `migrations:check` reports. The `Migration delivery` block in `DEPLOYMENT.md` now names the
+   `README.md` so the two numbers are not read as drift.
+5. **The git-excluded ledger records the two deliberately-left items** of Task 20 review round
+   3: the gate-table paragraph's TypeScript 2.1 s quote (the original run's output, kept beside
+   the re-run's 2.4 s) and the "3 hours 26 minutes" statements, which are correct because
+   3 h 25 min 51 s rounds up - only "either way" was false.
+
+The gates were run last, after every edit above, in the order `format`, `typecheck`, `lint`, and
+each exit code was read and is recorded in the Task 20 report. The test suite, the build and E2E
+were not re-run: no finding questioned a gate result.

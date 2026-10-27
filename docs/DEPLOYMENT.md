@@ -56,12 +56,15 @@ file. It contains inert placeholders, never credentials.
 6. Set the auth site URL to the deployment hostname, not `http://127.0.0.1:3000`.
 
 `supabase/config.toml` configures a **local** `supabase start` stack only. Editing it does not change
-the hosted project. The hosted settings are in the Supabase dashboard.
+the hosted project. The hosted settings are in the Supabase dashboard. Applying the migrations from
+zero needs one of Docker, the Supabase CLI, or a Supabase PAT; none exists in this environment, so
+the clean-room apply is recorded BLOCKED.
 
 ## Migration delivery
 
 `supabase/migrations/*.sql` is the source of truth, applied in filename order. `Composio` is an
-applier, not a source.
+applier, not a source. The directory also holds a `README.md`, so a raw file count reads 62;
+`migrations:check` counts the 61 SQL files only.
 
 1. `npm run migrations:check` validates the names, order and non-emptiness. It applies nothing.
 2. Apply **one file per Composio call** with `SUPABASE_APPLY_A_MIGRATION` (`ref`, `name`, `query`,
@@ -152,6 +155,8 @@ The product is **not** production-ready. This list is what a launch would requir
 11. [ ] Complete Phases 4–10. The clinical product does not exist yet: no patients UI, no
         appointments, no invoices, no reports, no subscriptions.
 12. [ ] Add a security contact and a disclosure policy.
+13. [ ] Run `npm audit`; remediate the 6 findings (1 moderate in the app path via
+        `@hookform/resolvers` -> `ajv` -> `fast-uri`) or record an accepted risk.
 
 Do not mark an item done because the code exists. Mark it done when a named command or a named
 manual check proves it.

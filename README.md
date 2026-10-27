@@ -12,13 +12,13 @@ elsewhere as more current than that log.
 
 ## Prerequisites
 
-| Requirement           | Version / note                                                                    |
-| --------------------- | --------------------------------------------------------------------------------- |
-| Node.js               | `>=24` (`package.json` `engines`)                                                 |
-| npm                   | 11.x measured on the development machine                                          |
-| Supabase project      | hosted; the browser and server clients read `NEXT_PUBLIC_SUPABASE_URL`            |
-| Composio MCP          | the only migration applier; there is no Supabase Personal Access Token            |
-| Docker / Supabase CLI | **not required**; no Dockerfile. `supabase/config.toml` serves a local stack only |
+| Requirement           | Version / note                                                                                                                                                                                                                                                                                                        |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Node.js               | `>=24` (`package.json` `engines`)                                                                                                                                                                                                                                                                                     |
+| npm                   | 11.x measured on the development machine                                                                                                                                                                                                                                                                              |
+| Supabase project      | hosted; the browser and server clients read `NEXT_PUBLIC_SUPABASE_URL`                                                                                                                                                                                                                                                |
+| Composio MCP          | the only migration applier; there is no Supabase Personal Access Token                                                                                                                                                                                                                                                |
+| Docker / Supabase CLI | **not required** for the scripts in this repository; no Dockerfile. `supabase/config.toml` serves a local stack only. Applying the migrations from zero still needs one of Docker, the Supabase CLI, or a Supabase PAT, so that clean-room apply is recorded BLOCKED - see [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) |
 
 ## Install
 
