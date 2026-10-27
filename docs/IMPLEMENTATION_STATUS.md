@@ -4992,19 +4992,19 @@ marker block - untouched.
 
 ### THE GATES
 
-| Gate                | Command                | Exit | Decisive output                                                                                                                                                            |
-| ------------------- | ---------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| typecheck           | `npm run typecheck`    | 0    | `tsc --noEmit` completed with no diagnostics printed                                                                                                                       |
-| lint sub-gate 1     | `eslint .`             | 0    | 0 errors, 1 pre-existing warning in `.opencode/plugins/graphify.js` (`import/no-anonymous-default-export`, line 32)                                                        |
-| lint sub-gate 2     | `check:secrets`        | 0    | `check:secrets OK - no service-role or hard-coded secret references found.`                                                                                                |
-| lint sub-gate 3     | `format:check`         | 0    | `All matched files use Prettier code style!`                                                                                                                               |
-| lint sub-gate 4     | `migrations:check`     | 0    | `migrations check OK: 61 file(s), all valid`, each file listed with its `idempotency_key`                                                                                  |
-| lint (combined)     | `npm run lint`         | 0    | all four sub-gates above ran in sequence and all passed                                                                                                                    |
-| test                | `npm test`             | 0    | `Test Files 39 passed (39)`; `Tests 899 passed (899)`; duration 463.55 s; 39 workers, `fileParallelism: false`                                                             |
-| build               | `npm run build`        | 0    | `next build` with Next.js 16.4.3 (Turbopack): compiled in 1428 ms, TypeScript 2.1 s, 14 static pages generated, 14 routes plus `/api/auth/verify` and `Proxy (Middleware)` |
-| e2e (first run)     | `npm run e2e`          | 1    | 32 tests, 30 passed, 2 failed - see the section below                                                                                                                      |
-| e2e (after fix)     | `npm run e2e`          | 0    | 32 passed (1.4 m) across chromium and firefox                                                                                                                              |
-| format:check (post) | `npm run format:check` | 0    | `All matched files use Prettier code style!` - re-run after the documentation append, as the brief's step 4 requires                                                       |
+| Gate                | Command                | Exit | Decisive output                                                                                                                                                                                                                                                                                                                         |
+| ------------------- | ---------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| typecheck           | `npm run typecheck`    | 0    | `tsc --noEmit` completed with no diagnostics printed                                                                                                                                                                                                                                                                                    |
+| lint sub-gate 1     | `eslint .`             | 0    | 0 errors, 1 pre-existing warning in `.opencode/plugins/graphify.js` (`import/no-anonymous-default-export`, line 32)                                                                                                                                                                                                                     |
+| lint sub-gate 2     | `check:secrets`        | 0    | `check:secrets OK - no service-role or hard-coded secret references found.`                                                                                                                                                                                                                                                             |
+| lint sub-gate 3     | `format:check`         | 0    | `All matched files use Prettier code style!`                                                                                                                                                                                                                                                                                            |
+| lint sub-gate 4     | `migrations:check`     | 0    | `migrations check OK: 61 file(s), all valid`, each file listed with its `idempotency_key`                                                                                                                                                                                                                                               |
+| lint (combined)     | `npm run lint`         | 0    | all four sub-gates above ran in sequence and all passed                                                                                                                                                                                                                                                                                 |
+| test                | `npm test`             | 0    | `Test Files 39 passed (39)`; `Tests 899 passed (899)`; duration 463.55 s                                                                                                                                                                                                                                                                |
+| build               | `npm run build`        | 0    | next build, Next.js 16.4.3 (Turbopack): `✓ Compiled successfully in 3.9s`, TypeScript 2.4 s, `✓ Generating static pages using 7 workers (14/14) in 317ms`, 14 routes, then `ƒ Proxy (Middleware)` - numbers quoted from the controller's re-run on `84cf6a3`; the Task 20 run itself printed `compiled in 1428 ms` and TypeScript 2.1 s |
+| e2e (first run)     | `npm run e2e`          | 1    | 32 tests, 30 passed, 2 failed - see the section below                                                                                                                                                                                                                                                                                   |
+| e2e (after fix)     | `npm run e2e`          | 0    | 32 passed (1.4 m) across chromium and firefox                                                                                                                                                                                                                                                                                           |
+| format:check (post) | `npm run format:check` | 0    | `All matched files use Prettier code style!` - re-run after the documentation append, as the brief's step 4 requires                                                                                                                                                                                                                    |
 
 `npm run build` type-checks itself ("Running TypeScript ... Finished TypeScript in 2.1s"), so
 the typecheck result is confirmed twice, in two different runs.
@@ -5034,9 +5034,9 @@ The cause is a stale assertion, not a product defect, and it is traceable:
 - That copy was corrected in commit `5929ba6` (2026-10-22), whose message records the reason:
   the hero said "Each clinic gets its own workspace", but **an organization is the isolation
   boundary and intra-tenant multi-clinic is not built**. The old sentence was false.
-- The spec still asserted the old string, and no E2E run had happened since `5929ba6` - the
-  spec was last changed in `12cfbd5`, before the copy correction `5929ba6`, and no E2E run
-  has happened since `5929ba6`; Tasks 18 and 19 did not run it either. So the red gate was
+- The spec still asserted the old string: the spec was last changed in `12cfbd5`, before the
+  copy correction `5929ba6`, and no E2E run has happened since; Tasks 18 and 19 did not run
+  it either. So the red gate was
   latent, and this task is the first run to see it.
 
 The fix is the assertion, not the copy: `tests/e2e/platform-gate.spec.ts` now looks for
@@ -5071,8 +5071,9 @@ line 110 names them `Isolation Tenant ${label}`), and their row timestamps place
 record saying it was is FALSE** - corrected in "Task 20 fix round 1" below. Measured: this task's
 `npm test` started at 16:43:23 local (+0530) = `11:13:23Z` and ran 463.55 s, ending about
 `11:17:26Z`. The residue rows are roughly **3 hours 26 minutes BEFORE** that run started, so they
-belong to an **earlier session's `npm test` that was interrupted**, and the conclusion - not this
-task's residue - is unchanged and better supported. Two decisive measurements:
+belong to an **interrupted run of the security isolation suite (most likely an earlier `npm
+test`)**, and the conclusion - not this task's residue - is unchanged and better supported. Two
+decisive measurements:
 
 1. **The suite cleans up after itself.** `npx vitest run
 tests/security/tenant-isolation.test.ts` alone: `Test Files 1 passed (1)`, `Tests 21 passed
@@ -5104,9 +5105,10 @@ What IS true, and is the real basis for recording this residue as contained:
 
 - Each organization has exactly one membership, and it is **active** - the fixture's own probe
   account.
-- The rows are the isolation fixture's own test data. **There is no real PHI**: the three
-  patients are the suite's `Own rename` and `CROSS-TENANT-CONTROL` doubles, the invitations are
-  the INSERT tests' `insert-ctrl-...` controls, and the storage objects are the suite's own.
+- The rows are the isolation fixture's own test data. **There is no real PHI**: of the three
+  patients, `ISO-A-1` (`last_name = "Own rename"`) and `ISO-B-1` are seeded fixture rows and only
+  `CROSS-TENANT-CONTROL` is test-written; the invitations are two seeded `invitee-*` rows plus
+  the INSERT tests' single `insert-ctrl-...` control; and the storage objects are the suite's own.
 - **RLS still isolates them from every other tenant.** Each account is a member of its own
   organization only, and the 39-policy catalogue they live under is asserted exactly - name,
   command and non-null predicates - by `tests/security/rls-policies.test.ts`.
@@ -5225,8 +5227,8 @@ The foundation is **not a product**. Phases 4-10 remain unbuilt. There is no pat
 appointment, no invoice, no notification, no subscription and no payment in this release; the
 marketing page deliberately names only what exists, and the dashboard shows no clinical numbers
 because there are none to show. **This system is NOT production-ready and must not be presented
-as such.** The blockers are the eight above, led by the disabled email confirmation and the
-unverified migration-from-zero apply.
+as such.** The BLOCKED items above, led by the disabled email confirmation and the
+unverified migration-from-zero apply, remain open.
 
 ---
 
@@ -5256,8 +5258,9 @@ Each corrected record, with the measurement that replaces the false statement:
 2. **Residue timestamps described as "during the `npm test` run this task executed" - FALSE.**
    This task's `npm test` started at 16:43:23 local (+0530) = `11:13:23Z` and ran 463.55 s,
    ending about `11:17:26Z`. The residue rows are `2026-10-26T07:47:32Z`-`07:48:39Z` - about
-   3 hours 26 minutes BEFORE that run started. They belong to an **earlier session's `npm
-test`**, and the conclusion (not this task's residue) is unchanged and better supported.
+   3 hours 26 minutes BEFORE that run started. They belong to an **interrupted run of the
+   security isolation suite (most likely an earlier `npm test`)**, and the conclusion (not this
+   task's residue) is unchanged and better supported.
 3. **"interrupted after seeding, before the tests" - FALSE.** The `CROSS-TENANT-CONTROL`
    patient (created `07:48:34.297Z`) and the `insert-ctrl-e31bd1c4@example.test` invitation
    (created `07:48:38.141Z`) are INSERT positive controls written by the tests themselves
@@ -5303,9 +5306,9 @@ re-run afterwards, and their exit codes are recorded below.
 
 1. **The residue time offset said "roughly 2 hours 26 minutes" - FALSE, it is 3 hours 26
    minutes.** This task's `npm test` started `11:13:23Z`; the first residue row is
-   `07:47:32Z`. The difference is 3 h 25 min 51 s, which rounds to 3 hours 26 minutes
-   either way, so "2 hours 26 minutes" was simply wrong. Corrected in both places it
-   appears.
+   `07:47:32Z`. The difference is 3 h 25 min 51 s, about 3 hours 26 minutes - truncating it
+   would give 3 h 25 min, so the wording now carries both the exact span and the rounded
+   value. "2 hours 26 minutes" was simply wrong. Corrected in both places it appears.
 2. **The residue window end said `07:48:38Z` - the last control row lands at `07:48:39.161Z`**
    (an admin-grant assignment), so the window ends `07:48:39Z`. Corrected in both places;
    the other timestamps in those sentences (`07:47:32Z`, `11:13:23Z`, `11:17:26Z`,
@@ -5328,3 +5331,50 @@ Run in this order, each exit code read from `$LASTEXITCODE`, after the final doc
 | format    | `npm run format`    | 0    | files rewritten where needed, no error                                                                                                                     |
 | typecheck | `npm run typecheck` | 0    | `tsc --noEmit`, no diagnostics                                                                                                                             |
 | lint      | `npm run lint`      | 0    | `eslint .` 0 errors 1 pre-existing warning, `check:secrets OK`, `All matched files use Prettier code style!`, `migrations check OK: 61 file(s), all valid` |
+
+---
+
+## Task 20 review round 3 corrections
+
+Appended on branch `feature/foundation` at `84cf6a3`, after review round 3 of Task 20.
+Documentation only: seven in-place corrections inside the Task 20 sections above (this task's
+own authorship, so the repository's rule for false records applies) and this note. No code,
+SQL, migration, config, test or runtime file changed. The test suite, E2E and the live database
+were not touched; the controller re-ran the build on `84cf6a3` to settle one row, and that run
+is what the build gate row now quotes.
+
+1. **The build gate row double-counted `/api/auth/verify`.** It said "14 routes plus
+   `/api/auth/verify` and `Proxy (Middleware)`", but the API route is one of the 14. Reworded to
+   the re-run's measured output: `✓ Compiled successfully in 3.9s`, TypeScript 2.4 s,
+   `✓ Generating static pages using 7 workers (14/14) in 317ms`, 14 routes, then
+   `ƒ Proxy (Middleware)`, exit 0. The original Task 20 run's `compiled in 1428 ms` and
+   TypeScript 2.1 s stay in the same row, labelled as that run's, so the two runs are not
+   conflated. The paragraph under the gate table keeps quoting 2.1s because it describes the
+   original run; the row carries the re-run's number.
+2. **The test gate row said "39 workers, `fileParallelism: false`".** Vitest printed no worker
+   count, and `vitest.config.ts:37` sets `fileParallelism: false`, which its own comment equates
+   to `maxWorkers: 1`. The clause is deleted; the exit code, the file and test counts and the
+   463.55 s duration are untouched.
+3. **"The blockers are the eight above" over-counted.** Item 7 is "Gates that did not run here -
+   none" and item 8 is recorded residue, so the eight are not all blockers. Reworded to "The
+   BLOCKED items above".
+4. **The E2E-history sentence carried "no E2E run had happened since `5929ba6`" twice** after
+   round 2's reword. One copy deleted: "the spec was last changed in `12cfbd5`, before the copy
+   correction `5929ba6`, and no E2E run has happened since".
+5. **The residue was attributed to "an earlier session's `npm test` that was interrupted".**
+   What is measured is an interrupted run inside a 67-second window (`07:47:32Z`-`07:48:39Z`),
+   and a targeted run of the security isolation suite fits that window as well as a full
+   `npm test`. Both occurrences now read "an interrupted run of the security isolation suite
+   (most likely an earlier `npm test`)". The conclusion that it is not this task's residue is
+   unchanged.
+6. **"which rounds to 3 hours 26 minutes either way" was false.** Truncating 3 h 25 min 51 s
+   gives 3 h 25 min. Reworded to "3 h 25 min 51 s, about 3 hours 26 minutes".
+7. **The no-real-PHI basis mis-described the residue rows.** `ISO-A-1` (`last_name =
+"Own rename"`) and `ISO-B-1` are the fixture's seeded patients and only `CROSS-TENANT-CONTROL`
+   is test-written; the invitations are two seeded `invitee-*` rows plus the single
+   `insert-ctrl-...` control. The sentence now names the seeded rows separately from the
+   test-written control.
+
+The residue is unchanged and still recorded, not cleaned. Nothing here changes a gate result:
+the only gate row corrected is a description of the build output, and its replacement is the
+controller's measured re-run.
