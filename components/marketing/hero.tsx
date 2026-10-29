@@ -73,10 +73,18 @@ const ACTIONS = [
 
 export function Hero() {
   return (
-    <section className="relative overflow-hidden border-b border-border bg-gradient-to-b from-accent/50 via-background to-background">
-      <div className="mx-auto grid max-w-7xl items-center gap-14 px-6 pt-20 pb-14 lg:grid-cols-[1fr_1.05fr] lg:pt-24">
+    <section className="relative overflow-hidden bg-gradient-to-b from-accent/60 via-background to-background">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -top-40 -right-32 size-[30rem] rounded-full bg-accent/70 blur-3xl motion-reduce:animate-none animate-float-slow"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -bottom-40 -left-24 size-80 rounded-full bg-secondary/10 blur-3xl motion-reduce:animate-none animate-float"
+      />
+      <div className="relative mx-auto grid max-w-7xl items-center gap-14 px-6 pt-20 pb-14 lg:grid-cols-[1fr_1.05fr] lg:pt-24">
         <div>
-          <p className="inline-flex items-center gap-2 rounded-full border border-primary/30 bg-card px-3 py-1 text-xs font-medium text-primary-ink">
+          <p className="inline-flex items-center gap-2 rounded-full bg-card px-3 py-1 text-xs font-medium text-primary-ink shadow-sm">
             Modern clinic management
           </p>
           <h1 className="mt-5 font-heading text-4xl font-semibold tracking-tight text-balance text-brand-navy sm:text-5xl lg:text-6xl">
@@ -97,14 +105,17 @@ export function Hero() {
               <Link href="#features">Explore the platform</Link>
             </Button>
           </div>
-          <ul className="mt-10 grid gap-4 sm:grid-cols-3">
+          <ul className="mt-10 grid gap-3 sm:grid-cols-3">
             {BADGES.map((badge) => {
               const Icon = badge.icon;
               return (
-                <li key={badge.title} className="flex items-start gap-3">
+                <li
+                  key={badge.title}
+                  className="group flex items-start gap-3 rounded-2xl bg-card/70 p-3 shadow-sm transition-shadow duration-300 hover:shadow-lg hover:shadow-brand-navy/10 motion-reduce:transition-none"
+                >
                   <span
                     aria-hidden="true"
-                    className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary-ink"
+                    className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-accent text-primary-ink transition-transform duration-300 group-hover:scale-110 motion-reduce:transform-none"
                   >
                     <Icon className="size-4" />
                   </span>
@@ -123,10 +134,10 @@ export function Hero() {
         </div>
 
         <div aria-hidden="true" className="relative hidden lg:block">
-          <div className="pointer-events-none absolute -top-28 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-accent/80" />
-          <div className="relative">
-            <div className="flex items-center justify-between gap-3 rounded-t-2xl border border-border bg-card p-4 shadow-2xl shadow-brand-navy/10">
-              <div className="flex items-center gap-2 border-r border-border pr-4">
+          <div className="pointer-events-none absolute -top-28 left-1/2 h-[36rem] w-[36rem] -translate-x-1/2 rounded-full bg-accent/80 blur-2xl motion-reduce:animate-none animate-float-slow" />
+          <div className="relative rounded-2xl bg-card shadow-2xl shadow-brand-navy/10 transition-transform duration-500 hover:-translate-y-1 motion-reduce:transform-none motion-reduce:transition-none">
+            <div className="flex items-center justify-between gap-3 p-4">
+              <div className="flex items-center gap-2 pr-4">
                 <span className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
                   <Cross className="size-3.5" />
                 </span>
@@ -146,9 +157,9 @@ export function Hero() {
               </div>
             </div>
 
-            <div className="flex gap-4">
-              <div className="w-44 shrink-0 rounded-b-2xl border border-t-0 border-border bg-card p-3">
-                <p className="flex items-center justify-between rounded-lg border border-border px-2 py-1.5 text-xs font-medium text-foreground">
+            <div className="flex gap-4 px-3 pb-3">
+              <div className="w-44 shrink-0 rounded-xl bg-muted/60 p-3">
+                <p className="flex items-center justify-between rounded-lg bg-background px-2 py-1.5 text-xs font-medium text-foreground shadow-sm">
                   Your organization
                   <ChevronDown className="size-3.5 text-muted-foreground" />
                 </p>
@@ -160,7 +171,7 @@ export function Hero() {
                         key={item.label}
                         className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs ${
                           item.active
-                            ? "border border-primary/20 bg-accent font-medium text-primary-ink"
+                            ? "bg-accent font-medium text-primary-ink"
                             : "text-muted-foreground"
                         }`}
                       >
@@ -170,38 +181,38 @@ export function Hero() {
                     );
                   })}
                 </ul>
-                <p className="mt-8 flex items-center gap-2 border-t border-border pt-3 text-xs text-muted-foreground">
+                <p className="mt-8 flex items-center gap-2 pt-3 text-xs text-muted-foreground">
                   <LogOut className="size-3.5" />
                   Sign out
                 </p>
               </div>
 
-              <div className="flex-1 rounded-b-2xl border border-t-0 border-border bg-card p-4">
+              <div className="flex-1 rounded-xl bg-background p-4 shadow-sm">
                 <div className="flex items-baseline justify-between gap-2">
                   <p className="font-heading text-base font-semibold text-foreground">Dashboard</p>
                   <p className="text-[11px] text-muted-foreground">Foundation release</p>
                 </div>
                 <div className="mt-3 grid grid-cols-3 gap-2">
-                  <div className="rounded-lg border border-border bg-background p-2.5">
+                  <div className="rounded-lg bg-card p-2.5 shadow-sm">
                     <Building2 className="size-4 text-primary-ink" />
                     <p className="mt-2 text-[11px] text-muted-foreground">Overview</p>
                     <p className="truncate text-[13px] font-semibold text-foreground">
                       Your organization
                     </p>
                   </div>
-                  <div className="rounded-lg border border-border bg-background p-2.5">
+                  <div className="rounded-lg bg-card p-2.5 shadow-sm">
                     <Users className="size-4 text-primary-ink" />
                     <p className="mt-2 text-[11px] text-muted-foreground">Team members</p>
                     <p className="text-[13px] font-semibold text-foreground">Invited by address</p>
                   </div>
-                  <div className="rounded-lg border border-border bg-background p-2.5">
+                  <div className="rounded-lg bg-card p-2.5 shadow-sm">
                     <ShieldCheck className="size-4 text-primary-ink" />
                     <p className="mt-2 text-[11px] text-muted-foreground">Your role</p>
                     <p className="text-[13px] font-semibold text-foreground">Role-based</p>
                   </div>
                 </div>
                 <div className="mt-3 grid grid-cols-[1.2fr_1fr] gap-2">
-                  <div className="rounded-lg border border-border bg-background p-3">
+                  <div className="rounded-lg bg-card p-3 shadow-sm">
                     <p className="text-[13px] font-semibold text-foreground">Recent activity</p>
                     <ul className="mt-2.5 space-y-2.5">
                       {ACTIVITY.map((item) => (
@@ -221,7 +232,7 @@ export function Hero() {
                       ))}
                     </ul>
                   </div>
-                  <div className="rounded-lg border border-border bg-background p-3">
+                  <div className="rounded-lg bg-card p-3 shadow-sm">
                     <p className="text-[13px] font-semibold text-foreground">Quick actions</p>
                     <ul className="mt-2.5 space-y-2.5">
                       {ACTIONS.map((item) => (

@@ -33,7 +33,7 @@ const STEPS = [
 
 export function SetupSteps() {
   return (
-    <section className="border-b border-border bg-accent/40">
+    <section className="bg-gradient-to-b from-accent/50 via-accent/25 to-background">
       <div className="mx-auto max-w-7xl px-6 py-20 lg:py-24">
         <div className="mx-auto max-w-4xl text-center">
           <p className="text-xs font-semibold tracking-widest text-secondary uppercase">
@@ -46,15 +46,15 @@ export function SetupSteps() {
             Create your organisation, add your first clinic, and invite your team.
           </p>
         </div>
-        <ol className="mt-14 grid gap-6 lg:grid-cols-3">
+        <ol className="reveal-rise mt-14 grid gap-6 lg:grid-cols-3">
           {STEPS.map((step, index) => {
             const Icon = step.icon;
             return (
               <li key={step.title} className="relative flex items-center gap-5">
-                <div className="relative flex h-full w-full flex-col items-center gap-3 rounded-xl border border-border bg-card px-6 pt-10 pb-6 text-center">
+                <div className="relative flex h-full w-full flex-col items-center gap-3 rounded-2xl bg-card px-6 pt-10 pb-6 text-center shadow-lg shadow-brand-navy/5 transition duration-300 hover:-translate-y-1.5 hover:shadow-xl hover:shadow-brand-navy/10 motion-reduce:transform-none motion-reduce:transition-none">
                   <span
                     aria-hidden="true"
-                    className="absolute -top-5 -left-3 flex size-10 items-center justify-center rounded-full border-4 border-accent bg-primary font-heading text-base font-semibold text-primary-foreground"
+                    className="absolute -top-5 -left-3 flex size-10 items-center justify-center rounded-full bg-primary font-heading text-base font-semibold text-primary-foreground shadow-lg shadow-primary/30"
                   >
                     {index + 1}
                   </span>

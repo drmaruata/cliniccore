@@ -5446,3 +5446,41 @@ components added under `components/marketing/` are `cta-banner`, `security-found
    the same move the palette file documents for the button link variant.
 4. The testimonials sections are ABSENT, not pending: adding them later requires real
    named quotes from real customers, not placeholder people.
+
+## 2026-10-29 - the landing page moves to card surfaces, and the rules come out
+
+The redesign's hairline borders are GONE from the public marketing shell. Every section
+separator (`border-b`, `border-y`), every card outline, the sticky header's bottom rule
+and both footer rules were replaced by surface tint and soft elevation, so sections now
+separate by depth rather than by a drawn line. The four `components/marketing/` section
+components and the header, footer and hero were restyled; no new component file was
+added, so the design-token scan tripwire is unchanged at 76 code / 78 total.
+
+Motion is CSS-only and adds no dependency:
+
+1. `app/globals.css` gains a second `@theme` block with `--animate-float` /
+   `--animate-float-slow` (decorative orbs in the hero, the security shield and the
+   closing banner) and a `.reveal-rise` rule that runs on a view timeline. The reveal
+   rule sits inside `@media (prefers-reduced-motion: no-preference)` AND
+   `@supports (animation-timeline: view())`, so a browser without view-timeline
+   support shows the content with no animation instead of hiding it. Every `animate-*`
+   consumer carries `motion-reduce:animate-none`, and every hover lift carries
+   `motion-reduce:transform-none`.
+2. Card hover is elevation plus a 1.5 px lift; icon tiles scale on group hover. No
+   colour token was added, and no hex or off-palette class was introduced - the
+   existing design-token gate still covers every edited file.
+
+MEASURED against `next dev` in the in-app Chromium browser: the page renders with zero
+console errors, `document.documentElement.scrollWidth` (985) stays under the viewport
+(1000) so the decorative orbs do not create a horizontal scrollbar, the header's
+computed `box-shadow` is non-empty, the footer's `border-top-width` is `0px`, and the
+`.reveal-rise` element reports `animation-name: reveal-rise` with
+`animation-timeline: view()`. The only remaining borders inside `main` belong to the
+outline Button variant, which is a control affordance and not a section rule. Dark mode
+was checked by toggling the `.dark` class: the card surface reads lighter than the page
+background, so elevation survives the theme swap.
+
+The E2E heading pins are untouched: the hero headline, the feature-grid heading and the
+public header's "Sign in" link still carry the strings `tests/e2e/platform-gate.spec.ts`
+asserts. No gate was re-run for this change at the user's request - the gates were last
+green on `387eaa2`.

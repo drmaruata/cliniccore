@@ -33,7 +33,10 @@ const CHIPS = [
 
 export function SecurityFoundation() {
   return (
-    <section id="security" className="scroll-mt-20 border-y border-border bg-background">
+    <section
+      id="security"
+      className="scroll-mt-20 bg-gradient-to-b from-accent/40 via-background to-background"
+    >
       <div className="mx-auto grid max-w-7xl items-center gap-14 px-6 py-20 lg:grid-cols-2 lg:py-28">
         <div>
           <h2 className="font-heading text-3xl font-semibold tracking-tight text-balance text-brand-navy sm:text-4xl">
@@ -44,7 +47,7 @@ export function SecurityFoundation() {
             row-level security, secure authentication and comprehensive audit logging to protect
             your organisation&apos;s data.
           </p>
-          <ul className="mt-8 space-y-4">
+          <ul className="reveal-rise mt-8 space-y-4">
             {GUARANTEES.map((guarantee) => (
               <li key={guarantee} className="flex items-center gap-3">
                 <span
@@ -66,20 +69,20 @@ export function SecurityFoundation() {
         </div>
 
         <div aria-hidden="true" className="relative mx-auto w-full max-w-md lg:max-w-none">
-          <div className="relative min-h-[22rem] overflow-hidden rounded-3xl border border-border bg-gradient-to-br from-accent via-card to-secondary/10 p-6 lg:min-h-[26rem] lg:p-10">
+          <div className="relative min-h-[22rem] overflow-hidden rounded-3xl bg-gradient-to-br from-accent via-card to-secondary/10 p-6 shadow-xl shadow-brand-navy/10 lg:min-h-[26rem] lg:p-10">
             <ShieldCheck
               className="absolute -right-10 -bottom-14 size-72 text-primary/10"
               strokeWidth={1}
             />
             <div className="flex h-full flex-col items-center justify-center gap-6">
-              <span className="flex size-20 items-center justify-center rounded-2xl border border-border bg-card shadow-lg shadow-brand-navy/5">
+              <span className="flex size-20 items-center justify-center rounded-2xl bg-card shadow-lg shadow-brand-navy/10 motion-reduce:animate-none animate-float">
                 <ShieldCheck className="size-10 text-primary-ink" strokeWidth={1.75} />
               </span>
               <div className="grid w-full max-w-sm gap-3">
                 {CHIPS.map((chip, index) => (
                   <div
                     key={chip.title}
-                    className={`flex items-start gap-3 rounded-xl border border-border bg-card p-4 shadow-lg shadow-brand-navy/5 ${
+                    className={`flex items-start gap-3 rounded-xl bg-card p-4 shadow-lg shadow-brand-navy/5 transition duration-300 hover:-translate-y-1 hover:shadow-xl motion-reduce:transform-none motion-reduce:transition-none ${
                       index === 1 ? "translate-x-8" : index === 2 ? "translate-x-4" : ""
                     }`}
                   >

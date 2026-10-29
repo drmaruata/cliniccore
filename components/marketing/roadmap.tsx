@@ -54,8 +54,8 @@ export function RoadmapSection() {
           </Button>
         </div>
 
-        <div className="grid gap-5 sm:grid-cols-2">
-          <div className="flex flex-col rounded-xl border border-secondary/30 bg-secondary/5 p-6">
+        <div className="reveal-rise grid gap-5 sm:grid-cols-2">
+          <div className="flex flex-col rounded-2xl bg-secondary/10 p-6 shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-brand-navy/10 motion-reduce:transform-none motion-reduce:transition-none">
             <p className="flex items-center gap-2 text-sm font-semibold text-secondary">
               <ShieldCheck aria-hidden="true" className="size-4" />
               Currently available
@@ -69,7 +69,7 @@ export function RoadmapSection() {
               ))}
             </ul>
           </div>
-          <div className="flex flex-col rounded-xl border border-border bg-muted/40 p-6">
+          <div className="flex flex-col rounded-2xl bg-muted/60 p-6 shadow-sm transition duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-brand-navy/10 motion-reduce:transform-none motion-reduce:transition-none">
             <p className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
               <CircleDashed aria-hidden="true" className="size-4" />
               Coming in future releases

@@ -43,7 +43,10 @@ const FEATURES = [
 
 export function FeatureHighlights() {
   return (
-    <section id="features" className="scroll-mt-20 bg-background">
+    <section
+      id="features"
+      className="scroll-mt-20 bg-gradient-to-b from-background via-accent/15 to-background"
+    >
       <div className="mx-auto max-w-7xl px-6 py-20 lg:py-24">
         <div className="mx-auto max-w-4xl text-center">
           <p className="text-xs font-semibold tracking-widest text-secondary uppercase">
@@ -56,15 +59,20 @@ export function FeatureHighlights() {
             Start with a solid foundation today, and add clinical modules as your needs grow.
           </p>
         </div>
-        <ul className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <ul className="reveal-rise mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
           {FEATURES.map((feature) => {
             const Icon = feature.icon;
             return (
               <li
                 key={feature.title}
-                className="group flex flex-col gap-5 rounded-xl border border-border bg-card p-6 transition-colors hover:border-primary/40"
+                className="group flex flex-col gap-5 rounded-2xl bg-card p-6 shadow-sm transition duration-300 hover:-translate-y-1.5 hover:shadow-xl hover:shadow-brand-navy/10 motion-reduce:transform-none motion-reduce:transition-none"
               >
-                <Icon aria-hidden="true" className={`size-9 ${feature.tone}`} strokeWidth={1.75} />
+                <span
+                  aria-hidden="true"
+                  className={`flex size-12 items-center justify-center rounded-2xl bg-accent transition-transform duration-300 group-hover:scale-110 motion-reduce:transform-none ${feature.tone}`}
+                >
+                  <Icon className="size-6" strokeWidth={1.75} />
+                </span>
                 <div>
                   <h3 className="font-heading text-base font-semibold text-foreground">
                     {feature.title}

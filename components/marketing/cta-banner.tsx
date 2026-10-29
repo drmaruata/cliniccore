@@ -13,6 +13,14 @@ export function CtaBanner() {
     <section className="relative overflow-hidden bg-[linear-gradient(125deg,var(--brand-secondary),var(--brand-navy))]">
       <div
         aria-hidden="true"
+        className="pointer-events-none absolute -top-24 -left-16 size-72 rounded-full bg-success/30 blur-3xl motion-reduce:animate-none animate-float-slow"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -right-16 -bottom-24 size-80 rounded-full bg-primary/30 blur-3xl motion-reduce:animate-none animate-float"
+      />
+      <div
+        aria-hidden="true"
         className="pointer-events-none absolute inset-0 opacity-10 [background-image:radial-gradient(circle_at_1px_1px,var(--background)_1px,transparent_0)] [background-size:22px_22px]"
       />
       <div className="relative mx-auto max-w-7xl px-6 py-20 text-center lg:py-24">

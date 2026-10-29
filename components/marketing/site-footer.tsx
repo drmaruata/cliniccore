@@ -28,7 +28,7 @@ const COLUMNS = [
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-border bg-background">
+    <footer className="bg-gradient-to-b from-background to-accent/30">
       <div className="mx-auto grid max-w-7xl gap-10 px-6 py-14 sm:grid-cols-[1.4fr_1fr_1fr]">
         <div className="space-y-3">
           <p className="flex items-center gap-2.5">
@@ -63,7 +63,7 @@ export function SiteFooter() {
           </nav>
         ))}
       </div>
-      <div className="border-t border-border">
+      <div>
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-6 py-6 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-xs text-muted-foreground">© 2026 ClinicCore. All rights reserved.</p>
           <p className="text-xs text-muted-foreground">
