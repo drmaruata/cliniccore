@@ -839,4 +839,108 @@ dbDescribe("clinical schema", () => {
       await session.rollback();
     }
   });
-});
+
+  it("assigns MRNs automatically and sequentially per clinic", async () => {
+      const session = await beginSession();
+      try {
+        const { organizationId, clinicId } = await seedFixture(session);
+        const otherClinicId = randomUUID();
+        await session.query(
+          `insert into public.clinics (organization_id, name) values ($1, 'Other clinic')`,
+          [organizationId],
+        );
+        // We need a real ID for the other clinic.
+        const [otherClinic] = await session.query<{ id: string }>(
+          `select id from public.clinics where organization_id = $1 and name = 'Other clinic'`,
+          [organizationId],
+        );
+        const clinicBId = otherClinic?.id ?? otherClinicId;
+
+        // 1. Auto-assignment regex
+        const [p1] = await session.query<{ mrn: string }>(
+          `insert into public.patients (organization_id, clinic_id) values ($1, $2) returning mrn`,
+          [organizationId, clinicId],
+        );
+        expect(p1?.mrn).toMatch(/^MRN-\\d{6}$/);
+
+        // 2. Sequentiality
+        const [p2] = await session.query<{ mrn: string }>(
+          `insert into public.patients (organization_id, clinic_id) values ($1, $2) returning mrn`,
+          [organizationId, clinicId],
+        );
+        const mrn1 = p1?.mrn ?? "";
+        const mrn2 = p2?.mrn ?? "";
+        const num1 = parseInt(mrn1.slice(4));
+        const num2 = parseInt(mrn2.slice(4));
+        expect(num2).toBe(num1 + 1);
+
+        // 3. Isolation
+        const [p3] = await session.query<{ mrn: string }>(
+          `insert into public.patients (organization_id, clinic_id) values ($1, $2) returning mrn`,
+          [organizationId, clinicBId],
+        );
+        expect(p3?.mrn).toBe("MRN-000001");
+      } finally {
+        await session.rollback();
+      }
+    });
+
+    it("refuses MRN generation for unauthorized users", async () => {
+      const session = await beginSession();
+      try {
+        const { organizationId, clinicId } = await seedFixture(session);
+        const otherOrgId = randomUUID();
+        const userId = randomUUID();
+
+        // Privilege - Anon: No identity
+        await session.query(`set local role authenticated`);
+        await session.query(`set_config('request.jwt.claim.sub', null, true)`);
+        await expectRejection(
+          session,
+          `select private.next_patient_mrn($1, $2)`,
+          [organizationId, clinicId],
+          /insufficient privilege/,
+        );
+
+        // Privilege - Org: Wrong Org
+        await session.query(`set_config('request.jwt.claim.sub', $1, true)`, [userId]);
+        await expectRejection(
+          session,
+          `select private.next_patient_mrn($1, $2)`,
+          [otherOrgId, clinicId],
+          /insufficient privilege/,
+        );
+
+        // Privilege - Clinic: Unreachable Clinic
+        const unreachableClinicId = randomUUID();
+        // User is member of org but clinic is not in org's list
+        await session.query(
+          `insert into public.organization_memberships (organization_id, user_id, status) values ($1, $2, 'active')`,
+          [organizationId, userId],
+        );
+        await expectRejection(
+          session,
+          `select private.next_patient_mrn($1, $2)`,
+          [organizationId, unreachableClinicId],
+          /insufficient privilege/,
+        );
+      } finally {
+        await session.rollback();
+      }
+    });
+
+    it("prevents MRN modification", async () => {
+      const session = await beginSession();
+      try {
+        const { patientId } = await seedFixture(session);
+        await expectRejection(
+          session,
+          `update public.patients set mrn = 'MRN-999999' where id = $1`,
+          [patientId],
+          /MRNs are immutable/,
+        );
+      } finally {
+        await session.rollback();
+      }
+    });
+  });
