@@ -648,7 +648,7 @@ dbDescribe("tenant isolation across two organizations", () => {
       // an INSERT has no existing row to filter; the three policy-less DELETEs are RLS
       // default-deny - the statement succeeds and matches zero rows, no error. A
       // re-granted privilege or a shape change fails this test, not a comment.
-      // `tests/security/rls-policies.test.ts` already pins the exact 39-policy
+      // `tests/security/rls-policies.test.ts` already pins the exact 52-policy
       // catalogue, so ADDING a permissive `clinics_delete` or `clinics_write` fails a
       // gate; what this test adds is the BEHAVIOURAL refusal, which no catalogue
       // assertion can see. These commands are refused for EVERY tenant - there is no
@@ -1861,7 +1861,7 @@ dbDescribe("tenant isolation across two organizations", () => {
       // field by the harness, but only for the ONE policy that mutation touched. This
       // outer-session read is the complement: it sees the whole set after every mutation
       // transaction has rolled back, so a policy no mutation touched cannot be quietly
-      // permissive, and the total cannot drift. MEASURED: 39 public + 20 storage
+      // permissive, and the total cannot drift. MEASURED: 52 public + 20 storage
       // policies, and the ONE shipped-permissive among them is `permissions_select`,
       // because the permission catalogue is GLOBAL and read-only - it admits every
       // signed-in reader BY DESIGN (migration 01100) and its writes are revoked - so the
@@ -1876,7 +1876,7 @@ dbDescribe("tenant isolation across two organizations", () => {
            from pg_catalog.pg_policies
           where schemaname in ('public', 'storage')`,
       );
-      expect(catalogue.length, "the live catalogue must hold the pinned policy total").toBe(59);
+      expect(catalogue.length, "the live catalogue must hold the pinned policy total").toBe(72);
       for (const row of catalogue) {
         const name = `${row.schemaname}.${row.policyname}`;
         if (row.schemaname === "public" && row.policyname === "permissions_select") {

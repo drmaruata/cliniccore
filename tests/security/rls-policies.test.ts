@@ -237,6 +237,83 @@ const EXPECTED: Expected[] = [
     qual: true,
     withCheck: false,
   },
+
+  {
+    table: "appointments",
+    name: "appointments_select",
+    cmd: "SELECT",
+    qual: true,
+    withCheck: false,
+  },
+  {
+    table: "appointments",
+    name: "appointments_write",
+    cmd: "INSERT",
+    qual: false,
+    withCheck: true,
+  },
+  {
+    table: "appointments",
+    name: "appointments_update",
+    cmd: "UPDATE",
+    qual: true,
+    withCheck: true,
+  },
+  {
+    table: "appointments",
+    name: "appointments_delete",
+    cmd: "DELETE",
+    qual: true,
+    withCheck: false,
+  },
+
+  {
+    table: "queue_entries",
+    name: "queue_entries_select",
+    cmd: "SELECT",
+    qual: true,
+    withCheck: false,
+  },
+  {
+    table: "queue_entries",
+    name: "queue_entries_write",
+    cmd: "INSERT",
+    qual: false,
+    withCheck: true,
+  },
+  {
+    table: "queue_entries",
+    name: "queue_entries_update",
+    cmd: "UPDATE",
+    qual: true,
+    withCheck: true,
+  },
+  {
+    table: "queue_entries",
+    name: "queue_entries_delete",
+    cmd: "DELETE",
+    qual: true,
+    withCheck: false,
+  },
+
+  { table: "encounters", name: "encounters_select", cmd: "SELECT", qual: true, withCheck: false },
+  { table: "encounters", name: "encounters_write", cmd: "INSERT", qual: false, withCheck: true },
+  { table: "encounters", name: "encounters_update", cmd: "UPDATE", qual: true, withCheck: true },
+
+  {
+    table: "encounter_addenda",
+    name: "encounter_addenda_select",
+    cmd: "SELECT",
+    qual: true,
+    withCheck: false,
+  },
+  {
+    table: "encounter_addenda",
+    name: "encounter_addenda_write",
+    cmd: "INSERT",
+    qual: false,
+    withCheck: true,
+  },
 ];
 
 /** Tables that must stay completely closed: a definer function is their only writer. */
