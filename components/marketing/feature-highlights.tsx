@@ -1,83 +1,83 @@
-import { Clock, KeyRound, Lock, Mail } from "lucide-react";
+import { Building2, ShieldCheck, Stethoscope, Users } from "lucide-react";
 
 /**
- * The feature highlights: four claims, each of which the codebase can be asked about.
+ * The feature grid: four claims, each of which the codebase can be asked about.
  *
- * WHY THESE FOUR. Every one of them is true of the code that exists today, and each is
- * checkable against a specific part of it: the composite tenant keys on the clinic and
- * patient references, the fifteen seeded roles and the single permission function, the
- * invitation's digest and its proven address, and the tenant's own time zone. The brief
- * forbids claims that have not been
- * verified, and the temptation on a marketing page is to claim the features a clinic
- * management product is expected to have - patient records, appointments, payments -
- * none of which are in this release.
+ * WHY THESE FOUR. The brief forbids claims that have not been verified, and the
+ * temptation on a marketing page is to claim the features a clinic management product
+ * is expected to have - patient records, appointments, payments - none of which are in
+ * this release. "Multi-clinic support" from the reference design is likewise NOT here
+ * (one clinic per organization today), so that card is "Tenant isolation" instead,
+ * which is the thing the schema actually carries.
  *
- * AND THE CLAIMS ARE NARROW ON PURPOSE, BOTH OF THEM. MEASURED from `pg_attribute`:
- * of the 16 public tables, 10 carry an `organization_id` and 6 do not -
- * `organizations` is the tenant root, `permissions`, `platform_settings` and
- * `tenant_creation_events` are global, `profiles` is per-user, and `role_permissions`
- * hangs off a ROLE, which carries the organization. Two of the ten that have the
- * column have it NULLABLE (`audit_logs`, `roles` - a platform role belongs to no
- * organization). So the claim is about ROWS and not about columns: every tenant-owned
- * ROW is tied to its organization, directly or through the role it belongs to.
- *
- * MEASURED on the foreign keys too: of the 21 public foreign keys, 5 are composite.
- * The three role references are single-column, and a role's organization scope is
- * closed by `private.guard_role_org_scope()` - a trigger - and by the policies, not by
- * the schema. So the copy names the references that ARE composite rather than claiming
- * they all are.
+ * MEASURED on the schema behind card 2 (from `pg_attribute`): of the 16 public tables,
+ * 10 carry an `organization_id` and 6 do not; two of those ten have it NULLABLE
+ * (`audit_logs`, `roles`). So the claim is about ROWS and not about columns.
  */
 const FEATURES = [
   {
-    icon: Lock,
-    title: "Isolation the schema carries",
-    body: "Every row of your clinic's own data is tied to the organization it belongs to, and the foreign keys that tie a record to another tenant's clinic or patient are composite - so a record pointing at another clinic is not representable, not merely hidden.",
+    icon: Users,
+    tone: "text-primary-ink",
+    title: "Team management",
+    body: "Invite staff, assign roles and control access across your clinic.",
   },
   {
-    icon: KeyRound,
-    title: "One permission rule",
-    body: "Fifteen roles span the platform, the organization, the clinic and the clinical bench. A permission is held by a role, and the check is a single function the database runs - the interface asks it rather than deciding.",
+    icon: Building2,
+    tone: "text-secondary",
+    title: "Tenant isolation",
+    body: "Every organization is its own isolated workspace - your clinic's records point only at their own tenant.",
   },
   {
-    icon: Mail,
-    title: "Invitations that name an address",
-    body: "An invitation is issued to one address, expires, and is redeemed once. Only a digest of the token is stored, and redemption needs a confirmed account at that address.",
+    icon: ShieldCheck,
+    tone: "text-primary-ink",
+    title: "Enterprise-grade security",
+    body: "Built on Supabase with row-level security, secure authentication and comprehensive audit logs.",
   },
   {
-    icon: Clock,
-    title: "The clinic's own time and money",
-    body: "Time zone, currency and locale belong to the tenant. A clinic's day is computed in the clinic's own zone rather than the server's, from a canonical zone name rather than an abbreviation.",
+    icon: Stethoscope,
+    tone: "text-secondary",
+    title: "Designed for healthcare",
+    body: "Tenancy, roles and access control shaped around clinic teams and their workflows.",
   },
 ] as const;
 
 export function FeatureHighlights() {
   return (
-    <section className="mx-auto max-w-5xl px-6 py-16">
-      <h2 className="font-heading text-2xl font-semibold tracking-tight text-brand-navy">
-        What the foundation gives you
-      </h2>
-      <ul className="mt-8 grid gap-6 sm:grid-cols-2">
-        {FEATURES.map((feature) => {
-          const Icon = feature.icon;
-          return (
-            <li
-              key={feature.title}
-              className="flex flex-col gap-3 rounded-xl border border-border bg-card p-6"
-            >
-              <div
-                aria-hidden="true"
-                className="flex size-10 items-center justify-center rounded-full bg-muted text-primary-ink"
+    <section id="features" className="scroll-mt-20 bg-background">
+      <div className="mx-auto max-w-7xl px-6 py-20 lg:py-24">
+        <div className="mx-auto max-w-4xl text-center">
+          <p className="text-xs font-semibold tracking-widest text-secondary uppercase">
+            Why clinics choose ClinicCore
+          </p>
+          <h2 className="mt-3 font-heading text-3xl font-semibold tracking-tight text-balance text-brand-navy sm:text-4xl">
+            A secure and flexible platform for modern clinics
+          </h2>
+          <p className="mt-4 text-muted-foreground">
+            Start with a solid foundation today, and add clinical modules as your needs grow.
+          </p>
+        </div>
+        <ul className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+          {FEATURES.map((feature) => {
+            const Icon = feature.icon;
+            return (
+              <li
+                key={feature.title}
+                className="group flex flex-col gap-5 rounded-xl border border-border bg-card p-6 transition-colors hover:border-primary/40"
               >
-                <Icon className="size-5" />
-              </div>
-              <h3 className="font-heading text-base font-semibold text-foreground">
-                {feature.title}
-              </h3>
-              <p className="text-sm text-muted-foreground">{feature.body}</p>
-            </li>
-          );
-        })}
-      </ul>
+                <Icon aria-hidden="true" className={`size-9 ${feature.tone}`} strokeWidth={1.75} />
+                <div>
+                  <h3 className="font-heading text-base font-semibold text-foreground">
+                    {feature.title}
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+                    {feature.body}
+                  </p>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
     </section>
   );
 }

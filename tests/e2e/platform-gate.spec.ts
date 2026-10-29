@@ -76,17 +76,17 @@ test.describe("the marketing shell", () => {
   }) => {
     const anonymous = await page.goto("/");
     expect(anonymous?.status()).toBe(200);
-    // The hero names the ORGANIZATION as the isolation boundary. An earlier revision
-    // said "Each clinic gets its own workspace", which was false: an organization is
-    // the boundary and intra-tenant multi-clinic is not built (corrected on
-    // 2026-10-22). This locator was left behind, so the gate has been red since.
+    // The hero leads with the platform promise. An earlier revision pinned "Every
+    // organization is its own isolated workspace", which was corrected on 2026-10-22;
+    // the 2026-10-28 redesign moved that fact onto the feature grid ("Tenant
+    // isolation") because the brief wanted the hero to lead with the promise, not the
+    // architecture. The grid heading is pinned so the reference design's four cards
+    // cannot silently lose the section.
+    await expect(page.getByRole("heading", { name: /Simplify clinic operations/ })).toBeVisible();
     await expect(
-      page.getByRole("heading", { name: /Every organization is its own isolated workspace/ }),
+      page.getByRole("heading", { name: "A secure and flexible platform for modern clinics" }),
     ).toBeVisible();
-    await expect(
-      page.getByRole("heading", { name: "What the foundation gives you" }),
-    ).toBeVisible();
-    await expect(page.getByRole("link", { name: "Create your clinic" }).first()).toBeVisible();
+    await expect(page.getByRole("link", { name: "Get started" }).first()).toBeVisible();
 
     // And the same page for a signed-in visitor. A public shell that changed for a
     // signed-in user would disclose that somebody is signed in, which is a fact the

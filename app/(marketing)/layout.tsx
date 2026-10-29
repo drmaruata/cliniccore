@@ -22,7 +22,7 @@ export const metadata: Metadata = {
     template: "%s | ClinicCore",
   },
   description:
-    "ClinicCore is multi-tenant clinic management. Each clinic is an organization, and row-level security decides who may read what.",
+    "ClinicCore is a modern, secure and flexible platform for clinic teams: organisation management, role-based access and row-level tenant isolation.",
 };
 
 export default function MarketingLayout({

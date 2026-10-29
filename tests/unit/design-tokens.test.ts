@@ -2195,8 +2195,11 @@ describe("the hex rule is not vacuous", () => {
     // (app/platform/**), lib/auth/platform.ts - and the root app/page.tsx, which the
     // marketing group REPLACES rather than joins, because a route group is pathless and
     // two pages serving `/` is a build conflict. 64 -> 72 code files.
-    expect(code.length + css.length).toBe(74);
-    expect(code.length).toBe(72);
+    // The 2026-10-28 marketing redesign added 4 page-section components under
+    // components/marketing/** (cta-banner, security-foundation, setup-steps, roadmap).
+    // 72 -> 76 code files.
+    expect(code.length + css.length).toBe(78);
+    expect(code.length).toBe(76);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was

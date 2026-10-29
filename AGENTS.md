@@ -1079,9 +1079,14 @@ test.ts` pins both halves.
   and the application shell's "Sign out" is absent.
 - **THE MARKETING COPY MAKES NO CLAIM THAT HAS NOT BEEN VERIFIED.** No testimonials,
   no customer counts, no uptime, no certification - and no mention of patient records,
-  appointments or payments, because NONE of those exist in this release. The four
-  feature cards each name something the codebase can be asked about. Full copy and the
-  page set are Phase 4; this is the visual foundation, and the footer says so.
+  appointments or payments, because NONE of those exist in this release. The page set
+  follows the 2026-10-28 reference-image redesign with the truthful adaptation the
+  user chose (recorded in `docs/IMPLEMENTATION_STATUS.md`): the reference's invented
+  testimonials, stock photo, "multi-clinic support" card and "up and running in
+  minutes" promise were replaced, not copied. The feature cards each name something
+  the codebase can be asked about, and the roadmap card names the late phases as
+  COMING, because the spec plans them and has not built them. Full copy and the
+  content pages are Phase 4; this is the visual foundation, and the footer says so.
   **AND THE COMPOSITE-KEY CLAIM IS NARROW ON PURPOSE.** MEASURED: of the 21 public
   foreign keys, **5 are composite** - the three that tie a row to another tenant's
   clinic, the one to a patient and the one to a membership. The three ROLE references

@@ -5417,3 +5417,32 @@ setup` block now says applying the migrations from zero needs one of Docker, the
 The gates were run last, after every edit above, in the order `format`, `typecheck`, `lint`, and
 each exit code was read and is recorded in the Task 20 report. The test suite, the build and E2E
 were not re-run: no finding questioned a gate result.
+
+## 2026-10-28 - the marketing landing page redesign (truthful adaptation)
+
+The landing page was redesigned to match a supplied reference image (hero with product
+mock, centred feature grid, security split, three-step setup, roadmap columns, closing
+banner, multi-column footer). The reference contained fabrications, and the manual
+decision was recorded FIRST, with the user: the truthful-adaptation option was chosen,
+so the reference's invented testimonials (named doctors, star ratings), its stock
+photograph, its "multi-clinic support" card (one clinic per organization today), its
+"you'll be up and running in minutes" (no measurement backs a duration) and its footer
+links to non-existent pages were all REPLACED rather than copied. The four-page-section
+components added under `components/marketing/` are `cta-banner`, `security-foundation`,
+`setup-steps` and `roadmap`; nothing else moved. Consequences:
+
+1. **The E2E heading pins moved with the copy.** The platform-gate marketing test now
+   asserts `/Simplify clinic operations/` and
+   "A secure and flexible platform for modern clinics" - the old pins
+   /Every organization is its own isolated workspace/ and "What the foundation gives
+   you" named copy the redesign retired. The isolation fact itself did not leave the
+   page: it is the feature grid's second card, titled "Tenant isolation".
+2. **The design-token file-count pin moved with the file list.** `design-tokens.test.ts`
+   asserted 72 code files / 74 total as a scan-tree tripwire; the four new components
+   make it 76 / 78, updated in the same pass with the history comment extended.
+3. **A contrast detail the reference violated:** its green headline text is the brand
+   primary straight out of the palette, which measures 2.93:1 on background. The page
+   uses `text-primary-ink` (5.08:1) for that headline span and for the roadmap checks,
+   the same move the palette file documents for the button link variant.
+4. The testimonials sections are ABSENT, not pending: adding them later requires real
+   named quotes from real customers, not placeholder people.
