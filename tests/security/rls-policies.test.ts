@@ -1418,7 +1418,7 @@ dbDescribe("authorised writes actually work", () => {
   });
 
   // The seven command policies the re-review proved could each be replaced by
-  // `using (false) with check (false)` - leaving the policy count at 39 and the
+  // `using (false) with check (false)` - leaving the policy count at 52 and the
   // non-null qual/with_check assertions intact - with every test in the file still
   // passing. Each now has an authorised-write positive control, so neutering one
   // turns this suite red instead of silently disabling that operation.
