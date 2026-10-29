@@ -348,7 +348,7 @@ dbDescribe("the public RPC surface", () => {
   });
 
   it("leaves the trigger-referenced private functions as they were", async () => {
-    // Six more functions are referenced by TRIGGERS, which fire as their table's owner.
+    // Seven more functions are referenced by TRIGGERS, which fire as their table's owner.
     // Two of them are deliberately NOT executable by `authenticated` - they were never
     // granted (01230 and 01240 revoked the PUBLIC grant and did not re-grant to
     // `authenticated`), and the trigger still fires for an `authenticated` caller because
@@ -356,9 +356,12 @@ dbDescribe("the public RPC surface", () => {
     // time.
     //
     // Asserted per function, because the expected values DIFFER - a blanket "all true"
-    // would be wrong for two of them, and a blanket "all false" for the other four.
+    // would be wrong for two of them, and a blanket "all false" for the other five.
+    // Every function here must also be closed to anon and to PUBLIC: a trigger function
+    // that reads a tenant table is a capability, and the default grant is not a boundary.
     const expected: Record<string, boolean> = {
       create_profile_for_new_user: true,
+      guard_appointment_status_transition: true,
       guard_platform_admin: true,
       guard_role_delete: false,
       guard_role_identity: false,
@@ -367,9 +370,16 @@ dbDescribe("the public RPC surface", () => {
     };
     const session = await beginSession();
     try {
-      const rows = await session.query<{ fn: string; auth: boolean }>(
+      const rows = await session.query<{
+        fn: string;
+        auth: boolean;
+        anon: boolean;
+        pub: boolean;
+      }>(
         `select p.proname as fn,
-                has_function_privilege('authenticated', p.oid, 'execute') as auth
+                has_function_privilege('authenticated', p.oid, 'execute') as auth,
+                has_function_privilege('anon', p.oid, 'execute') as anon,
+                has_function_privilege('public', p.oid, 'execute') as pub
            from pg_proc p join pg_namespace n on n.oid = p.pronamespace
           where n.nspname = 'private' and p.proname = any($1::text[])
           order by p.proname`,
@@ -381,6 +391,8 @@ dbDescribe("the public RPC surface", () => {
           row.auth,
           `private.${row.fn} is called by a trigger and its privilege must not drift`,
         ).toBe(expected[row.fn] ?? false);
+        expect(row.anon, `private.${row.fn} must not be callable by anon`).toBe(false);
+        expect(row.pub, `private.${row.fn} must not carry the PUBLIC grant`).toBe(false);
       }
     } finally {
       await session.rollback();

@@ -2,8 +2,8 @@
 /**
  * Task 1 - the clinical core schema, asserted against the live catalogue.
  *
- * WHY THIS FILE EXISTS. The four tables in 20261029001900 are the first that
- * hang off patients, so the load-bearing property is structural: every reference
+ * WHY THIS FILE EXISTS. The four tables in 20261029001900 hang off patients as
+ * well as clinics, so the load-bearing property is structural: every reference
  * includes organization_id, which makes a cross-tenant appointment, queue entry,
  * encounter or addendum unrepresentable rather than merely hidden. The test
  * reads pg_constraint and asserts the exact column ORDER of each foreign key,
@@ -587,6 +587,122 @@ dbDescribe("clinical schema", () => {
     }
   });
 
+  it("enforces every allowed and refused appointment status transition", async () => {
+    const allowed: Array<[string, string]> = [
+      ["booked", "confirmed"],
+      ["booked", "cancelled"],
+      ["confirmed", "checked_in"],
+      ["confirmed", "cancelled"],
+      ["confirmed", "no_show"],
+      ["checked_in", "completed"],
+      ["checked_in", "cancelled"],
+      // A no-op is not a transition.
+      ["booked", "booked"],
+      ["confirmed", "confirmed"],
+      ["checked_in", "checked_in"],
+      ["completed", "completed"],
+      ["cancelled", "cancelled"],
+      ["no_show", "no_show"],
+    ];
+    const refused: Array<[string, string]> = [
+      ["booked", "checked_in"],
+      ["booked", "completed"],
+      ["confirmed", "completed"],
+      ["checked_in", "booked"],
+      ["completed", "booked"],
+      ["cancelled", "confirmed"],
+    ];
+
+    const session = await beginSession();
+    try {
+      const { organizationId, clinicId, patientId } = await seedFixture(session);
+      const insertAppointment = `insert into public.appointments
+          (organization_id, clinic_id, patient_id, scheduled_start, scheduled_end, status)
+        values ($1, $2, $3, now(), now() + interval '15 minutes', $4) returning id`;
+      const setStatus = `update public.appointments set status = $2 where id = $1`;
+
+      for (const [from, to] of allowed) {
+        const [appointment] = await session.query<{ id: string }>(insertAppointment, [
+          organizationId,
+          clinicId,
+          patientId,
+          from,
+        ]);
+        if (appointment === undefined) throw new Error(`could not create a ${from} appointment`);
+        await session.query(setStatus, [appointment.id, to]);
+        const [row] = await session.query<{ status: string }>(
+          `select status from public.appointments where id = $1`,
+          [appointment.id],
+        );
+        expect(row?.status, `${from} -> ${to} must be allowed`).toBe(to);
+      }
+
+      for (const [from, to] of refused) {
+        const [appointment] = await session.query<{ id: string }>(insertAppointment, [
+          organizationId,
+          clinicId,
+          patientId,
+          from,
+        ]);
+        if (appointment === undefined) throw new Error(`could not create a ${from} appointment`);
+        await expectRejection(
+          session,
+          setStatus,
+          [appointment.id, to],
+          new RegExp(`cannot move from ${from} to ${to}`),
+        );
+      }
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("advances updated_at through the set_updated_at trigger", async () => {
+    const session = await beginSession();
+    try {
+      const { organizationId, clinicId, patientId } = await seedFixture(session);
+      // now() is the transaction timestamp, so the insert is backdated to make the
+      // trigger's write observable without sleeping inside one transaction.
+      const [appointment] = await session.query<{ id: string }>(
+        `insert into public.appointments
+           (organization_id, clinic_id, patient_id, scheduled_start, scheduled_end,
+            created_at, updated_at)
+         values ($1, $2, $3, now(), now() + interval '15 minutes',
+                 now() - interval '1 hour', now() - interval '1 hour')
+         returning id`,
+        [organizationId, clinicId, patientId],
+      );
+      if (appointment === undefined) throw new Error("could not create the fixture appointment");
+      await session.query(`update public.appointments set reason = 'Follow-up' where id = $1`, [
+        appointment.id,
+      ]);
+      const [appointmentRow] = await session.query<{ advanced: boolean }>(
+        `select updated_at > created_at as advanced from public.appointments where id = $1`,
+        [appointment.id],
+      );
+      expect(appointmentRow?.advanced, "appointments.updated_at must advance").toBe(true);
+
+      const [encounter] = await session.query<{ id: string }>(
+        `insert into public.encounters
+           (organization_id, clinic_id, patient_id, created_at, updated_at)
+         values ($1, $2, $3, now() - interval '1 hour', now() - interval '1 hour')
+         returning id`,
+        [organizationId, clinicId, patientId],
+      );
+      if (encounter === undefined) throw new Error("could not create the fixture encounter");
+      await session.query(`update public.encounters set assessment = 'Stable' where id = $1`, [
+        encounter.id,
+      ]);
+      const [encounterRow] = await session.query<{ advanced: boolean }>(
+        `select updated_at > created_at as advanced from public.encounters where id = $1`,
+        [encounter.id],
+      );
+      expect(encounterRow?.advanced, "encounters.updated_at must advance").toBe(true);
+    } finally {
+      await session.rollback();
+    }
+  });
+
   it("keeps at most one open queue entry per patient and clinic", async () => {
     const session = await beginSession();
     try {
@@ -652,6 +768,73 @@ dbDescribe("clinical schema", () => {
         [encounter.id],
       );
       expect(count?.n).toBe(1);
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("deletes an organization with clinical rows and cascades every child", async () => {
+    // The RESTRICT patient and appointment references do not block a tenant delete:
+    // PostgreSQL orders the organization's cascades so the referencing rows go first.
+    // MEASURED: this delete succeeds with a full clinical record attached.
+    const session = await beginSession();
+    try {
+      const { organizationId, clinicId, patientId } = await seedFixture(session);
+
+      const [appointment] = await session.query<{ id: string }>(
+        `insert into public.appointments
+           (organization_id, clinic_id, patient_id, scheduled_start, scheduled_end)
+         values ($1, $2, $3, now(), now() + interval '15 minutes') returning id`,
+        [organizationId, clinicId, patientId],
+      );
+      if (appointment === undefined) throw new Error("could not create the fixture appointment");
+
+      await session.query(
+        `insert into public.queue_entries (organization_id, clinic_id, patient_id, appointment_id)
+         values ($1, $2, $3, $4)`,
+        [organizationId, clinicId, patientId, appointment.id],
+      );
+
+      const [encounter] = await session.query<{ id: string }>(
+        `insert into public.encounters
+           (organization_id, clinic_id, patient_id, appointment_id)
+         values ($1, $2, $3, $4) returning id`,
+        [organizationId, clinicId, patientId, appointment.id],
+      );
+      if (encounter === undefined) throw new Error("could not create the fixture encounter");
+
+      await session.query(
+        `insert into public.encounter_addenda (organization_id, encounter_id, body)
+         values ($1, $2, 'Reviewed after finalisation.')`,
+        [organizationId, encounter.id],
+      );
+
+      await session.query(`delete from public.organizations where id = $1`, [organizationId]);
+
+      const [remaining] = await session.query<{
+        clinics: number;
+        patients: number;
+        appointments: number;
+        queue_entries: number;
+        encounters: number;
+        encounter_addenda: number;
+      }>(
+        `select (select count(*)::int from public.clinics where organization_id = $1) as clinics,
+                (select count(*)::int from public.patients where organization_id = $1) as patients,
+                (select count(*)::int from public.appointments where organization_id = $1) as appointments,
+                (select count(*)::int from public.queue_entries where organization_id = $1) as queue_entries,
+                (select count(*)::int from public.encounters where organization_id = $1) as encounters,
+                (select count(*)::int from public.encounter_addenda where organization_id = $1) as encounter_addenda`,
+        [organizationId],
+      );
+      expect(remaining).toEqual({
+        clinics: 0,
+        patients: 0,
+        appointments: 0,
+        queue_entries: 0,
+        encounters: 0,
+        encounter_addenda: 0,
+      });
     } finally {
       await session.rollback();
     }
