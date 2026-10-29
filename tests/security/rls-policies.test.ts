@@ -243,9 +243,12 @@ const EXPECTED: Expected[] = [
 const DENY_ALL = ["tenant_sequences"];
 
 const ALL_TABLES = [
+  "appointments",
   "audit_logs",
   "clinic_memberships",
   "clinics",
+  "encounter_addenda",
+  "encounters",
   "invitations",
   "organization_memberships",
   "organizations",
@@ -254,6 +257,7 @@ const ALL_TABLES = [
   "permissions",
   "platform_settings",
   "profiles",
+  "queue_entries",
   "role_permissions",
   "roles",
   "tenant_creation_events",

@@ -8,6 +8,76 @@ export type Database = {
   };
   public: {
     Tables: {
+      appointments: {
+        Row: {
+          clinic_id: string;
+          clinician_user_id: string | null;
+          created_at: string;
+          created_by: string | null;
+          id: string;
+          notes: string | null;
+          organization_id: string;
+          patient_id: string;
+          reason: string | null;
+          scheduled_end: string;
+          scheduled_start: string;
+          status: string;
+          updated_at: string;
+        };
+        Insert: {
+          clinic_id: string;
+          clinician_user_id?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          id?: string;
+          notes?: string | null;
+          organization_id: string;
+          patient_id: string;
+          reason?: string | null;
+          scheduled_end: string;
+          scheduled_start: string;
+          status?: string;
+          updated_at?: string;
+        };
+        Update: {
+          clinic_id?: string;
+          clinician_user_id?: string | null;
+          created_at?: string;
+          created_by?: string | null;
+          id?: string;
+          notes?: string | null;
+          organization_id?: string;
+          patient_id?: string;
+          reason?: string | null;
+          scheduled_end?: string;
+          scheduled_start?: string;
+          status?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "appointments_clinic_fkey";
+            columns: ["organization_id", "clinic_id"];
+            isOneToOne: false;
+            referencedRelation: "clinics";
+            referencedColumns: ["organization_id", "id"];
+          },
+          {
+            foreignKeyName: "appointments_organization_id_fkey";
+            columns: ["organization_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "appointments_patient_fkey";
+            columns: ["organization_id", "patient_id"];
+            isOneToOne: false;
+            referencedRelation: "patients";
+            referencedColumns: ["organization_id", "id"];
+          },
+        ];
+      };
       audit_logs: {
         Row: {
           action: string;
@@ -121,6 +191,137 @@ export type Database = {
             isOneToOne: false;
             referencedRelation: "organizations";
             referencedColumns: ["id"];
+          },
+        ];
+      };
+      encounter_addenda: {
+        Row: {
+          author_user_id: string | null;
+          body: string;
+          created_at: string;
+          encounter_id: string;
+          id: string;
+          organization_id: string;
+        };
+        Insert: {
+          author_user_id?: string | null;
+          body: string;
+          created_at?: string;
+          encounter_id: string;
+          id?: string;
+          organization_id: string;
+        };
+        Update: {
+          author_user_id?: string | null;
+          body?: string;
+          created_at?: string;
+          encounter_id?: string;
+          id?: string;
+          organization_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "encounter_addenda_encounter_fkey";
+            columns: ["organization_id", "encounter_id"];
+            isOneToOne: false;
+            referencedRelation: "encounters";
+            referencedColumns: ["organization_id", "id"];
+          },
+          {
+            foreignKeyName: "encounter_addenda_organization_id_fkey";
+            columns: ["organization_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      encounters: {
+        Row: {
+          appointment_id: string | null;
+          assessment: string | null;
+          chief_complaint: string | null;
+          clinic_id: string;
+          clinician_user_id: string | null;
+          created_at: string;
+          examination: string | null;
+          finalized_at: string | null;
+          finalized_by: string | null;
+          history: string | null;
+          id: string;
+          organization_id: string;
+          patient_id: string;
+          plan: string | null;
+          started_at: string;
+          status: string;
+          updated_at: string;
+        };
+        Insert: {
+          appointment_id?: string | null;
+          assessment?: string | null;
+          chief_complaint?: string | null;
+          clinic_id: string;
+          clinician_user_id?: string | null;
+          created_at?: string;
+          examination?: string | null;
+          finalized_at?: string | null;
+          finalized_by?: string | null;
+          history?: string | null;
+          id?: string;
+          organization_id: string;
+          patient_id: string;
+          plan?: string | null;
+          started_at?: string;
+          status?: string;
+          updated_at?: string;
+        };
+        Update: {
+          appointment_id?: string | null;
+          assessment?: string | null;
+          chief_complaint?: string | null;
+          clinic_id?: string;
+          clinician_user_id?: string | null;
+          created_at?: string;
+          examination?: string | null;
+          finalized_at?: string | null;
+          finalized_by?: string | null;
+          history?: string | null;
+          id?: string;
+          organization_id?: string;
+          patient_id?: string;
+          plan?: string | null;
+          started_at?: string;
+          status?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "encounters_appointment_fkey";
+            columns: ["organization_id", "appointment_id"];
+            isOneToOne: false;
+            referencedRelation: "appointments";
+            referencedColumns: ["organization_id", "id"];
+          },
+          {
+            foreignKeyName: "encounters_clinic_fkey";
+            columns: ["organization_id", "clinic_id"];
+            isOneToOne: false;
+            referencedRelation: "clinics";
+            referencedColumns: ["organization_id", "id"];
+          },
+          {
+            foreignKeyName: "encounters_organization_id_fkey";
+            columns: ["organization_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "encounters_patient_fkey";
+            columns: ["organization_id", "patient_id"];
+            isOneToOne: false;
+            referencedRelation: "patients";
+            referencedColumns: ["organization_id", "id"];
           },
         ];
       };
@@ -419,6 +620,74 @@ export type Database = {
           updated_at?: string;
         };
         Relationships: [];
+      };
+      queue_entries: {
+        Row: {
+          appointment_id: string | null;
+          called_at: string | null;
+          clinic_id: string;
+          completed_at: string | null;
+          created_by: string | null;
+          id: string;
+          organization_id: string;
+          patient_id: string;
+          queued_at: string;
+          status: string;
+        };
+        Insert: {
+          appointment_id?: string | null;
+          called_at?: string | null;
+          clinic_id: string;
+          completed_at?: string | null;
+          created_by?: string | null;
+          id?: string;
+          organization_id: string;
+          patient_id: string;
+          queued_at?: string;
+          status?: string;
+        };
+        Update: {
+          appointment_id?: string | null;
+          called_at?: string | null;
+          clinic_id?: string;
+          completed_at?: string | null;
+          created_by?: string | null;
+          id?: string;
+          organization_id?: string;
+          patient_id?: string;
+          queued_at?: string;
+          status?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "queue_entries_appointment_fkey";
+            columns: ["organization_id", "appointment_id"];
+            isOneToOne: false;
+            referencedRelation: "appointments";
+            referencedColumns: ["organization_id", "id"];
+          },
+          {
+            foreignKeyName: "queue_entries_clinic_fkey";
+            columns: ["organization_id", "clinic_id"];
+            isOneToOne: false;
+            referencedRelation: "clinics";
+            referencedColumns: ["organization_id", "id"];
+          },
+          {
+            foreignKeyName: "queue_entries_organization_id_fkey";
+            columns: ["organization_id"];
+            isOneToOne: false;
+            referencedRelation: "organizations";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "queue_entries_patient_fkey";
+            columns: ["organization_id", "patient_id"];
+            isOneToOne: false;
+            referencedRelation: "patients";
+            referencedColumns: ["organization_id", "id"];
+          },
+        ];
       };
       role_permissions: {
         Row: {
