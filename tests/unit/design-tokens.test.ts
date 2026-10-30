@@ -2198,8 +2198,11 @@ describe("the hex rule is not vacuous", () => {
     // The 2026-10-28 marketing redesign added 4 page-section components under
     // components/marketing/** (cta-banner, security-foundation, setup-steps, roadmap).
     // 72 -> 76 code files.
-    expect(code.length + css.length).toBe(78);
-    expect(code.length).toBe(76);
+    // Task 4 of the clinical core added lib/validation/patients.ts and
+    // lib/patients/queries.ts, both under a scan root for the same reason.
+    // 76 -> 78 code files.
+    expect(code.length + css.length).toBe(80);
+    expect(code.length).toBe(78);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was
