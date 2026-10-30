@@ -128,16 +128,20 @@ export default async function AppLayout({
   }
 
   const supabase = await createServerClient();
-  const [{ data: clinicRows }, activeClinicId, canManageStaff] = await Promise.all([
-    supabase.from("clinics").select("id, name").eq("organization_id", org.id).order("name"),
-    readActiveClinicId(),
-    userCan("staff.manage"),
-  ]);
+  const [{ data: clinicRows }, activeClinicId, canManageStaff, canReadPatients] = await Promise.all(
+    [
+      supabase.from("clinics").select("id, name").eq("organization_id", org.id).order("name"),
+      readActiveClinicId(),
+      userCan("staff.manage"),
+      userCan("patients.read"),
+    ],
+  );
 
   const clinics = (clinicRows ?? []).map((clinic) => ({ id: clinic.id, name: clinic.name }));
   const activeClinicName = clinics.find((clinic) => clinic.id === activeClinicId)?.name ?? null;
   const navItems = [
     { href: "/app/dashboard", label: "Dashboard" },
+    ...(canReadPatients ? [{ href: "/app/patients", label: "Patients" }] : []),
     ...(canManageStaff ? [{ href: "/app/settings/members", label: "Members" }] : []),
   ];
 

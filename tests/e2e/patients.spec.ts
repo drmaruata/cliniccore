@@ -1,0 +1,138 @@
+import { expect, test } from "@playwright/test";
+
+import { admin } from "../helpers/auth-session-fixture";
+import { cleanupProbe, newProbeCleanup } from "../helpers/e2e-cleanup";
+import { signIn } from "../helpers/e2e-sign-in";
+
+/**
+ * Patient registration, archiving and tenant separation.
+ *
+ * WHY EVERY RUN CREATES ITS OWN ACCOUNT AND TENANT. The suite runs fully parallel against
+ * a live project, and public signup is rate limited, so the account is created through the
+ * admin API and the organization, clinic and patient carry a timestamp and process id. A
+ * shared fixture would let one worker's patient appear in another worker's table.
+ *
+ * WHY THE IDENTIFIER ASSERTION READS THE DATABASE. The registration form does not collect
+ * identifiers, and the detail page that will show them is Task 6. The only honest check
+ * that none were written is the row count in `patient_identifiers` for the patient the
+ * form just created.
+ *
+ * WHY THE SECOND TENANT IS CREATED THROUGH ONBOARDING. `createOrganization` sets the active
+ * organization cookie, so completing onboarding again is the product's own way to switch
+ * tenants. The assertion is that the first tenant's patient is absent from the second
+ * tenant's list - the explicit organization filter and RLS working together.
+ */
+
+const PASSWORD = "Pr0be-Passw0rd!x";
+
+/** What this worker created. The suite runs its tests in parallel, so it is per worker. */
+const probe = newProbeCleanup();
+
+async function createProbeUser(prefix: string): Promise<{ id: string; email: string }> {
+  const email = `e2e-${prefix}-${Date.now()}-${process.pid}-${Math.floor(
+    Math.random() * 1e6,
+  )}@example.com`;
+  const { data, error } = await admin().auth.admin.createUser({
+    email,
+    password: PASSWORD,
+    email_confirm: true,
+  });
+  if (error || !data.user) {
+    throw new Error(`could not create the probe account: ${error?.message}`);
+  }
+  probe.userIds.push(data.user.id);
+  return { id: data.user.id, email };
+}
+
+test.afterEach(async () => {
+  await cleanupProbe(probe);
+  probe.slugs.length = 0;
+  probe.userIds.length = 0;
+});
+
+test.describe("Patients", () => {
+  test("registers a patient with an MRN, archives it, and does not show it in another organization", async ({
+    page,
+  }) => {
+    const user = await createProbeUser("patients");
+    expect(await signIn(page, user.email, PASSWORD)).toBe("signed_in");
+
+    const stamp = `${Date.now()}-${process.pid}`;
+    const firstOrgName = `Probe Patients Clinic ${stamp}`;
+    const firstSlug = `probe-patients-${stamp}`;
+    probe.slugs.push(firstSlug);
+
+    // 1. A tenant of this run, created through the product's own onboarding.
+    await page.goto("/app/onboarding");
+    await page.fill('input[id="name"]', firstOrgName);
+    await page.fill('input[id="slug"]', firstSlug);
+    await page.getByRole("button", { name: "Create organization" }).click();
+    await expect(page).toHaveURL(/\/app\/dashboard$/);
+
+    // 2. Register a patient. The only clinic is the one onboarding created, so the
+    //    picker's default is the clinic the record belongs to.
+    const firstName = "Ada";
+    const lastName = `Okafor ${stamp}`;
+    await page.goto("/app/patients/new");
+    await page.fill('input[id="patient-first-name"]', firstName);
+    await page.fill('input[id="patient-last-name"]', lastName);
+    await page.fill('input[id="patient-date-of-birth"]', "1990-01-02");
+    await page.selectOption('select[id="patient-sex"]', "female");
+    await page.fill('input[id="patient-phone"]', "+15550001000");
+    await page.fill('input[id="patient-email"]', `ada-${stamp}@example.com`);
+    await page.getByRole("button", { name: "Register patient" }).click();
+
+    // 3. The action redirects to the list, and the record number is the clinic's own.
+    await expect(page).toHaveURL(/\/app\/patients$/);
+    const mrnCell = page.getByRole("cell", { name: /^MRN-\d{6}$/ });
+    await expect(mrnCell).toBeVisible();
+    const mrn = (await mrnCell.textContent())?.trim() ?? "";
+    expect(mrn).toMatch(/^MRN-\d{6}$/);
+    await expect(page.getByRole("cell", { name: `${firstName} ${lastName}` })).toBeVisible();
+
+    // 4. No identifiers were written by the registration form.
+    const { data: patient, error: patientError } = await admin()
+      .from("patients")
+      .select("id")
+      .eq("mrn", mrn)
+      .eq("first_name", firstName)
+      .eq("last_name", lastName)
+      .single();
+    if (patientError || !patient) {
+      throw new Error(`could not read the registered patient: ${patientError?.message}`);
+    }
+    const { count: identifierCount, error: identifierError } = await admin()
+      .from("patient_identifiers")
+      .select("id", { count: "exact", head: true })
+      .eq("patient_id", patient.id);
+    if (identifierError) {
+      throw new Error(`could not count patient identifiers: ${identifierError.message}`);
+    }
+    expect(identifierCount).toBe(0);
+
+    // 5. Archiving removes it from the active list, after the confirm dialog.
+    await page.getByRole("button", { name: `Archive ${mrn}`, exact: true }).click();
+    await expect(page.getByRole("alertdialog")).toBeVisible();
+    await page.getByRole("button", { name: "Confirm archive" }).click();
+    await expect(page.getByRole("cell", { name: mrn, exact: true })).toHaveCount(0);
+    await expect(page.getByText("No patients yet")).toBeVisible();
+
+    // 6. The archived record is still there, under the archived filter.
+    await page.goto("/app/patients?archived=1");
+    await expect(page.getByRole("cell", { name: mrn, exact: true })).toBeVisible();
+
+    // 7. A second organization for the same user, active after onboarding. The first
+    //    tenant's patient must not appear in its list.
+    const secondSlug = `probe-patients-two-${stamp}`;
+    probe.slugs.push(secondSlug);
+    await page.goto("/app/onboarding");
+    await page.fill('input[id="name"]', `Probe Patients Clinic Two ${stamp}`);
+    await page.fill('input[id="slug"]', secondSlug);
+    await page.getByRole("button", { name: "Create organization" }).click();
+    await expect(page).toHaveURL(/\/app\/dashboard$/);
+
+    await page.goto("/app/patients");
+    await expect(page.getByRole("cell", { name: mrn, exact: true })).toHaveCount(0);
+    await expect(page.getByText("No patients yet")).toBeVisible();
+  });
+});

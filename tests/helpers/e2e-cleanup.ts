@@ -45,6 +45,12 @@ export async function cleanupProbe(probe: ProbeCleanup): Promise<void> {
       await client.from("user_role_assignments").delete().eq("organization_id", org.id);
       await client.from("organization_memberships").delete().eq("organization_id", org.id);
       await client.from("invitations").delete().eq("organization_id", org.id);
+      await client.from("encounter_addenda").delete().eq("organization_id", org.id);
+      await client.from("encounters").delete().eq("organization_id", org.id);
+      await client.from("queue_entries").delete().eq("organization_id", org.id);
+      await client.from("appointments").delete().eq("organization_id", org.id);
+      await client.from("patient_identifiers").delete().eq("organization_id", org.id);
+      await client.from("patients").delete().eq("organization_id", org.id);
       await client.from("clinics").delete().eq("organization_id", org.id);
       await client.from("organizations").delete().eq("id", org.id);
       // The audit trail carries NO foreign keys, so nothing removes these for us.

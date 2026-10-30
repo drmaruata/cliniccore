@@ -18,7 +18,7 @@ import "server-only";
 
 import { getActiveOrg } from "@/lib/auth/active-org";
 import { createServerClient } from "@/lib/supabase/server";
-import type { Database } from "@/types/database.types";
+import type { Database } from "../../types/database.types";
 
 type PatientRow = Database["public"]["Tables"]["patients"]["Row"];
 type AppointmentRow = Database["public"]["Tables"]["appointments"]["Row"];
