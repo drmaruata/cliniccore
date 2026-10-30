@@ -13,6 +13,14 @@
  *
  * A missing patient is null, not an exception: RLS hides another tenant's row and the
  * detail page renders "not found" the same way for both cases, which is the point.
+ *
+ * WHY THE DETAIL READS ARE A COMPOSITE AND NOT FOUR PAGE QUERIES. The page needs the
+ * patient, the identifiers, the appointments and the encounters, and every child read is
+ * scoped by the same organization and parent. Keeping the reads here means the tenant
+ * filter cannot be forgotten in one section, and `Promise.all` runs the three child
+ * queries only after the parent exists - a missing or foreign id costs one read, not four.
+ * A query error is thrown, because the detail page is a Server Component and a failed
+ * section must be a 500 rather than a silently empty table.
  */
 import "server-only";
 
@@ -26,6 +34,13 @@ type AppointmentRow = Database["public"]["Tables"]["appointments"]["Row"];
 export interface ListPatientsOptions {
   search?: string | null;
   includeArchived?: boolean;
+}
+
+export interface PatientDetail {
+  patient: PatientRow;
+  identifiers: Database["public"]["Tables"]["patient_identifiers"]["Row"][];
+  appointments: AppointmentRow[];
+  encounters: Database["public"]["Tables"]["encounters"]["Row"][];
 }
 
 function sanitizeSearch(term: string): string {
@@ -56,21 +71,52 @@ export async function listPatients(options: ListPatientsOptions = {}): Promise<P
   return data ?? [];
 }
 
-export async function getPatientDetail(patientId: string): Promise<PatientRow | null> {
+export async function getPatientDetail(patientId: string): Promise<PatientDetail | null> {
   const org = await getActiveOrg();
   if (!org) return null;
 
   const supabase = await createServerClient();
-  const { data, error } = await supabase
+  const { data: patient, error: patientError } = await supabase
     .from("patients")
     .select("*")
     .eq("organization_id", org.id)
     .eq("id", patientId)
     .maybeSingle();
 
-  if (error) throw error;
+  if (patientError) throw patientError;
+  if (!patient) return null;
 
-  return data;
+  const [identifiersResult, appointmentsResult, encountersResult] = await Promise.all([
+    supabase
+      .from("patient_identifiers")
+      .select("*")
+      .eq("organization_id", org.id)
+      .eq("patient_id", patientId)
+      .order("created_at"),
+    supabase
+      .from("appointments")
+      .select("*")
+      .eq("organization_id", org.id)
+      .eq("patient_id", patientId)
+      .order("scheduled_start", { ascending: false }),
+    supabase
+      .from("encounters")
+      .select("*")
+      .eq("organization_id", org.id)
+      .eq("patient_id", patientId)
+      .order("started_at", { ascending: false }),
+  ]);
+
+  if (identifiersResult.error) throw identifiersResult.error;
+  if (appointmentsResult.error) throw appointmentsResult.error;
+  if (encountersResult.error) throw encountersResult.error;
+
+  return {
+    patient,
+    identifiers: identifiersResult.data ?? [],
+    appointments: appointmentsResult.data ?? [],
+    encounters: encountersResult.data ?? [],
+  };
 }
 
 export async function listPatientAppointments(patientId: string): Promise<AppointmentRow[]> {

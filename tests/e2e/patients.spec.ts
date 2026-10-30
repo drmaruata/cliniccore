@@ -13,14 +13,18 @@ import { signIn } from "../helpers/e2e-sign-in";
  * shared fixture would let one worker's patient appear in another worker's table.
  *
  * WHY THE IDENTIFIER ASSERTION READS THE DATABASE. The registration form does not collect
- * identifiers, and the detail page that will show them is Task 6. The only honest check
- * that none were written is the row count in `patient_identifiers` for the patient the
- * form just created.
+ * identifiers, and the detail page that now shows them is the Task 6 route. The only honest
+ * check that none were written at registration is the row count in `patient_identifiers`
+ * for the patient the form just created.
  *
  * WHY THE SECOND TENANT IS CREATED THROUGH ONBOARDING. `createOrganization` sets the active
  * organization cookie, so completing onboarding again is the product's own way to switch
  * tenants. The assertion is that the first tenant's patient is absent from the second
  * tenant's list - the explicit organization filter and RLS working together.
+ *
+ * WHY THE TEST IS MARKED SLOW. The detail route adds an action round trip on top of
+ * registration, onboarding and the tenant switch, and two browsers share one server. The
+ * tripled budget absorbs that latency without turning a hang into a passing test.
  */
 
 const PASSWORD = "Pr0be-Passw0rd!x";
@@ -54,6 +58,7 @@ test.describe("Patients", () => {
   test("registers a patient with an MRN, archives it, and does not show it in another organization", async ({
     page,
   }) => {
+    test.slow();
     const user = await createProbeUser("patients");
     expect(await signIn(page, user.email, PASSWORD)).toBe("signed_in");
 
@@ -110,18 +115,42 @@ test.describe("Patients", () => {
     }
     expect(identifierCount).toBe(0);
 
-    // 5. Archiving removes it from the active list, after the confirm dialog.
+    // 5. The detail page shows the same record. Clicking the name is the product's own
+    //    navigation, so the link is what is under test.
+    await page.getByRole("link", { name: `${firstName} ${lastName}` }).click();
+    await expect(page).toHaveURL(new RegExp(`/app/patients/${patient.id}$`));
+    await expect(page.getByText(mrn, { exact: true }).first()).toBeVisible();
+
+    // 6. A permitted user adds an identifier, and the page re-renders with it.
+    const identifierValue = `NID-${stamp}`;
+    await page.fill('input[id="identifier-kind"]', "NATIONAL_ID");
+    await page.fill('input[id="identifier-value"]', identifierValue);
+    await page.getByRole("button", { name: "Add identifier" }).click();
+    await expect(page.getByRole("cell", { name: identifierValue })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    // 7. A random id is a real 404, not an empty detail page. The response status is the
+    //    assertion; the visible fallback proves the 404 reached the user.
+    const response = await page.goto(`/app/patients/${crypto.randomUUID()}`);
+    expect(response?.status()).toBe(404);
+    await expect(page.getByText("This page could not be found.")).toBeVisible();
+
+    // 8. Back to the list before archiving.
+    await page.goto("/app/patients");
+
+    // 9. Archiving removes it from the active list, after the confirm dialog.
     await page.getByRole("button", { name: `Archive ${mrn}`, exact: true }).click();
     await expect(page.getByRole("alertdialog")).toBeVisible();
     await page.getByRole("button", { name: "Confirm archive" }).click();
     await expect(page.getByRole("cell", { name: mrn, exact: true })).toHaveCount(0);
     await expect(page.getByText("No patients yet")).toBeVisible();
 
-    // 6. The archived record is still there, under the archived filter.
+    // 10. The archived record is still there, under the archived filter.
     await page.goto("/app/patients?archived=1");
     await expect(page.getByRole("cell", { name: mrn, exact: true })).toBeVisible();
 
-    // 7. A second organization for the same user, active after onboarding. The first
+    // 11. A second organization for the same user, active after onboarding. The first
     //    tenant's patient must not appear in its list.
     const secondSlug = `probe-patients-two-${stamp}`;
     probe.slugs.push(secondSlug);
