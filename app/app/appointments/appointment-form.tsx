@@ -58,7 +58,10 @@ export function AppointmentForm({
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       {state && !state.ok && (
-        <div role="alert" className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
+        <div
+          role="alert"
+          className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive"
+        >
           {state.error}
         </div>
       )}
@@ -107,13 +110,7 @@ export function AppointmentForm({
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="space-y-2">
           <Label htmlFor="appointment-date">Date</Label>
-          <Input
-            id="appointment-date"
-            name="date"
-            type="date"
-            defaultValue={defaultDay}
-            required
-          />
+          <Input id="appointment-date" name="date" type="date" defaultValue={defaultDay} required />
         </div>
 
         <div className="space-y-2">

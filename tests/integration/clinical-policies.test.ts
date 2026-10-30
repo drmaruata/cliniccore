@@ -23,9 +23,11 @@
  * rows and no DDL behind. It connects as the owner, which bypasses RLS; the behavioural
  * half of clinical isolation belongs to the security suite.
  */
+import { randomUUID } from "node:crypto";
 import { afterAll, expect, it } from "vitest";
 
-import { beginSession, closePool, dbDescribe } from "./helpers/database";
+import { beginSession, closePool, dbDescribe, expectRejection } from "./helpers/database";
+import { seedFixture, createRole } from "./helpers/fixtures";
 
 type Cmd = "SELECT" | "INSERT" | "UPDATE" | "DELETE";
 
@@ -300,6 +302,201 @@ dbDescribe("clinical policies", () => {
       // An addendum annotates a finalized record; attaching one to a draft would let the
       // draft's author write history that the finalization audit never saw.
       expect(normalize(addendum?.with_check)).toContain("finalized_at is not null");
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("allows a clinician to update a draft encounter", async () => {
+    const session = await beginSession();
+    try {
+      const { organizationId, clinicId, patientId } = await seedFixture(session);
+      const actorId = randomUUID();
+      await session.query(
+        `insert into auth.users (id, email, email_confirmed_at, created_at, updated_at, aud, role, is_anonymous)
+         values ($1, $2, now(), now(), now(), 'authenticated', 'authenticated', false)`,
+        [actorId, `clinician-${actorId.slice(0, 8)}@test.local`],
+      );
+      const [membership] = await session.query<{ id: string }>(
+        `insert into public.organization_memberships (organization_id, user_id, status) values ($1, $2, 'active') returning id`,
+        [organizationId, actorId],
+      );
+      if (!membership) throw new Error("membership insert returned no row");
+      await session.query(
+        `insert into public.clinic_memberships (organization_id, membership_id, clinic_id) values ($1, $2, $3)`,
+        [organizationId, membership.id, clinicId],
+      );
+      const roleId = await createRole(session, organizationId, "test_doctor", ["encounters.write"]);
+      await session.query(
+        `insert into public.user_role_assignments (organization_id, user_id, role_id) values ($1, $2, $3)`,
+        [organizationId, actorId, roleId],
+      );
+
+      const [encounter] = await session.query<{ id: string }>(
+        `insert into public.encounters (organization_id, clinic_id, patient_id, status, chief_complaint)
+         values ($1, $2, $3, 'draft', 'Initial complaint') returning id`,
+        [organizationId, clinicId, patientId],
+      );
+      if (!encounter) throw new Error("encounter insert returned no row");
+
+      await session.query("set local role authenticated");
+      await session.query(`select set_config('request.jwt.claim.sub', $1, true)`, [actorId]);
+      await session.query(
+        `update public.encounters set chief_complaint = 'Updated complaint' where id = $1`,
+        [encounter.id],
+      );
+
+      const [row] = await session.query<{ chief_complaint: string }>(
+        `select chief_complaint from public.encounters where id = $1`,
+        [encounter.id],
+      );
+      expect(row?.chief_complaint).toBe("Updated complaint");
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses direct UPDATE of a finalized encounter (zero rows affected, row unchanged)", async () => {
+    const session = await beginSession();
+    try {
+      const { organizationId, clinicId, patientId } = await seedFixture(session);
+      const actorId = randomUUID();
+      await session.query(
+        `insert into auth.users (id, email, email_confirmed_at, created_at, updated_at, aud, role, is_anonymous)
+         values ($1, $2, now(), now(), now(), 'authenticated', 'authenticated', false)`,
+        [actorId, `clinician-${actorId.slice(0, 8)}@test.local`],
+      );
+      const [membership] = await session.query<{ id: string }>(
+        `insert into public.organization_memberships (organization_id, user_id, status) values ($1, $2, 'active') returning id`,
+        [organizationId, actorId],
+      );
+      if (!membership) throw new Error("membership insert returned no row");
+      await session.query(
+        `insert into public.clinic_memberships (organization_id, membership_id, clinic_id) values ($1, $2, $3)`,
+        [organizationId, membership.id, clinicId],
+      );
+      const roleId = await createRole(session, organizationId, "test_doctor", ["encounters.write"]);
+      await session.query(
+        `insert into public.user_role_assignments (organization_id, user_id, role_id) values ($1, $2, $3)`,
+        [organizationId, actorId, roleId],
+      );
+
+      const [encounter] = await session.query<{ id: string }>(
+        `insert into public.encounters (organization_id, clinic_id, patient_id, status, chief_complaint, finalized_at, finalized_by)
+         values ($1, $2, $3, 'finalized', 'Finalized complaint', now(), $4) returning id`,
+        [organizationId, clinicId, patientId, actorId],
+      );
+      if (!encounter) throw new Error("encounter insert returned no row");
+
+      await session.query(`select set_config('request.jwt.claim.sub', $1, true)`, [actorId]);
+      await session.query("set local role authenticated");
+      await session.query(
+        `update public.encounters set chief_complaint = 'Tampered' where id = $1`,
+        [encounter.id],
+      );
+
+      const [row] = await session.query<{ chief_complaint: string }>(
+        `select chief_complaint from public.encounters where id = $1`,
+        [encounter.id],
+      );
+      expect(row?.chief_complaint).toBe("Finalized complaint");
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("finalize_encounter succeeds once and raises on second call", async () => {
+    const session = await beginSession();
+    try {
+      const { organizationId, clinicId, patientId } = await seedFixture(session);
+      const actorId = randomUUID();
+      await session.query(
+        `insert into auth.users (id, email, email_confirmed_at, created_at, updated_at, aud, role, is_anonymous)
+         values ($1, $2, now(), now(), now(), 'authenticated', 'authenticated', false)`,
+        [actorId, `clinician-${actorId.slice(0, 8)}@test.local`],
+      );
+      const [membership] = await session.query<{ id: string }>(
+        `insert into public.organization_memberships (organization_id, user_id, status) values ($1, $2, 'active') returning id`,
+        [organizationId, actorId],
+      );
+      if (!membership) throw new Error("membership insert returned no row");
+      await session.query(
+        `insert into public.clinic_memberships (organization_id, membership_id, clinic_id) values ($1, $2, $3)`,
+        [organizationId, membership.id, clinicId],
+      );
+      const roleId = await createRole(session, organizationId, "test_doctor", ["encounters.write"]);
+      await session.query(
+        `insert into public.user_role_assignments (organization_id, user_id, role_id) values ($1, $2, $3)`,
+        [organizationId, actorId, roleId],
+      );
+
+      const [encounter] = await session.query<{ id: string }>(
+        `insert into public.encounters (organization_id, clinic_id, patient_id, status, chief_complaint)
+         values ($1, $2, $3, 'draft', 'To be finalized') returning id`,
+        [organizationId, clinicId, patientId],
+      );
+      if (!encounter) throw new Error("encounter insert returned no row");
+
+      await session.query(`select set_config('request.jwt.claim.sub', $1, true)`, [actorId]);
+      await session.query(`select public.finalize_encounter($1)`, [encounter.id]);
+
+      const [afterFirst] = await session.query<{
+        status: string;
+        finalized_at: string;
+        finalized_by: string;
+      }>(`select status, finalized_at, finalized_by from public.encounters where id = $1`, [
+        encounter.id,
+      ]);
+      expect(afterFirst?.status).toBe("finalized");
+      expect(afterFirst?.finalized_at).toBeTruthy();
+      expect(afterFirst?.finalized_by).toBe(actorId);
+
+      await expectRejection(
+        session,
+        `select public.finalize_encounter($1)`,
+        [encounter.id],
+        /encounter already finalized/,
+      );
+    } finally {
+      await session.rollback();
+    }
+  });
+
+  it("refuses encounter_addenda INSERT for a user without encounters.write", async () => {
+    const session = await beginSession();
+    try {
+      const { organizationId, clinicId, patientId } = await seedFixture(session);
+      const actorId = randomUUID();
+      await session.query(
+        `insert into auth.users (id, email, email_confirmed_at, created_at, updated_at, aud, role, is_anonymous)
+         values ($1, $2, now(), now(), now(), 'authenticated', 'authenticated', false)`,
+        [actorId, `no-permission-${actorId.slice(0, 8)}@test.local`],
+      );
+      const [membership] = await session.query<{ id: string }>(
+        `insert into public.organization_memberships (organization_id, user_id, status) values ($1, $2, 'active') returning id`,
+        [organizationId, actorId],
+      );
+      if (!membership) throw new Error("membership insert returned no row");
+      await session.query(
+        `insert into public.clinic_memberships (organization_id, membership_id, clinic_id) values ($1, $2, $3)`,
+        [organizationId, membership.id, clinicId],
+      );
+      // No role assignment = no encounters.write permission
+
+      const [encounter] = await session.query<{ id: string }>(
+        `insert into public.encounters (organization_id, clinic_id, patient_id, status, finalized_at, finalized_by)
+         values ($1, $2, $3, 'finalized', now(), $4) returning id`,
+        [organizationId, clinicId, patientId, actorId],
+      );
+      if (!encounter) throw new Error("encounter insert returned no row");
+
+      await session.query(`select set_config('request.jwt.claim.sub', $1, true)`, [actorId]);
+      await expectRejection(
+        session,
+        `select public.add_encounter_addendum($1, 'Addendum body')`,
+        [encounter.id],
+        /insufficient privilege/,
+      );
     } finally {
       await session.rollback();
     }

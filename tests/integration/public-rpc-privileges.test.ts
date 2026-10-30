@@ -76,10 +76,12 @@ const USER_PARAMETERISED_CORES = [
 
 const PUBLIC_WRAPPERS = [
   "accept_invitation",
+  "add_encounter_addendum",
   "can",
   "create_organization_with_owner",
   "delete_organization",
   "export_patients",
+  "finalize_encounter",
   "grantable_roles",
   "has_any_membership",
   "is_platform_admin",

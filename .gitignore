@@ -46,6 +46,9 @@ yarn-error.log*
 .vscode/*
 !.vscode/extensions.json
 
+# agent tooling
+/.commandcode/
+
 # agent tooling output — generated, never committed (also in .prettierignore).
 # Left unignored, a `git add -A` in a task's commit step would stage it.
 /graphify-out/

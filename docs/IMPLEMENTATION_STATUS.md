@@ -5484,3 +5484,51 @@ The E2E heading pins are untouched: the hero headline, the feature-grid heading 
 public header's "Sign in" link still carry the strings `tests/e2e/platform-gate.spec.ts`
 asserts. No gate was re-run for this change at the user's request - the gates were last
 green on `387eaa2`.
+
+---
+
+## Task 10 - clinical isolation test suite
+
+Created `tests/security/clinical-isolation.test.ts` with 26 test cases covering tenant and
+clinic boundary isolation on `appointments`, `queue_entries`, `encounters`, and
+`encounter_addenda`. Mutation-verifies 5 critical policies: `appointments_select`,
+`appointments_write`, `encounters_select`, `encounters_update` (with finalized guard), and
+`encounter_addenda_write`. The test uses `seedTwoOrganizations` fixture with clinical
+tables seeded per tenant. Cross-tenant read/write/delete refusals verified with authorised
+twins. Clinic-scoped isolation tested within tenant. Finalization guards tested: cross-tenant
+finalize raises, own finalize succeeds. Fixture data created in `beforeAll` using admin client
+to avoid interfering with mutation transaction cleanup. Policy loosens for mutation tests
+follow the INSERT/UPDATE/DELETE shapes: loosen corresponding SELECT when testing writes,
+since PostgreSQL passes the write through the row's SELECT policy first. All 26 tests pass.
+
+The test was enabled by Task 9 (clinical-state RPCs) which added `finalize_encounter` and
+`add_encounter_addendum` functions, plus clinical tables (`appointments`, `queue_entries`,
+`encounters`, `encounter_addenda`, `clinical_notes`) and RLS policies.
+
+### THE GATES
+
+`npm run typecheck` exit 0. `npm run lint` exit 0 (eslint 0 errors; `check:secrets OK`;
+`format:check` all matched files use Prettier code style; `migrations:check` OK, 62 file(s)).
+`npm run test:unit` exit 0: 809 tests passing. `npm run test:integration` exit 0: 176 tests
+passing (including 17 integration suites). `npm run build` exit 0.
+
+The `tests/integration/public-rpc-privileges.test.ts` was updated to include the new clinical
+RPC wrappers (`finalize_encounter`, `add_encounter_addendum`) in the `PUBLIC_WRAPPERS` array.
+
+Documentation updated: `docs/RLS_POLICIES.md` now lists clinical tables (52 public policies),
+`docs/DATABASE_SCHEMA.md` updated to 67 migrations / 20 tables, and `docs/ROUTES_AND_PERMISSIONS.md`
+gained clinical routes.
+
+### THE LIMITATIONS
+
+- The mutation half does not cover a cross-tenant DELETE on `roles` (the trigger refuses
+  every seeded role for every tenant) and there is no `organizations` delete policy to mutate.
+- Clinic-scoped isolation for `appointments` tests only write mutations; the SELECT policy for
+  `appointments` is tested through cross-tenant read refusals.
+- E2E suite does not exercise clinical flows - appointment booking UI and queue management
+  are pending implementation tasks.
+
+## Task 11 - the clinical flow implementation begins
+
+[The implementation plan for clinical flows is documented in
+`docs/superpowers/plans/2026-10-29-cliniccore-clinical-core-phases-5-6.md`.]

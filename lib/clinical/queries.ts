@@ -32,6 +32,8 @@ import type { Database } from "../../types/database.types";
 type AppointmentRow = Database["public"]["Tables"]["appointments"]["Row"];
 type PatientRow = Database["public"]["Tables"]["patients"]["Row"];
 type QueueRow = Database["public"]["Tables"]["queue_entries"]["Row"];
+type EncounterRow = Database["public"]["Tables"]["encounters"]["Row"];
+type EncounterAddendumRow = Database["public"]["Tables"]["encounter_addenda"]["Row"];
 
 interface EmbeddedRow extends AppointmentRow {
   patients: PatientRow | null;
@@ -88,6 +90,12 @@ export interface QueueWithPatient {
   patient: { first_name: string | null; last_name: string | null; mrn: string } | null;
 }
 
+export interface EncounterWithDetails {
+  encounter: EncounterRow;
+  patient: { first_name: string | null; last_name: string | null; mrn: string } | null;
+  addenda: (EncounterAddendumRow & { author_name: string | null })[];
+}
+
 export async function listQueue(clinicId: string): Promise<QueueWithPatient[]> {
   const org = await getActiveOrg();
   if (!org) return [];
@@ -107,4 +115,55 @@ export async function listQueue(clinicId: string): Promise<QueueWithPatient[]> {
     const embedded = row as unknown as EmbeddedRow & { patients: PatientRow | null };
     return { entry: embedded as unknown as QueueRow, patient: toPatient(embedded.patients) };
   });
+}
+
+/**
+ * Get a single encounter with patient details and addenda.
+ * Scoped to the active organization via RLS.
+ */
+export async function getEncounter(encounterId: string): Promise<EncounterWithDetails | null> {
+  const org = await getActiveOrg();
+  if (!org) return null;
+
+  const supabase = await createServerClient();
+
+  const { data: encounter, error: encError } = await supabase
+    .from("encounters")
+    .select("*, patients(first_name, last_name, mrn)")
+    .eq("id", encounterId)
+    .eq("organization_id", org.id)
+    .single();
+
+  if (encError) {
+    if (encError.code === "PGRST116") return null;
+    throw encError;
+  }
+
+  const { data: addenda, error: addError } = await supabase
+    .from("encounter_addenda")
+    .select("*, profiles:author_user_id(first_name, last_name)")
+    .eq("encounter_id", encounterId)
+    .eq("organization_id", org.id)
+    .order("created_at", { ascending: true });
+
+  if (addError) throw addError;
+
+  const embedded = encounter as unknown as EncounterRow & { patients: PatientRow | null };
+  const addendaWithNames = (addenda ?? []).map((a) => {
+    const p = a as unknown as EncounterAddendumRow & {
+      profiles: { first_name: string | null; last_name: string | null } | null;
+    };
+    return {
+      ...a,
+      author_name: p.profiles
+        ? `${p.profiles.first_name ?? ""} ${p.profiles.last_name ?? ""}`.trim() || null
+        : null,
+    };
+  });
+
+  return {
+    encounter: embedded,
+    patient: toPatient(embedded.patients),
+    addenda: addendaWithNames,
+  };
 }

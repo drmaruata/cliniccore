@@ -20,6 +20,9 @@ into the seed SQL, so the TypeScript and the database cannot drift silently.
 | `/app/dashboard`        | `app/app/dashboard/page.tsx`        | Session + a resolvable active organization                                                           |
 | `/app/onboarding`       | `app/app/onboarding/page.tsx`       | Session                                                                                              |
 | `/app/settings/members` | `app/app/settings/members/page.tsx` | Session + tenant; the **invite form** additionally asks `staff.manage`                               |
+| `/app/appointments`     | `app/app/appointments/page.tsx`     | Session + tenant + `appointments.manage`                                                             |
+| `/app/patients`         | `app/app/patients/page.tsx`         | Session + tenant + `patients.read`                                                                   |
+| `/app/encounters/[id]`  | `app/app/encounters/[id]/page.tsx`  | Session + tenant + `encounters.read`                                                                 |
 | `/platform`             | `app/platform/page.tsx`             | Platform administrator; every other caller receives `notFound()` (404)                               |
 
 Route groups are pathless. `app/(marketing)` and `app/(auth)` add no URL segment; `app/app/` and

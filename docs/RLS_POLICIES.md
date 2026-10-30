@@ -6,13 +6,13 @@ authority; this page is a map of it. The historical reasons for each clause are 
 
 | Measure                      | Value                                             |
 | ---------------------------- | ------------------------------------------------- |
-| Public policies              | 39 across 14 of the 16 tables                     |
+| Public policies              | 52 across 18 of the 20 tables                     |
 | Storage policies             | 20 on `storage.objects`                           |
-| Total pinned by the suite    | 59                                                |
+| Total pinned by the suite    | 72                                                |
 | Tables with no policy        | `tenant_sequences`, `tenant_creation_events`      |
 | The only `USING true` policy | `permissions_select` (global read-only catalogue) |
 | Helpers in `private`         | 35 functions                                      |
-| Application RPCs in `public` | 10                                                |
+| Application RPCs in `public` | 12                                                |
 
 ## Policy matrix
 
@@ -32,6 +32,10 @@ on all 16 tables and none is forced, so the owner bypasses and every other role 
 | `invitations`              | `invitations_select`              | `invitations_write`           | `invitations_update`              | `invitations_delete`           |
 | `patients`                 | `patients_select`                 | `patients_write`              | `patients_update`                 | `patients_delete`              |
 | `patient_identifiers`      | `patient_identifiers_select`      | `patient_identifiers_write`   | `patient_identifiers_update`      | `patient_identifiers_delete`   |
+| `appointments`             | `appointments_select`             | `appointments_write`          | `appointments_update`             | `appointments_delete`          |
+| `queue_entries`            | `queue_entries_select`            | `queue_entries_write`         | `queue_entries_update`            | `queue_entries_delete`         |
+| `encounters`               | `encounters_select`               | `encounters_write`            | `encounters_update`               | `encounters_delete`            |
+| `encounter_addenda`        | `encounter_addenda_select`        | `encounter_addenda_write`     | —                                 | —                              |
 | `audit_logs`               | `audit_logs_select`               | —                             | —                                 | —                              |
 | `platform_settings`        | `platform_settings_select`        | —                             | —                                 | —                              |
 | `profiles`                 | `profiles_select_self`            | —                             | `profiles_update_self`            | —                              |
@@ -142,11 +146,12 @@ naming a `private.*` function answers **PGRST202** and names `public` as the sch
 `pgrst.db_schemas` is not readable from SQL, so the measurement is the HTTP response, not a
 setting.
 
-The ten application RPCs in `public` are the browser's only door into the primitives:
+The twelve application RPCs in `public` are the browser's only door into the primitives:
 
-`accept_invitation(text)`, `can(uuid, text, uuid)`, `create_organization_with_owner(text, text,
-text, text, text, text)`, `delete_organization(uuid)`, `export_patients(uuid, uuid)`,
-`grantable_roles(uuid)`, `has_any_membership()`, `is_platform_admin()`, `tenant_directory()`,
+`accept_invitation(text)`, `add_encounter_addendum(uuid, text)`, `can(uuid, text, uuid)`,
+`create_organization_with_owner(text, text, text, text, text, text)`, `delete_organization(uuid)`,
+`export_patients(uuid, uuid)`, `finalize_encounter(uuid)`, `grantable_roles(uuid)`,
+`has_any_membership()`, `is_platform_admin()`, `tenant_directory()`,
 `write_audit(uuid, text, text, uuid, jsonb)`.
 
 ### Executable by `authenticated`

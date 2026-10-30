@@ -17,14 +17,8 @@ import { readActiveClinicId } from "@/lib/auth/session";
 import { listDayAppointments } from "@/lib/clinical/queries";
 import { listPatients } from "@/lib/patients/queries";
 import { createServerClient } from "@/lib/supabase/server";
-import {
-  clinicDayBoundsForDay,
-  formatInClinicTz,
-} from "@/lib/utils/datetime";
-import {
-  APPOINTMENT_STATUS_TRANSITIONS,
-  type AppointmentStatus,
-} from "@/lib/validation/patients";
+import { clinicDayBoundsForDay, formatInClinicTz } from "@/lib/utils/datetime";
+import { APPOINTMENT_STATUS_TRANSITIONS, type AppointmentStatus } from "@/lib/validation/patients";
 import { AppointmentForm, AppointmentStatusForm } from "./appointment-form";
 
 /**
@@ -58,7 +52,10 @@ function resolveDay(raw: string | string[] | undefined, timezone: string): strin
 }
 
 function shiftDayLabel(dayLabel: string, days: number): string {
-  const [y, m, d] = dayLabel.split("-").map(Number);
+  const parts = dayLabel.split("-").map(Number);
+  const y = parts[0]!;
+  const m = parts[1]!;
+  const d = parts[2]!;
   const date = new Date(Date.UTC(y, m - 1, d + days));
   return date.toISOString().slice(0, 10);
 }
@@ -108,10 +105,7 @@ export default async function AppointmentsPage({ searchParams }: AppointmentsPag
   if (clinics.length === 0) {
     return (
       <div className="space-y-6">
-        <PageHeader
-          title="Appointments"
-          description="Schedule and track clinic appointments."
-        />
+        <PageHeader title="Appointments" description="Schedule and track clinic appointments." />
         <EmptyState
           title="No clinic yet"
           description="Your organization needs at least one clinic before booking appointments."
@@ -121,7 +115,7 @@ export default async function AppointmentsPage({ searchParams }: AppointmentsPag
   }
 
   const activeClinicId = await readActiveClinicId();
-  const selectedClinic = clinics.find((c) => c.id === activeClinicId) ?? clinics[0];
+  const selectedClinic = clinics.find((c) => c.id === activeClinicId) ?? clinics[0]!;
   const clinicId = selectedClinic.id;
 
   const canBook = await userCan("appointments.manage", clinicId);
@@ -174,11 +168,7 @@ export default async function AppointmentsPage({ searchParams }: AppointmentsPag
           </TableHeader>
           <TableBody>
             {appointments.map(({ appointment, patient }) => {
-              const timeStr = formatTime(
-                appointment.scheduled_start,
-                org.timezone,
-                org.locale,
-              );
+              const timeStr = formatTime(appointment.scheduled_start, org.timezone, org.locale);
               const patientName = patient
                 ? [patient.first_name, patient.last_name].filter(Boolean).join(" ") || "Unnamed"
                 : "Unknown patient";
@@ -201,9 +191,7 @@ export default async function AppointmentsPage({ searchParams }: AppointmentsPag
                     )}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={statusBadgeVariant(currentStatus)}>
-                      {currentStatus}
-                    </Badge>
+                    <Badge variant={statusBadgeVariant(currentStatus)}>{currentStatus}</Badge>
                   </TableCell>
                   <TableCell>{appointment.reason ?? "—"}</TableCell>
                   {canBook && (
@@ -225,9 +213,7 @@ export default async function AppointmentsPage({ searchParams }: AppointmentsPag
 
       {canBook && (
         <div className="rounded-xl border border-border bg-card p-6 space-y-4">
-          <h2 className="font-heading text-lg font-semibold text-brand-navy">
-            Book appointment
-          </h2>
+          <h2 className="font-heading text-lg font-semibold text-brand-navy">Book appointment</h2>
           <AppointmentForm
             clinics={clinics}
             patients={patients.map((p) => ({

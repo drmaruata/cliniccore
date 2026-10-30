@@ -158,3 +158,111 @@ export function clinicDayBounds(
   }
   return { startIso: start.toISOString(), endIso: end.toISOString() };
 }
+
+/**
+ * The window of a named local calendar day, given as `YYYY-MM-DD`.
+ *
+ * WHY THIS EXISTS AND WHY IT SCANS. `clinicDayBounds` derives the day from an instant, so
+ * a page that takes `?day=2026-11-01` from the URL has no instant to hand it: the obvious
+ * `new Date(day)` parses as UTC midnight, which is the PREVIOUS local day everywhere west
+ * of Greenwich, and that silently lists the wrong day's appointments. So the scan starts
+ * at UTC midnight of the requested day and walks forward until an instant reports that
+ * date locally, then lets `clinicDayBounds` measure the window around it.
+ *
+ * A day that does not exist locally - Pacific/Apia skipped 2011-12-30 entirely when it
+ * crossed the date line - has no window, and the answer is a loud RangeError rather than a
+ * plausible adjacent day. A day split into two runs by a fall-back across midnight is
+ * bounded to the FIRST run, the same contiguous-run rule `clinicDayBounds` documents; the
+ * second run belongs to no window this function can return.
+ *
+ * The 48-hour ceiling covers the widest real offset (UTC-12 needs 12 hours of walk) with a
+ * wide margin, so a day that never appears means a skipped date, not a slow scan.
+ */
+export function clinicDayBoundsForDay(
+  day: string,
+  timezone: string,
+): { startIso: string; endIso: string } {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!match) throw new RangeError(`Not a calendar day: ${JSON.stringify(day)}`);
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const date = Number(match[3]);
+
+  // `Date.UTC` maps years 0-99 onto 1900-1999, so the components are set explicitly.
+  const utcMidnight = new Date(0);
+  utcMidnight.setUTCFullYear(year, month - 1, date);
+  utcMidnight.setUTCHours(0, 0, 0, 0);
+  if (
+    utcMidnight.getUTCFullYear() !== year ||
+    utcMidnight.getUTCMonth() !== month - 1 ||
+    utcMidnight.getUTCDate() !== date
+  ) {
+    throw new RangeError(`Not a calendar day: ${JSON.stringify(day)}`);
+  }
+
+  const floor = utcMidnight.getTime();
+  for (let cursor = floor; cursor <= floor + 48 * HOUR; cursor += COARSE_STEP) {
+    if (localDate(new Date(cursor), timezone) === day) {
+      return clinicDayBounds(new Date(cursor), timezone);
+    }
+  }
+  throw new RangeError(`Local day ${day} does not occur in ${timezone}`);
+}
+
+const minuteFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function minuteFormatter(timeZone: string): Intl.DateTimeFormat {
+  const cached = minuteFormatters.get(timeZone);
+  if (cached) return cached;
+  const created = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  minuteFormatters.set(timeZone, created);
+  return created;
+}
+
+/** `YYYY-MM-DDTHH:MM` on the clinic's wall clock, which is what a form collects. */
+function localMinute(at: Date, timeZone: string): string {
+  const parts = minuteFormatter(timeZone).formatToParts(at);
+  const field = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  // Some ICU builds render midnight as hour 24 under hour12: false.
+  const hour = field("hour") === "24" ? "00" : field("hour");
+  return `${field("year").padStart(4, "0")}-${field("month").padStart(2, "0")}-${field("day").padStart(2, "0")}T${hour.padStart(2, "0")}:${field("minute").padStart(2, "0")}`;
+}
+
+/**
+ * The instant a clinic-local wall-clock time names, e.g. `2026-11-01` + `09:00` in
+ * `Asia/Kolkata` is `2026-11-01T03:30:00.000Z`.
+ *
+ * WHY A FORM'S VALUE CANNOT BE PARSED DIRECTLY. A `datetime-local` input posts
+ * `YYYY-MM-DDTHH:MM` with no offset. `new Date(...)` reads that in the SERVER's zone, so a
+ * booking made at 09:00 in Kolkata lands at 09:00 UTC - 14:30 local - on any UTC host. The
+ * conversion therefore starts from the measured start of the clinic day and corrects by the
+ * difference between the wall clock it got and the wall clock it wanted, which converges in
+ * one step for a normal day and two across a daylight-saving transition.
+ *
+ * A wall-clock time the zone skipped - Santiago jumps 00:00 to 01:00 on 2026-09-06 - has no
+ * instant, so it raises rather than silently booking an hour later. A time that occurs twice
+ * on a fall-back resolves to the FIRST occurrence, which is the earlier instant.
+ */
+export function clinicWallTimeToInstant(day: string, time: string, timezone: string): string {
+  const timeMatch = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
+  if (!timeMatch) throw new RangeError(`Not a wall-clock time: ${JSON.stringify(time)}`);
+  const target = `${day}T${time}`;
+  const dayStart = new Date(clinicDayBoundsForDay(day, timezone).startIso).getTime();
+  const minutes = Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+  let guess = dayStart + minutes * 60_000;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const actual = localMinute(new Date(guess), timezone);
+    if (actual === target) return new Date(guess).toISOString();
+    guess += Date.parse(`${target}:00Z`) - Date.parse(`${actual}:00Z`);
+  }
+  throw new RangeError(`Wall-clock time ${target} does not occur in ${timezone}`);
+}

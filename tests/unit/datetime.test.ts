@@ -11,7 +11,12 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { clinicDayBounds, formatInClinicTz } from "../../lib/utils/datetime";
+import {
+  clinicDayBounds,
+  clinicDayBoundsForDay,
+  clinicWallTimeToInstant,
+  formatInClinicTz,
+} from "../../lib/utils/datetime";
 
 describe("formatInClinicTz", () => {
   it("formats the local calendar date in the clinic's zone", () => {
@@ -259,6 +264,78 @@ describe("a fall-back that crosses local midnight", () => {
     expect(formatInClinicTz(during.startIso, "America/St_Johns")).toBe("2005-10-30");
     expect(formatInClinicTz(after.startIso, "America/St_Johns")).toBe("2005-10-29");
     expect(during.endIso).not.toBe(after.endIso);
+  });
+});
+
+describe("clinicDayBoundsForDay", () => {
+  it("bounds the named day, not the UTC day the string parses as", () => {
+    // `new Date("2026-11-01")` is UTC midnight, which is still 2026-10-31 in Santiago.
+    // The helper must return the window of the day that was asked for.
+    const bounds = clinicDayBoundsForDay("2026-11-01", "America/Santiago");
+    expect(formatInClinicTz(bounds.startIso, "America/Santiago")).toBe("2026-11-01");
+    expect(formatInClinicTz(bounds.endIso, "America/Santiago")).toBe("2026-11-02");
+  });
+
+  it("agrees with clinicDayBounds for an instant inside the day", () => {
+    expect(clinicDayBoundsForDay("2026-11-01", "Asia/Kolkata")).toEqual(
+      clinicDayBounds(new Date("2026-11-01T12:00:00Z"), "Asia/Kolkata"),
+    );
+  });
+
+  it("returns a 23-hour window on a spring-forward day rather than a fixed 24", () => {
+    const bounds = clinicDayBoundsForDay("2026-09-06", "America/Santiago");
+    expect(new Date(bounds.endIso).getTime() - new Date(bounds.startIso).getTime()).toBe(
+      23 * 60 * 60 * 1000,
+    );
+  });
+
+  it("refuses an impossible or malformed day instead of rolling it over", () => {
+    expect(() => clinicDayBoundsForDay("2026-02-30", "UTC")).toThrow(RangeError);
+    expect(() => clinicDayBoundsForDay("2026-13-01", "UTC")).toThrow(RangeError);
+    expect(() => clinicDayBoundsForDay("2026-1-1", "UTC")).toThrow(RangeError);
+  });
+
+  it("refuses a day the zone skipped entirely", () => {
+    // Pacific/Apia crossed the date line on 2011-12-30; that local date never happened.
+    expect(() => clinicDayBoundsForDay("2011-12-30", "Pacific/Apia")).toThrow(RangeError);
+  });
+});
+
+describe("clinicWallTimeToInstant", () => {
+  it("reads a form's wall-clock value in the clinic's zone, not the server's", () => {
+    expect(clinicWallTimeToInstant("2026-11-01", "09:00", "Asia/Kolkata")).toBe(
+      "2026-11-01T03:30:00.000Z",
+    );
+    expect(clinicWallTimeToInstant("2026-11-01", "09:00", "America/Santiago")).toBe(
+      "2026-11-01T12:00:00.000Z",
+    );
+  });
+
+  it("corrects across a daylight-saving transition on the same day", () => {
+    // Santiago springs forward at local midnight on 2026-09-06, so 09:00 is at UTC-3
+    // while the day's own first instant is at UTC-4. Adding nine hours to the day start
+    // would answer 13:00Z - an hour late.
+    const iso = clinicWallTimeToInstant("2026-09-06", "09:00", "America/Santiago");
+    expect(iso).toBe("2026-09-06T12:00:00.000Z");
+    expect(formatInClinicTz(iso, "America/Santiago")).toBe("2026-09-06");
+  });
+
+  it("refuses a wall-clock time the zone skipped", () => {
+    expect(() => clinicWallTimeToInstant("2026-09-06", "00:30", "America/Santiago")).toThrow(
+      RangeError,
+    );
+  });
+
+  it("resolves an ambiguous fall-back time to the first occurrence", () => {
+    // 01:30 happens twice in New York on 2026-11-01. The first is 05:30Z (EDT).
+    expect(clinicWallTimeToInstant("2026-11-01", "01:30", "America/New_York")).toBe(
+      "2026-11-01T05:30:00.000Z",
+    );
+  });
+
+  it("refuses a malformed time instead of guessing", () => {
+    expect(() => clinicWallTimeToInstant("2026-11-01", "9:00", "UTC")).toThrow(RangeError);
+    expect(() => clinicWallTimeToInstant("2026-11-01", "24:00", "UTC")).toThrow(RangeError);
   });
 });
 

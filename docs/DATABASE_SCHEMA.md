@@ -6,15 +6,15 @@ files in `supabase/migrations/`. Counts below are catalogue reads, not restateme
 
 | Measure                           | Value                                                     |
 | --------------------------------- | --------------------------------------------------------- |
-| Applied migrations                | 61 (history rows 61; `20261014000100` … `20261014001880`) |
-| Public tables                     | 16, all `relrowsecurity = true`, none `force`             |
-| Columns in `public`               | 100                                                       |
-| Constraints                       | 55: 16 primary, 21 foreign, 12 unique, 6 check            |
-| Indexes                           | 36                                                        |
+| Applied migrations                | 67 (history rows 67; `20261014000100` … `20261029001930`) |
+| Public tables                     | 20, all `relrowsecurity = true`, none `force`             |
+| Columns in `public`               | 142                                                       |
+| Constraints                       | 72: 20 primary, 28 foreign, 16 unique, 8 check            |
+| Indexes                           | 48                                                        |
 | Triggers                          | 14 definitions, 18 trigger events, 8 trigger functions    |
-| Policies                          | 39 in `public` + 20 on `storage.objects`                  |
+| Policies                          | 52 in `public` + 20 on `storage.objects`                  |
 | Private buckets                   | 5, all `public = false`                                   |
-| Tables carrying `organization_id` | 10                                                        |
+| Tables carrying `organization_id` | 14                                                        |
 
 ## Schemas and extensions
 
@@ -42,24 +42,32 @@ not.
 through `roles.organization_id` (`role_permissions` has no organization column); `root` = the
 tenant itself; `global` = no tenant.
 
-| Table                      | Cols | Tenant         | Purpose                                                                                             |
-| -------------------------- | ---- | -------------- | --------------------------------------------------------------------------------------------------- |
-| `organizations`            | 9    | root           | The tenant. `slug` is the URL key, `currency` `character(3)`, `locale`, `timezone`                  |
-| `clinics`                  | 9    | org            | Physical clinic; `code` unique per organization, `timezone` NOT NULL                                |
-| `organization_memberships` | 6    | org            | A user's membership and status (`active` / `suspended` / `revoked`)                                 |
-| `clinic_memberships`       | 5    | org            | Scopes a membership to a clinic                                                                     |
-| `user_role_assignments`    | 6    | org            | Role grant, optional `clinic_id` for a clinic-scoped grant                                          |
-| `roles`                    | 6    | org (nullable) | `organization_id NULL` is a platform role                                                           |
-| `role_permissions`         | 2    | via role       | `(role_id, permission_key)`                                                                         |
-| `permissions`              | 2    | global         | 21 permission keys, read-only to clients                                                            |
-| `invitations`              | 10   | org            | `token_hash` (SHA-256), `email`, `role_id`, `clinic_ids`, `expires_at`, `accepted_at`, `invited_by` |
-| `patients`                 | 15   | org            | PHI-shaped target for the isolation suite; no application UI                                        |
-| `patient_identifiers`      | 6    | org            | Identifier values; ON DELETE RESTRICT from `patients`                                               |
-| `audit_logs`               | 8    | org (nullable) | Append-only; no foreign keys                                                                        |
-| `platform_settings`        | 4    | global         | Operator settings; no foreign keys                                                                  |
-| `profiles`                 | 5    | per user       | `full_name`, `is_platform_admin`                                                                    |
-| `tenant_sequences`         | 4    | org            | `(organization_id, sequence_key)` counter; definer-only writer                                      |
-| `tenant_creation_events`   | 3    | global         | One row per tenant creation; the creation-cap evidence                                              |
+| Table                      | Cols | Tenant         | Purpose                                                                                                                                                                                                                                          |
+| -------------------------- | ---- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `organizations`            | 9    | root           | The tenant. `slug` is the URL key, `currency` `character(3)`, `locale`, `timezone`                                                                                                                                                               |
+| `clinics`                  | 9    | org            | Physical clinic; `code` unique per organization, `timezone` NOT NULL                                                                                                                                                                             |
+| `organization_memberships` | 6    | org            | A user's membership and status (`active` / `suspended` / `revoked`)                                                                                                                                                                              |
+| `clinic_memberships`       | 5    | org            | Scopes a membership to a clinic                                                                                                                                                                                                                  |
+| `user_role_assignments`    | 6    | org            | Role grant, optional `clinic_id` for a clinic-scoped grant                                                                                                                                                                                       |
+| `roles`                    | 6    | org (nullable) | `organization_id NULL` is a platform role                                                                                                                                                                                                        |
+| `role_permissions`         | 2    | via role       | `(role_id, permission_key)`                                                                                                                                                                                                                      |
+| `permissions`              | 2    | global         | 21 permission keys, read-only to clients                                                                                                                                                                                                         |
+| `invitations`              | 10   | org            | `token_hash` (SHA-256), `email`, `role_id`, `clinic_ids`, `expires_at`, `accepted_at`, `invited_by`                                                                                                                                              |
+| `patients`                 | 15   | org            | PHI-shaped target for the isolation suite; no application UI                                                                                                                                                                                     |
+| `patient_identifiers`      | 6    | org            | Identifier values; ON DELETE RESTRICT from `patients`                                                                                                                                                                                            |
+| `audit_logs`               | 8    | org (nullable) | Append-only; no foreign keys                                                                                                                                                                                                                     |
+| `platform_settings`        | 4    | global         | Operator settings; no foreign keys                                                                                                                                                                                                               |
+| `profiles`                 | 5    | per user       | `full_name`, `is_platform_admin`                                                                                                                                                                                                                 |
+| `tenant_sequences`         | 4    | org            | `(organization_id, sequence_key)` counter; definer-only writer                                                                                                                                                                                   |
+| `tenant_creation_events`   | 3    | global         | One row per tenant creation; the creation-cap evidence                                                                                                                                                                                           |
+| `appointments`             | 9    | org            | `id uuid!`, `organization_id uuid!`, `clinic_id uuid!`, `patient_id uuid!`, `status text!`, `scheduled_start timestamptz!`, `scheduled_end timestamptz!`, `created_at timestamptz!`, `updated_at timestamptz!`                                   |
+| `queue_entries`            | 6    | org            | `id uuid!`, `organization_id uuid!`, `clinic_id uuid!`, `patient_id uuid!`, `status text!`, `created_at timestamptz!`                                                                                                                            |
+| `encounters`               | 11   | org            | `id uuid!`, `organization_id uuid!`, `clinic_id uuid!`, `patient_id uuid!`, `appointment_id uuid`, `status text!`, `chief_complaint text`, `finalized_at timestamptz`, `finalized_by uuid`, `created_at timestamptz!`, `updated_at timestamptz!` |
+| `encounter_addenda`        | 6    | org            | `id uuid!`, `organization_id uuid!`, `encounter_id uuid!`, `author_user_id uuid!`, `body text!`, `created_at timestamptz!`                                                                                                                       |
+| `appointments`             | 9    | org            | Clinic-scoped; MRN, dates                                                                                                                                                                                                                        |
+| `queue_entries`            | 6    | org            | Clinic-scoped                                                                                                                                                                                                                                    |
+| `encounters`               | 11   | org            | Clinic-scoped; status, finalized metadata                                                                                                                                                                                                        |
+| `encounter_addenda`        | 6    | org            | Clinic-scoped; immutable                                                                                                                                                                                                                         |
 
 ### Full column list
 
