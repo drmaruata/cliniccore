@@ -130,27 +130,57 @@ test.describe("Patients", () => {
       timeout: 15_000,
     });
 
-    // 7. A random id is a real 404, not an empty detail page. The response status is the
-    //    assertion; the visible fallback proves the 404 reached the user.
+    // 7. Create an appointment for the patient.
+    await page.goto("/app/appointments");
+    await expect(page.getByText("No appointments on this day")).toBeVisible();
+    await page.selectOption('select[id="appointment-patient"]', patient.id);
+    await page.fill('input[id="appointment-date"]', "2027-03-15");
+    await page.fill('input[id="appointment-time"]', "09:00");
+    await page.fill('input[id="appointment-duration"]', "30");
+    await page.fill('input[id="appointment-reason"]', "Follow-up");
+    await page.getByRole("button", { name: "Book appointment" }).click();
+
+    // 8. The appointment appears on the day view with status `booked`.
+    await page.goto("/app/appointments?day=2027-03-15");
+    await expect(page.getByRole("cell", { name: mrn })).toBeVisible();
+    await expect(page.getByRole("cell", { name: "09:00" })).toBeVisible();
+    await expect(page.getByText("booked")).toBeVisible();
+
+    const appointmentId = (await admin()
+      .from("appointments")
+      .select("id")
+      .eq("patient_id", patient.id)
+      .single()).data?.id;
+
+    // 9. Change the status to confirmed.
+    await page.selectOption(
+      'select[aria-label="`Status for `${mrn}`"]',
+      "confirmed",
+    );
+    await page.getByRole("button", { name: `Update status for ${mrn}` }).click();
+    await expect(page.getByText("confirmed")).toBeVisible();
+
+    // 10. A random id is a real 404, not an empty detail page. The response status is the
+    //     assertion; the visible fallback proves the 404 reached the user.
     const response = await page.goto(`/app/patients/${crypto.randomUUID()}`);
     expect(response?.status()).toBe(404);
     await expect(page.getByText("This page could not be found.")).toBeVisible();
 
-    // 8. Back to the list before archiving.
+    // 11. Back to the list before archiving.
     await page.goto("/app/patients");
 
-    // 9. Archiving removes it from the active list, after the confirm dialog.
+    // 12. Archiving removes it from the active list, after the confirm dialog.
     await page.getByRole("button", { name: `Archive ${mrn}`, exact: true }).click();
     await expect(page.getByRole("alertdialog")).toBeVisible();
     await page.getByRole("button", { name: "Confirm archive" }).click();
     await expect(page.getByRole("cell", { name: mrn, exact: true })).toHaveCount(0);
     await expect(page.getByText("No patients yet")).toBeVisible();
 
-    // 10. The archived record is still there, under the archived filter.
+    // 13. The archived record is still there, under the archived filter.
     await page.goto("/app/patients?archived=1");
     await expect(page.getByRole("cell", { name: mrn, exact: true })).toBeVisible();
 
-    // 11. A second organization for the same user, active after onboarding. The first
+    // 14. A second organization for the same user, active after onboarding. The first
     //    tenant's patient must not appear in its list.
     const secondSlug = `probe-patients-two-${stamp}`;
     probe.slugs.push(secondSlug);

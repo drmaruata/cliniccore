@@ -128,12 +128,13 @@ export default async function AppLayout({
   }
 
   const supabase = await createServerClient();
-  const [{ data: clinicRows }, activeClinicId, canManageStaff, canReadPatients] = await Promise.all(
+  const [{ data: clinicRows }, activeClinicId, canManageStaff, canReadPatients, canManageAppointments] = await Promise.all(
     [
       supabase.from("clinics").select("id, name").eq("organization_id", org.id).order("name"),
       readActiveClinicId(),
       userCan("staff.manage"),
       userCan("patients.read"),
+      userCan("appointments.manage"),
     ],
   );
 
@@ -142,6 +143,7 @@ export default async function AppLayout({
   const navItems = [
     { href: "/app/dashboard", label: "Dashboard" },
     ...(canReadPatients ? [{ href: "/app/patients", label: "Patients" }] : []),
+    ...(canManageAppointments ? [{ href: "/app/appointments", label: "Appointments" }] : []),
     ...(canManageStaff ? [{ href: "/app/settings/members", label: "Members" }] : []),
   ];
 

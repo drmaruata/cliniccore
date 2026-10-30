@@ -110,3 +110,34 @@ export type AppointmentInput = z.infer<typeof appointmentInputSchema>;
 export type QueueInput = z.infer<typeof queueInputSchema>;
 export type ArchiveInput = z.infer<typeof archiveInputSchema>;
 export type IdentifierInput = z.infer<typeof identifierInputSchema>;
+
+/**
+ * The appointment status graph, duplicated here so the booking action can refuse a
+ * transition before it reaches the database. The SQL trigger `guard_appointment_status_transition`
+ * is the authority: an UPDATE that bypasses this action must not move a completed appointment
+ * back to booked. The two graphs are kept in sync deliberately, and the action labels a refused
+ * move with the current and target status rather than echoing a constraint name.
+ */
+export const APPOINTMENT_STATUSES = [
+  "booked",
+  "confirmed",
+  "checked_in",
+  "completed",
+  "cancelled",
+  "no_show",
+] as const;
+export type AppointmentStatus = (typeof APPOINTMENT_STATUSES)[number];
+
+export const APPOINTMENT_STATUS_TRANSITIONS: Record<AppointmentStatus, readonly AppointmentStatus[]> = {
+  booked: ["confirmed", "cancelled"],
+  confirmed: ["checked_in", "cancelled", "no_show"],
+  checked_in: ["completed", "cancelled"],
+  completed: [],
+  cancelled: [],
+  no_show: [],
+};
+
+export const appointmentStatusInputSchema = z.object({
+  appointmentId: z.string().uuid("Invalid appointment ID"),
+  status: z.enum(APPOINTMENT_STATUSES),
+});
