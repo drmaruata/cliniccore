@@ -29,6 +29,8 @@ type QueryBuilder = {
   then?: unknown;
 };
 
+const mockCreateServerClient = vi.mocked(createServerClient);
+
 function makeBuilder(): QueryBuilder {
   return {
     selectArg: null,
@@ -49,30 +51,31 @@ describe("listDayAppointments", () => {
     const fromStub = vi.fn(() => ({
       select: vi.fn((arg: string) => {
         builder.selectArg = arg;
-        return {
+        const chain = {
           eq: vi.fn((col: string, val: string) => {
             builder.eqArgs.push([col, val]);
-            return { eq: arguments[0], gte: arguments[0], lt: arguments[0], order: arguments[0] };
+            return chain;
           }),
           gte: vi.fn((col: string, val: string) => {
             builder.gteArgs.push([col, val]);
-            return { gte: arguments[0], lt: arguments[0], order: arguments[0] };
+            return chain;
           }),
           lt: vi.fn((col: string, val: string) => {
             builder.ltArgs.push([col, val]);
-            return { lt: arguments[0], order: arguments[0] };
+            return chain;
           }),
           order: vi.fn((col: string, opts: Record<string, unknown>) => {
             builder.orderArgs.push([col, opts]);
-            return { order: arguments[0] };
+            return chain;
           }),
         };
+        return chain;
       }),
     }));
 
-    vi.mocked(createServerClient).mockResolvedValueOnce({
+    mockCreateServerClient.mockResolvedValue({
       from: fromStub,
-    } as any);
+    } as unknown as Awaited<ReturnType<typeof createServerClient>>);
 
     vi.mocked(getActiveOrg).mockResolvedValue({
       id: "org-1",
@@ -95,23 +98,38 @@ describe("listDayAppointments", () => {
     );
     expect(builder.gteArgs).toEqual([["scheduled_start", bounds.startIso]]);
     expect(builder.ltArgs).toEqual([["scheduled_start", bounds.endIso]]);
-    expect(builder.orderArgs).toEqual([
-      ["scheduled_start", { ascending: true }],
-    ]);
+    expect(builder.orderArgs).toEqual([["scheduled_start", { ascending: true }]]);
   });
 
   it("handles America/Santiago 23-hour day", async () => {
     const builder = makeBuilder();
-    vi.mocked(createServerClient).mockResolvedValueOnce({
-      from: () => ({
-        select: () => ({
-          eq: (col: string, val: string) => builder.eqArgs.push([col, val]),
-          gte: (col: string, val: string) => builder.gteArgs.push([col, val]),
-          lt: (col: string, val: string) => builder.ltArgs.push([col, val]),
-          order: (col: string, opts: Record<string, unknown>) => builder.orderArgs.push([col, opts]),
-        }),
+    const fromStub = vi.fn(() => ({
+      select: vi.fn(() => {
+        const chain = {
+          eq: vi.fn((col: string, val: string) => {
+            builder.eqArgs.push([col, val]);
+            return chain;
+          }),
+          gte: vi.fn((col: string, val: string) => {
+            builder.gteArgs.push([col, val]);
+            return chain;
+          }),
+          lt: vi.fn((col: string, val: string) => {
+            builder.ltArgs.push([col, val]);
+            return chain;
+          }),
+          order: vi.fn((col: string, opts: Record<string, unknown>) => {
+            builder.orderArgs.push([col, opts]);
+            return chain;
+          }),
+        };
+        return chain;
       }),
-    } as any);
+    }));
+
+    mockCreateServerClient.mockResolvedValue({
+      from: fromStub,
+    } as unknown as Awaited<ReturnType<typeof createServerClient>>);
 
     vi.mocked(getActiveOrg).mockResolvedValue({
       id: "org-2",

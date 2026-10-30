@@ -126,8 +126,13 @@ dbDescribe("triggers", () => {
     );
     // patients joined this list in Task 8; a new updated_at table must be added
     // here or this assertion is the thing that notices it was forgotten.
+    // `appointments` and `encounters` joined this list with the clinical schema
+    // (20261029001900); a new updated_at table must be added here or this
+    // assertion is the thing that notices it was forgotten.
     expect(rows.map((r) => r.tablename)).toEqual([
+      "appointments",
       "clinics",
+      "encounters",
       "organization_memberships",
       "organizations",
       "patients",

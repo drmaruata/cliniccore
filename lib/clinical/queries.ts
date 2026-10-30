@@ -31,6 +31,7 @@ import type { Database } from "../../types/database.types";
 
 type AppointmentRow = Database["public"]["Tables"]["appointments"]["Row"];
 type PatientRow = Database["public"]["Tables"]["patients"]["Row"];
+type QueueRow = Database["public"]["Tables"]["queue_entries"]["Row"];
 
 interface EmbeddedRow extends AppointmentRow {
   patients: PatientRow | null;
@@ -70,5 +71,40 @@ export async function listDayAppointments(input: {
   return (data ?? []).map((row) => {
     const embedded = row as unknown as EmbeddedRow;
     return { appointment: embedded, patient: toPatient(embedded.patients) };
+  });
+}
+
+/**
+ * The open queue for a clinic, ordered by the time each patient was added.
+ *
+ * WHY `completed_at IS NULL` AND NOT A STATUS FILTER. `completed` and `skipped`
+ * both close an entry, and the partial index `queue_open_idx` is built on that
+ * predicate, so filtering on it serves the board query from the index. Filtering
+ * on `status != 'completed'` would read `skipped` rows onto a board that has no
+ * action for them and would not use the index.
+ */
+export interface QueueWithPatient {
+  entry: QueueRow;
+  patient: { first_name: string | null; last_name: string | null; mrn: string } | null;
+}
+
+export async function listQueue(clinicId: string): Promise<QueueWithPatient[]> {
+  const org = await getActiveOrg();
+  if (!org) return [];
+
+  const supabase = await createServerClient();
+  const { data, error } = await supabase
+    .from("queue_entries")
+    .select("*, patients(first_name, last_name, mrn)")
+    .eq("organization_id", org.id)
+    .eq("clinic_id", clinicId)
+    .is("completed_at", null)
+    .order("queued_at", { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => {
+    const embedded = row as unknown as EmbeddedRow & { patients: PatientRow | null };
+    return { entry: embedded as unknown as QueueRow, patient: toPatient(embedded.patients) };
   });
 }

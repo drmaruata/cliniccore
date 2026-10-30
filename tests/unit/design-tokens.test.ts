@@ -2204,8 +2204,9 @@ describe("the hex rule is not vacuous", () => {
     // Task 5 added four patient files under app/app/patients/. 78 -> 82 code files.
     // Task 6 added two patient detail files under app/app/patients/[id]/. 82 -> 84 code files.
     // Task 7 added four appointment files under app/app/appointments/. 84 -> 88 code files.
-    expect(code.length + css.length).toBe(90);
-    expect(code.length).toBe(88);
+    // Task 8 added three queue files under app/app/queue/. 88 -> 91 code files.
+    expect(code.length + css.length).toBe(93);
+    expect(code.length).toBe(91);
 
     expect(files).toContain("components/shared/status-badge.tsx");
     // `lib/` used to be outside the scan roots, so a component placed there was

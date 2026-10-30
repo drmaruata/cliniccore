@@ -112,6 +112,35 @@ export type ArchiveInput = z.infer<typeof archiveInputSchema>;
 export type IdentifierInput = z.infer<typeof identifierInputSchema>;
 
 /**
+ * The clinic queue status graph, kept in sync with the SQL CHECK on
+ * `queue_entries.status`. The database is the authority: a direct UPDATE that
+ * bypasses this action must not move a completed entry back to waiting. The
+ * action labels a refused move with the current and target status rather than
+ * echoing a constraint name.
+ */
+export const QUEUE_STATUSES = [
+  "waiting",
+  "called",
+  "in_consultation",
+  "completed",
+  "skipped",
+] as const;
+export type QueueStatus = (typeof QUEUE_STATUSES)[number];
+
+export const QUEUE_STATUS_TRANSITIONS: Record<QueueStatus, readonly QueueStatus[]> = {
+  waiting: ["called", "skipped"],
+  called: ["in_consultation", "skipped"],
+  in_consultation: ["completed"],
+  completed: [],
+  skipped: [],
+};
+
+export const queueStatusInputSchema = z.object({
+  entryId: z.string().uuid("Invalid queue entry ID"),
+  status: z.enum(QUEUE_STATUSES),
+});
+
+/**
  * The appointment status graph, duplicated here so the booking action can refuse a
  * transition before it reaches the database. The SQL trigger `guard_appointment_status_transition`
  * is the authority: an UPDATE that bypasses this action must not move a completed appointment
@@ -128,7 +157,10 @@ export const APPOINTMENT_STATUSES = [
 ] as const;
 export type AppointmentStatus = (typeof APPOINTMENT_STATUSES)[number];
 
-export const APPOINTMENT_STATUS_TRANSITIONS: Record<AppointmentStatus, readonly AppointmentStatus[]> = {
+export const APPOINTMENT_STATUS_TRANSITIONS: Record<
+  AppointmentStatus,
+  readonly AppointmentStatus[]
+> = {
   booked: ["confirmed", "cancelled"],
   confirmed: ["checked_in", "cancelled", "no_show"],
   checked_in: ["completed", "cancelled"],

@@ -98,7 +98,7 @@ test.describe("Patients", () => {
     // 4. No identifiers were written by the registration form.
     const { data: patient, error: patientError } = await admin()
       .from("patients")
-      .select("id")
+      .select("id, organization_id")
       .eq("mrn", mrn)
       .eq("first_name", firstName)
       .eq("last_name", lastName)
@@ -106,6 +106,18 @@ test.describe("Patients", () => {
     if (patientError || !patient) {
       throw new Error(`could not read the registered patient: ${patientError?.message}`);
     }
+
+    // The only clinic is the one onboarding created, so the queue picker's default is
+    // the clinic the record belongs to. Read it from the list so the duplicate test
+    // targets the same clinic the check-in wrote to.
+    const clinicId = (
+      await admin()
+        .from("clinics")
+        .select("id")
+        .eq("organization_id", patient.organization_id)
+        .single()
+    ).data?.id;
+    if (!clinicId) throw new Error("could not read the patient's clinic");
     const { count: identifierCount, error: identifierError } = await admin()
       .from("patient_identifiers")
       .select("id", { count: "exact", head: true })
@@ -146,21 +158,52 @@ test.describe("Patients", () => {
     await expect(page.getByRole("cell", { name: "09:00" })).toBeVisible();
     await expect(page.getByText("booked")).toBeVisible();
 
-    const appointmentId = (await admin()
-      .from("appointments")
-      .select("id")
-      .eq("patient_id", patient.id)
-      .single()).data?.id;
-
     // 9. Change the status to confirmed.
-    await page.selectOption(
-      'select[aria-label="`Status for `${mrn}`"]',
-      "confirmed",
-    );
+    await page.selectOption('select[aria-label="`Status for `${mrn}`"]', "confirmed");
     await page.getByRole("button", { name: `Update status for ${mrn}` }).click();
     await expect(page.getByText("confirmed")).toBeVisible();
 
-    // 10. A random id is a real 404, not an empty detail page. The response status is the
+    // 9a. Checking in the appointment adds a queue entry for the patient.
+    await page.selectOption('select[aria-label="`Status for `${mrn}`"]', "checked_in");
+    await page.getByRole("button", { name: `Update status for ${mrn}` }).click();
+    await expect(page.getByText("checked in")).toBeVisible();
+
+    // 10. The queue board shows the patient in the waiting column.
+    await page.goto("/app/queue");
+    await expect(page.getByText("Waiting")).toBeVisible();
+    await expect(page.getByText(`${firstName} ${lastName}`, { exact: false })).toBeVisible();
+    await expect(page.getByText(mrn, { exact: true })).toBeVisible();
+
+    // 11. Calling the patient moves it to the Called column and stamps called_at.
+    await page
+      .getByRole("button", { name: `Call for ${mrn}` })
+      .first()
+      .click();
+    await expect(page.getByText("Called")).toBeVisible();
+    await expect(page.getByText(`${firstName} ${lastName}`, { exact: false })).toBeVisible();
+
+    // 12. Starting the consultation moves it into the In Consultation column.
+    await page
+      .getByRole("button", { name: `Start Consultation for ${mrn}` })
+      .first()
+      .click();
+    await expect(page.getByText("In Consultation")).toBeVisible();
+
+    // 13. Completing the patient removes them from the board entirely.
+    await page
+      .getByRole("button", { name: `Complete for ${mrn}` })
+      .first()
+      .click();
+    await expect(page.getByText("Queue is empty")).toBeVisible();
+
+    // 14. A second open entry for the same patient in the same clinic is refused.
+    await page.goto("/app/queue");
+    await page.selectOption('select[id="queue-patient"]', patient.id);
+    await page.selectOption('select[id="queue-clinic"]', clinicId);
+    await page.getByRole("button", { name: "Add to queue" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "already in the queue" })).toBeVisible();
+
+    // 15. A random id is a real 404, not an empty detail page. The response status is the
     //     assertion; the visible fallback proves the 404 reached the user.
     const response = await page.goto(`/app/patients/${crypto.randomUUID()}`);
     expect(response?.status()).toBe(404);

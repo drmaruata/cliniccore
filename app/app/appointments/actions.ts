@@ -60,7 +60,7 @@ function statusLabel(status: string): string {
 export async function bookAppointment(
   _prev: ActionResult<{ appointmentId: string }> | null,
   data: unknown,
-): Promise ActionResult<{ appointmentId: string }> {
+): Promise<ActionResult<{ appointmentId: string }>> {
   const input = toActionInput(data);
   const rawDuration = input.durationMinutes;
   const clinicId = typeof input.clinicId === "string" ? input.clinicId : "";
@@ -141,7 +141,7 @@ export async function bookAppointment(
 export async function setAppointmentStatus(
   _prev: ActionResult<{ appointmentId: string }> | null,
   data: unknown,
-): Promise ActionResult<{ appointmentId: string }> {
+): Promise<ActionResult<{ appointmentId: string }>> {
   const parsed = appointmentStatusInputSchema.safeParse(toActionInput(data));
   if (!parsed.success) {
     return { ok: false, error: fieldErrorMessage(parsed.error), code: "validation_failed" };
@@ -152,10 +152,15 @@ export async function setAppointmentStatus(
     return toActionResult(new ValidationError(NO_ACTIVE_ORG, "no_active_org"));
   }
 
+  const user = await getUser();
+  if (!user) {
+    return toActionResult(new UnauthorizedError("You must be signed in.", "unauthorized"));
+  }
+
   const supabase = await createServerClient();
   const { data: appointment, error: readError } = await supabase
     .from("appointments")
-    .select("id, clinic_id, status")
+    .select("id, clinic_id, patient_id, status")
     .eq("organization_id", org.id)
     .eq("id", parsed.data.appointmentId)
     .maybeSingle();
@@ -168,7 +173,9 @@ export async function setAppointmentStatus(
   }
 
   if (!(await userCan("appointments.manage", appointment.clinic_id))) {
-    return toActionResult(new ForbiddenError("You cannot change that appointment.", "appointment_refused"));
+    return toActionResult(
+      new ForbiddenError("You cannot change that appointment.", "appointment_refused"),
+    );
   }
 
   const current = appointment.status as AppointmentStatus;
@@ -190,6 +197,28 @@ export async function setAppointmentStatus(
 
   if (error) return toActionResult(error);
 
+  // Checking in an appointment puts the patient on the clinic queue board. The entry is
+  // created AFTER the status change succeeds, so a refused transition never leaves a
+  // queue row behind, and the duplicate-open-entry guard is exercised by the queue action
+  // rather than by this one.
+  if (parsed.data.status === "checked_in") {
+    const { error: queueError } = await supabase
+      .from("queue_entries")
+      .insert({
+        organization_id: org.id,
+        clinic_id: appointment.clinic_id,
+        patient_id: appointment.patient_id,
+        appointment_id: parsed.data.appointmentId,
+        created_by: user.id,
+      })
+      .select("id")
+      .maybeSingle();
+    if (queueError && queueError.code !== "23505") {
+      return toActionResult(queueError);
+    }
+  }
+
   revalidatePath("/app/appointments");
+  revalidatePath("/app/queue");
   return { ok: true, value: { appointmentId: parsed.data.appointmentId } };
 }

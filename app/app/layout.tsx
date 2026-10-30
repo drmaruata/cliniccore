@@ -128,15 +128,19 @@ export default async function AppLayout({
   }
 
   const supabase = await createServerClient();
-  const [{ data: clinicRows }, activeClinicId, canManageStaff, canReadPatients, canManageAppointments] = await Promise.all(
-    [
-      supabase.from("clinics").select("id, name").eq("organization_id", org.id).order("name"),
-      readActiveClinicId(),
-      userCan("staff.manage"),
-      userCan("patients.read"),
-      userCan("appointments.manage"),
-    ],
-  );
+  const [
+    { data: clinicRows },
+    activeClinicId,
+    canManageStaff,
+    canReadPatients,
+    canManageAppointments,
+  ] = await Promise.all([
+    supabase.from("clinics").select("id, name").eq("organization_id", org.id).order("name"),
+    readActiveClinicId(),
+    userCan("staff.manage"),
+    userCan("patients.read"),
+    userCan("appointments.manage"),
+  ]);
 
   const clinics = (clinicRows ?? []).map((clinic) => ({ id: clinic.id, name: clinic.name }));
   const activeClinicName = clinics.find((clinic) => clinic.id === activeClinicId)?.name ?? null;
@@ -145,6 +149,7 @@ export default async function AppLayout({
     ...(canReadPatients ? [{ href: "/app/patients", label: "Patients" }] : []),
     ...(canManageAppointments ? [{ href: "/app/appointments", label: "Appointments" }] : []),
     ...(canManageStaff ? [{ href: "/app/settings/members", label: "Members" }] : []),
+    ...(canManageAppointments ? [{ href: "/app/queue", label: "Queue" }] : []),
   ];
 
   return (
